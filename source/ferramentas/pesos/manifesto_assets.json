@@ -1,0 +1,931 @@
+{
+ "gerados": {
+  "block5-ffn.f32": {
+   "bytes": 147712,
+   "origem": "prepare_native_front_chain.py:25",
+   "sha256": "d9e13aa874f4662414babacd5d4a163af8a921d24ab319734c9209ee09658e3a"
+  },
+  "block5-attention.f32": {
+   "bytes": 98568,
+   "origem": "prepare_native_front_chain.py:26",
+   "sha256": "a4e96cda28e4946f38259dfd05daa67561f378c47c5eba43102a0be833f72772"
+  },
+  "block6-ffn.f32": {
+   "bytes": 147712,
+   "origem": "prepare_native_front_chain.py:25",
+   "sha256": "047978169501ad676f190dafad90d64c369239f67340fa90a5ab685b73f62e0d"
+  },
+  "block6-attention.f32": {
+   "bytes": 98568,
+   "origem": "prepare_native_front_chain.py:26",
+   "sha256": "80f19fc67ed701fe47713f96c46b383d8ce05070ca193a607cdd0a4a48231f70"
+  },
+  "block7-ffn.f32": {
+   "bytes": 147712,
+   "origem": "prepare_native_front_chain.py:25",
+   "sha256": "fde868d796a80f89e23d8ae9a928c51158df2d18f204c1c207d67eb693396553"
+  },
+  "block7-attention.f32": {
+   "bytes": 98568,
+   "origem": "prepare_native_front_chain.py:26",
+   "sha256": "8728e01fd98050c78915c45172f811ce8c9cef995c1868c2309a1f3a3f3b351c"
+  },
+  "block8-ffn.f32": {
+   "bytes": 147712,
+   "origem": "prepare_native_front_chain.py:25",
+   "sha256": "6e3eafb4433a262fb0c0cf745e610a747596c3050ca687409c7caa55c5cbd7a8"
+  },
+  "block8-attention.f32": {
+   "bytes": 98568,
+   "origem": "prepare_native_front_chain.py:26",
+   "sha256": "dddf95996869089a82bc902eb36cb5c2ac0973c84615bbb8baa0d8becdf458ce"
+  },
+  "block9-ffn.f32": {
+   "bytes": 590336,
+   "origem": "prepare_native_front_chain.py:25",
+   "sha256": "7fc353f7682437decb14de3b858dc4743cc91af8df503ff707911de3bc840d96"
+  },
+  "block9-attention.f32": {
+   "bytes": 328208,
+   "origem": "prepare_native_front_chain.py:26",
+   "sha256": "20bc18d0584335abaed4f2429a2d3696e5a60e2fe8d58c1b70e59e32f3e3917f"
+  },
+  "block10-ffn.f32": {
+   "bytes": 590336,
+   "origem": "prepare_native_front_chain.py:25",
+   "sha256": "9eb092b4b1e625d19dee00feda2333de5dd45f7ad0b12e1d48f28de950caf934"
+  },
+  "block10-attention.f32": {
+   "bytes": 328208,
+   "origem": "prepare_native_front_chain.py:26",
+   "sha256": "109a1830d6ec653560dc1a1b22353d3e4a8be9ed08798e0c65aca4d9fd52504f"
+  },
+  "block11-ffn.f32": {
+   "bytes": 590336,
+   "origem": "prepare_native_front_chain.py:25",
+   "sha256": "5116d94019950bb08ecd47884950c3e9a27be776cb212cb062e625e302a1706e"
+  },
+  "block11-attention.f32": {
+   "bytes": 328208,
+   "origem": "prepare_native_front_chain.py:26",
+   "sha256": "07090c779821a52ce7063543bce03b7eddcfce2757a4f3322578e025ee58394e"
+  },
+  "block12-ffn.f32": {
+   "bytes": 590336,
+   "origem": "prepare_native_front_chain.py:25",
+   "sha256": "12a85909ce20227359a7b1d273561fbc6a7d65914dca3323b8e5cc9cbb7be1f1"
+  },
+  "block12-attention.f32": {
+   "bytes": 328208,
+   "origem": "prepare_native_front_chain.py:26",
+   "sha256": "4ffdbf8ffb42b24e568590e7eb3c11f5d6ac8f717f5d8582ffbecff20dd7269c"
+  },
+  "block13-ffn.f32": {
+   "bytes": 590336,
+   "origem": "prepare_native_front_chain.py:25",
+   "sha256": "bd1f55199d4a026409661f7325c449a4849dee7050c0cbbce8d0f168eed85293"
+  },
+  "block13-attention.f32": {
+   "bytes": 328208,
+   "origem": "prepare_native_front_chain.py:26",
+   "sha256": "7156d96a553d05c083e83bc0d91a9c5121a74c632649e6561cc611ce9b4a0983"
+  },
+  "block14-ffn.f32": {
+   "bytes": 590336,
+   "origem": "prepare_native_front_chain.py:25",
+   "sha256": "2f32b1ca7f7c48d9051438704fb557598eef49d2df6b8a6b2cc4bf2cfdab35f9"
+  },
+  "block14-attention.f32": {
+   "bytes": 328208,
+   "origem": "prepare_native_front_chain.py:26",
+   "sha256": "63f4a21e798febef10db9230e0e30c821f9d03b125f500e27e50440bbaa084cc"
+  },
+  "block15-ffn.f32": {
+   "bytes": 2360320,
+   "origem": "prepare_native_front_chain.py:25",
+   "sha256": "e3371ca95e0193984b7cc4ae5e2359d7242ac748876f4eb1f83ca8ce5a6728e7"
+  },
+  "block15-attention.f32": {
+   "bytes": 1180704,
+   "origem": "prepare_native_front_chain.py:26",
+   "sha256": "a342b62f0bbafdea18ff1080e4bbfc6e465e4a21d32fd60681882f25d6f7e4ef"
+  },
+  "block16-ffn.f32": {
+   "bytes": 2360320,
+   "origem": "prepare_native_front_chain.py:25",
+   "sha256": "b7a619b5877707df9f54363172a9e5122c42540e4ae8432c083805d33479f940"
+  },
+  "block16-attention.f32": {
+   "bytes": 1180704,
+   "origem": "prepare_native_front_chain.py:26",
+   "sha256": "22894ed82c6e112b419612db40bce0483f10fb94a7da6d3e06695c416f6d0df4"
+  },
+  "block17-ffn.f32": {
+   "bytes": 2360320,
+   "origem": "prepare_native_front_chain.py:25",
+   "sha256": "c495cd0c8f62d2209eda2ff13eb906fa2876c13c4b570d10b7dfc8da7afbd8f2"
+  },
+  "block17-attention.f32": {
+   "bytes": 1180704,
+   "origem": "prepare_native_front_chain.py:26",
+   "sha256": "89a0c397e25fefbc80ff77a6f59ca46c5b32c56e5cad6e825860fd9eb3e5ed72"
+  },
+  "block18-ffn.f32": {
+   "bytes": 2360320,
+   "origem": "prepare_native_front_chain.py:25",
+   "sha256": "737e4a1ba35f166552d215aba7dd4f00813bb40f223baa0afaf21b1dc176392a"
+  },
+  "block18-attention.f32": {
+   "bytes": 1180704,
+   "origem": "prepare_native_front_chain.py:26",
+   "sha256": "c18763eb47b1fbd3672065c52e65e31ef5c4f76d97a491a7bb22b5448b5ae2ce"
+  },
+  "block19-ffn.f32": {
+   "bytes": 2360320,
+   "origem": "prepare_native_front_chain.py:25",
+   "sha256": "7a70168887dad7b33cfdd0e42a5fa8b2b1e5255aeb163298d286b0f029255c76"
+  },
+  "block19-attention.f32": {
+   "bytes": 1180704,
+   "origem": "prepare_native_front_chain.py:26",
+   "sha256": "f9d0d66cefeb565fa80047b7b05fd803b709a469b0ad2d7ed4d29ec130261a04"
+  },
+  "block20-ffn.f32": {
+   "bytes": 2360320,
+   "origem": "prepare_native_front_chain.py:25",
+   "sha256": "e495142d5bb88257960fdb1a213ee1378a9883eb4fe916c82b686197f2f5444a"
+  },
+  "block20-attention.f32": {
+   "bytes": 1180704,
+   "origem": "prepare_native_front_chain.py:26",
+   "sha256": "60dc7d3af788d014da4c0f846e19d3a0c0bee626273da0c2f65c55bc3e0084b3"
+  },
+  "block21-ffn.f32": {
+   "bytes": 2360320,
+   "origem": "prepare_native_front_chain.py:25",
+   "sha256": "0e0756a7d05883ce06e2e9083698475fe4aa43632fd1647646f42d43311efb0a"
+  },
+  "block21-attention.f32": {
+   "bytes": 1180704,
+   "origem": "prepare_native_front_chain.py:26",
+   "sha256": "9ed952484c3f03303caedca0c5e2ae9854c7624f02082cb309500e1c053c1980"
+  },
+  "block22-ffn.f32": {
+   "bytes": 2360320,
+   "origem": "prepare_native_front_chain.py:25",
+   "sha256": "f44d4a0561b2b80d08c3f52fd8411b7f1e26d1d9b1851a5fed5b4b9bac90cda3"
+  },
+  "block22-attention.f32": {
+   "bytes": 1180704,
+   "origem": "prepare_native_front_chain.py:26",
+   "sha256": "455b3f55bcec0aa86a5c5abba6869dd809ed836500d1d493350efca9fa8a38a6"
+  },
+  "block8-ds.f32": {
+   "bytes": 32768,
+   "origem": "prepare_native_front_chain.py:29",
+   "sha256": "db0c87a017dcddf5849eaa3ae85684f12d4fa30a99448426e1e4cbc6cc41c709"
+  },
+  "block14-ds.f32": {
+   "bytes": 131072,
+   "origem": "prepare_native_front_chain.py:33/37",
+   "sha256": "c5aec3b81348cf8b8b559d645bff477083465518c4d8bbc26ee87c4e2e019040"
+  },
+  "block22-ds.f32": {
+   "bytes": 524288,
+   "origem": "prepare_native_front_chain.py:33/37",
+   "sha256": "956a49f16e9bf3d3cc28456ee26f142824a9133766dc2723de98b2c7c750f633"
+  },
+  "block23-ffwd.f32": {
+   "bytes": 2097152,
+   "origem": "prepare_native_rgb128_gpu.py:13",
+   "sha256": "52806e517640c4175bde352d30915f60daeafcc08a2cf0781a71b37ceb4db810"
+  },
+  "block23-ffwd-projection.f32": {
+   "bytes": 1050624,
+   "origem": "prepare_native_rgb128_gpu.py:14",
+   "sha256": "83aabece0896b363c23f6d7eb47aac2784e8a0fd7ed54e9c67f47bc024573b32"
+  },
+  "block23-attention.f32": {
+   "bytes": 4458560,
+   "origem": "prepare_native_rgb128_gpu.py:15",
+   "sha256": "38ed0b4dd766c7e8180617623bab1b8b41de4ba9fc7e2f35a92b9fcede7492a9"
+  },
+  "block24-ffwd.f32": {
+   "bytes": 2097152,
+   "origem": "prepare_native_rgb128_gpu.py:13",
+   "sha256": "47f24c7f79ef2fcc40ef0dcc151800674bfeab370829f99d2a540403744a94e5"
+  },
+  "block24-ffwd-projection.f32": {
+   "bytes": 1050624,
+   "origem": "prepare_native_rgb128_gpu.py:14",
+   "sha256": "2ca07617440b96ec24ba2ff0a9352a4419989f19a462a4dec2f8ad1f9e990861"
+  },
+  "block24-attention.f32": {
+   "bytes": 4458560,
+   "origem": "prepare_native_rgb128_gpu.py:15",
+   "sha256": "610d709842dd5c73c961345f2d78bab7a2c0a79f5dc92ab3825ef7aec74a41b0"
+  },
+  "block25-ffwd.f32": {
+   "bytes": 2097152,
+   "origem": "prepare_native_rgb128_gpu.py:13",
+   "sha256": "d955e0c7238ac427a6145641e9a23b6266d7580b5da7d13c7072bb72cfb25684"
+  },
+  "block25-ffwd-projection.f32": {
+   "bytes": 1050624,
+   "origem": "prepare_native_rgb128_gpu.py:14",
+   "sha256": "3d2e5ee96a574e9eedb0406e89dd3ba9da9191c692cdd35db393e5c64a8132f8"
+  },
+  "block25-attention.f32": {
+   "bytes": 4458560,
+   "origem": "prepare_native_rgb128_gpu.py:15",
+   "sha256": "6578415952042c5d2e036a3cb4bc524cb89da02cf2a9f3a8ad4c2affc50f573f"
+  },
+  "block26-ffwd.f32": {
+   "bytes": 2097152,
+   "origem": "prepare_native_rgb128_gpu.py:13",
+   "sha256": "cca42d460122353fbb031cb57e64f9f1b4604bbc17ca15340ffecb5194c885c8"
+  },
+  "block26-ffwd-projection.f32": {
+   "bytes": 1050624,
+   "origem": "prepare_native_rgb128_gpu.py:14",
+   "sha256": "a4be3cb9234792bbea7f1a43c12463ae9c432f780ad26f9f2d2bbdbf5539577b"
+  },
+  "block26-attention.f32": {
+   "bytes": 4458560,
+   "origem": "prepare_native_rgb128_gpu.py:15",
+   "sha256": "14ecf9615cb8c5dea60103934ad30906740374bd806be20f974904f1f1fa29dc"
+  },
+  "block27-ffwd.f32": {
+   "bytes": 2097152,
+   "origem": "prepare_native_rgb128_gpu.py:13",
+   "sha256": "5d249cbde0c76d02db36b71799c2d459e7edec369e470b3e1b60b4e3820ac64c"
+  },
+  "block27-ffwd-projection.f32": {
+   "bytes": 1050624,
+   "origem": "prepare_native_rgb128_gpu.py:14",
+   "sha256": "7badb54146eec67eb1025322be0323e8c4266e2beefbb9fa573e2d1b3732ee3a"
+  },
+  "block27-attention.f32": {
+   "bytes": 4458560,
+   "origem": "prepare_native_rgb128_gpu.py:15",
+   "sha256": "e509694d1e2107cb4206ee2f8dec7434642c144d75fb53e5b7b1d023a2f99fba"
+  },
+  "block28-ffwd.f32": {
+   "bytes": 2097152,
+   "origem": "prepare_native_rgb128_gpu.py:13",
+   "sha256": "950c64428335420bf99fc2c93e5a3a110ded5da2ee2a8dc3b60cfa43216621ad"
+  },
+  "block28-ffwd-projection.f32": {
+   "bytes": 1050624,
+   "origem": "prepare_native_rgb128_gpu.py:14",
+   "sha256": "ece38060d5a58bfd34b3aee012a66f1b6029c4d0e4ee60e786f1d7eb9526c18e"
+  },
+  "block28-attention.f32": {
+   "bytes": 4458560,
+   "origem": "prepare_native_rgb128_gpu.py:15",
+   "sha256": "e31d69d01237862df094c29f63a43c48beca7a471f8f26bb54f9a50845313a3a"
+  },
+  "block29-ffwd.f32": {
+   "bytes": 2097152,
+   "origem": "prepare_native_rgb128_gpu.py:13",
+   "sha256": "c720d60d1364db768a35830a292ef6afdcda5bb4f0b5d458bf9e5aea13f21141"
+  },
+  "block29-ffwd-projection.f32": {
+   "bytes": 1050624,
+   "origem": "prepare_native_rgb128_gpu.py:14",
+   "sha256": "d20c885f48b375b42b8a1c526e8e79d90cd0250ee0e5a28837276c1a63d3e4b7"
+  },
+  "block29-attention.f32": {
+   "bytes": 4458560,
+   "origem": "prepare_native_rgb128_gpu.py:15",
+   "sha256": "d1798913270d3766b4218a0471489203c90913a31087df1c963b423643d53558"
+  },
+  "block30-ffwd.f32": {
+   "bytes": 2097152,
+   "origem": "prepare_native_rgb128_gpu.py:13",
+   "sha256": "510316c46f295160d4df6c37a4df75b721aff676462e6d7165e32d2ab4cb529e"
+  },
+  "block30-ffwd-projection.f32": {
+   "bytes": 1050624,
+   "origem": "prepare_native_rgb128_gpu.py:14",
+   "sha256": "4911da65916940a01d27603d26fc2fc8b50cab0f4c2f444d552a8482a3b5af1b"
+  },
+  "block30-attention.f32": {
+   "bytes": 4458560,
+   "origem": "prepare_native_rgb128_gpu.py:15",
+   "sha256": "2064a9393a177c1f09577861cfc11725ee5adb3d67313d9a7577aaabe05bfbbc"
+  },
+  "block40-ffwd.f32": {
+   "bytes": 2097152,
+   "origem": "prepare_native_rgb128_gpu.py:13",
+   "sha256": "61a4d7cbcee9d28a649019000f0f6a4420ad7575ab09a1ebcd8fd54bbde50826"
+  },
+  "block40-ffwd-projection.f32": {
+   "bytes": 1050624,
+   "origem": "prepare_native_rgb128_gpu.py:14",
+   "sha256": "00cce51b523a44cfb699adacf539539f55ebe7320a4549ee5b906dfb0728450e"
+  },
+  "block40-attention.f32": {
+   "bytes": 4458560,
+   "origem": "prepare_native_rgb128_gpu.py:15",
+   "sha256": "932a7fd566d3b21567472d4453dc98ca697a00d148f40f94db72a683c4da6220"
+  },
+  "block41-ffwd.f32": {
+   "bytes": 2097152,
+   "origem": "prepare_native_rgb128_gpu.py:13",
+   "sha256": "4a29d9dd8fc3616d57bab0dcb312426b4724e3cfb101a6afd3c643bedbdacb02"
+  },
+  "block41-ffwd-projection.f32": {
+   "bytes": 1050624,
+   "origem": "prepare_native_rgb128_gpu.py:14",
+   "sha256": "fcfeadffb0b63f47fac7e22543fbba86c26217171ab37fb96b36d293e2097ad8"
+  },
+  "block41-attention.f32": {
+   "bytes": 4458560,
+   "origem": "prepare_native_rgb128_gpu.py:15",
+   "sha256": "5c26e2087a4c0b7e67ce1be665cdbfdf89af60348ce6f88c35175707ab782e83"
+  },
+  "block42-ffwd.f32": {
+   "bytes": 2097152,
+   "origem": "prepare_native_rgb128_gpu.py:13",
+   "sha256": "cf2ab9b3402eb5d4dd4bf80c8a2e0b2794e5d97bc6e93e0a1bf92ab7bf7469c6"
+  },
+  "block42-ffwd-projection.f32": {
+   "bytes": 1050624,
+   "origem": "prepare_native_rgb128_gpu.py:14",
+   "sha256": "553bbafefb28a86dd55fb0c9115d26c242a714a7972b3149dae87b21d07a5248"
+  },
+  "block42-attention.f32": {
+   "bytes": 4458560,
+   "origem": "prepare_native_rgb128_gpu.py:15",
+   "sha256": "20229ef899f0b492e149fc3df825a7cc1aca7494f0e6e7db3f5a0c50b24d9bea"
+  },
+  "block43-ffwd.f32": {
+   "bytes": 2097152,
+   "origem": "prepare_native_rgb128_gpu.py:13",
+   "sha256": "6f1e120c31226ae89519a72b2d0f02a0b70fcc4adb2f77c352d89d6bb249474f"
+  },
+  "block43-ffwd-projection.f32": {
+   "bytes": 1050624,
+   "origem": "prepare_native_rgb128_gpu.py:14",
+   "sha256": "b70de38b9e9f7b156e94c1dece413d6b955a231ad8c3b56e2fa8320058a8d642"
+  },
+  "block43-attention.f32": {
+   "bytes": 4458560,
+   "origem": "prepare_native_rgb128_gpu.py:15",
+   "sha256": "513a0f6d16249755402f6c256f903523e25bf2c56a46e26b6f44ae79b52ac49b"
+  },
+  "block44-ffwd.f32": {
+   "bytes": 2097152,
+   "origem": "prepare_native_rgb128_gpu.py:13",
+   "sha256": "c2af7dda84a4f0b998404b8a609aec7ae1ac36a3025b63892a56cfbf084b660d"
+  },
+  "block44-ffwd-projection.f32": {
+   "bytes": 1050624,
+   "origem": "prepare_native_rgb128_gpu.py:14",
+   "sha256": "a61c2c34dfb2972282cad1663a60d89162db5417ab7884be348dca4cea7a96df"
+  },
+  "block44-attention.f32": {
+   "bytes": 4458560,
+   "origem": "prepare_native_rgb128_gpu.py:15",
+   "sha256": "cd4e3bf6c24182be7be0eae2fc4f7c2b50439dfc01f83eac8706f6060ae7c5aa"
+  },
+  "block45-ffwd.f32": {
+   "bytes": 2097152,
+   "origem": "prepare_native_rgb128_gpu.py:13",
+   "sha256": "bd39bc4eca887062a001d84b13d332fc55cbfd0b6dffa9af716fce44772f7df0"
+  },
+  "block45-ffwd-projection.f32": {
+   "bytes": 1050624,
+   "origem": "prepare_native_rgb128_gpu.py:14",
+   "sha256": "f96b0c9ddad076c0260f55e7dfe2147a9b2afd8522c31a707c38d874d0f43617"
+  },
+  "block45-attention.f32": {
+   "bytes": 4458560,
+   "origem": "prepare_native_rgb128_gpu.py:15",
+   "sha256": "d1553f9932a8ab0f14b3eec2f6f1a997709e733f7b60df83168798b52c9980b3"
+  },
+  "block46-ffwd.f32": {
+   "bytes": 2097152,
+   "origem": "prepare_native_rgb128_gpu.py:13",
+   "sha256": "03c39275b8e1d1ff5776bee3ec984e609d8519e713bc93a2663e3aa73b38c3ba"
+  },
+  "block46-ffwd-projection.f32": {
+   "bytes": 1050624,
+   "origem": "prepare_native_rgb128_gpu.py:14",
+   "sha256": "7ee2b9e2f2f80b4aa157e0177250134417e1c6a10dae921becf03b7a5621eba6"
+  },
+  "block46-attention.f32": {
+   "bytes": 4458560,
+   "origem": "prepare_native_rgb128_gpu.py:15",
+   "sha256": "292102ee452dd70b563eb3c4b320910eafb5dae39bcb6d046947b25bbe2439f7"
+  },
+  "block47-ffwd.f32": {
+   "bytes": 2097152,
+   "origem": "prepare_native_rgb128_gpu.py:13",
+   "sha256": "1c2b648652ce08526a49e2fe076eb88b01484b7085446619e93b93a6a7e6dc80"
+  },
+  "block47-ffwd-projection.f32": {
+   "bytes": 1050624,
+   "origem": "prepare_native_rgb128_gpu.py:14",
+   "sha256": "a74d5fa75f45aeaa4d76fb21a7360a2c1ac43675de5e94924124a2221482e3a0"
+  },
+  "block47-attention.f32": {
+   "bytes": 4458560,
+   "origem": "prepare_native_rgb128_gpu.py:15",
+   "sha256": "9aef5ec1e84785271c702f49a280cc25a155783864ecbcd0e133c43cd148a4cb"
+  },
+  "head-matrix.f32": {
+   "bytes": 2097152,
+   "origem": "validate_native_valid1080_pool_head.py",
+   "sha256": "ae2134138701ebc154388e72affa35ff3854aefabf7e73c6c8b66971c2859ae0"
+  },
+  "block31-expand.f32": {
+   "bytes": 16777216,
+   "origem": "prepare_native_vit_block_gpu.py:23",
+   "sha256": "5968dd0cd12a4861c45f2b35ce7d3c3456f9c1379e78a9f0595a32d6afefbfe2"
+  },
+  "block31-contract.f32": {
+   "bytes": 16781312,
+   "origem": "prepare_native_vit_block_gpu.py:25",
+   "sha256": "2474d24529368cdc2fdb2cc0574ff33d4114c30b2cd1bb1ed3e900320345d3d4"
+  },
+  "block31-projection.f32": {
+   "bytes": 4198400,
+   "origem": "prepare_native_vit_block_gpu.py:25",
+   "sha256": "010421502c06a1cfdabc85bfadd8cb6d0507ea9fc8c2a252192fd933e8a3a9a9"
+  },
+  "block31-qkv.f32": {
+   "bytes": 12583040,
+   "origem": "prepare_native_vit_block_gpu.py:26",
+   "sha256": "dc24ede38b7e497d0003fc551b9791af5c3ca83d62be0f63789bffbf75ee6efc"
+  },
+  "block32-expand.f32": {
+   "bytes": 16777216,
+   "origem": "prepare_native_vit_block_gpu.py:23",
+   "sha256": "3942ab84a75d0a3a602462da81205ecae3065f734e3cc61b21d7d5b32d13248d"
+  },
+  "block32-contract.f32": {
+   "bytes": 16781312,
+   "origem": "prepare_native_vit_block_gpu.py:25",
+   "sha256": "eab06af088016d6523641806c6e90f00571fca7ffe9d57223f6b1d6999bb9618"
+  },
+  "block32-projection.f32": {
+   "bytes": 4198400,
+   "origem": "prepare_native_vit_block_gpu.py:25",
+   "sha256": "a7263c35d5f59eebbdac9cf55b66f5ac61e1722eb8093e545e06ff768ca37779"
+  },
+  "block32-qkv.f32": {
+   "bytes": 12583040,
+   "origem": "prepare_native_vit_block_gpu.py:26",
+   "sha256": "01d981369f2f2d0be4bf6cd0c471210561d400e3a4867768faf08ed7f5b5a7ab"
+  },
+  "block33-expand.f32": {
+   "bytes": 16777216,
+   "origem": "prepare_native_vit_block_gpu.py:23",
+   "sha256": "37e6f4421847e6369905465659efdd507645f14c10d362689273dd687a3fda9a"
+  },
+  "block33-contract.f32": {
+   "bytes": 16781312,
+   "origem": "prepare_native_vit_block_gpu.py:25",
+   "sha256": "8eaa4f76d150a9c940b0b6cbecf9b9a533567ad4f8e26cada9566d3a7ccc5bab"
+  },
+  "block33-projection.f32": {
+   "bytes": 4198400,
+   "origem": "prepare_native_vit_block_gpu.py:25",
+   "sha256": "5e4bccb7941d6d71326249af5d6974788ab5613f1047ff913738e9a516ec0a1c"
+  },
+  "block33-qkv.f32": {
+   "bytes": 12583040,
+   "origem": "prepare_native_vit_block_gpu.py:26",
+   "sha256": "8ce7d3d7c56100b23d82eb8d3726882f78bfc71ffdd4725eb4a5fc556dc0dbeb"
+  },
+  "block34-expand.f32": {
+   "bytes": 16777216,
+   "origem": "prepare_native_vit_block_gpu.py:23",
+   "sha256": "40af5b0c58787a465c2b5ca4ddf17433d4327c383d93b8fb3ab5ff53f352ff95"
+  },
+  "block34-contract.f32": {
+   "bytes": 16781312,
+   "origem": "prepare_native_vit_block_gpu.py:25",
+   "sha256": "325072b7adbd636d4c9028da044997b1e7f4d0d1fc0df0902dd68765209c2911"
+  },
+  "block34-projection.f32": {
+   "bytes": 4198400,
+   "origem": "prepare_native_vit_block_gpu.py:25",
+   "sha256": "e59bd1cbee74cab84f7b4d0c26fc821a689ecc301fbe2304d151199ada8a431f"
+  },
+  "block34-qkv.f32": {
+   "bytes": 12583040,
+   "origem": "prepare_native_vit_block_gpu.py:26",
+   "sha256": "220a9426c661c4c8b6753159bad0a49469cdd6f866fb513cb9cef7ff76e473fb"
+  },
+  "block35-expand.f32": {
+   "bytes": 16777216,
+   "origem": "prepare_native_vit_block_gpu.py:23",
+   "sha256": "7cddae1b240bca9e8309525abae3281203c517cb360709044e5f25ca4d64eefa"
+  },
+  "block35-contract.f32": {
+   "bytes": 16781312,
+   "origem": "prepare_native_vit_block_gpu.py:25",
+   "sha256": "6abf1f867bd549aaf568c7a6e0432152bf803455609f595f905dad91b573e5a3"
+  },
+  "block35-projection.f32": {
+   "bytes": 4198400,
+   "origem": "prepare_native_vit_block_gpu.py:25",
+   "sha256": "84dc0567f20662b434db2b283033113408c092773df04244ac5a16622bca1cf5"
+  },
+  "block35-qkv.f32": {
+   "bytes": 12583040,
+   "origem": "prepare_native_vit_block_gpu.py:26",
+   "sha256": "bd32e07563e674a390a4d159fc03e5315d04ea27ddbf763ddcd2b3689ce5692f"
+  },
+  "block36-expand.f32": {
+   "bytes": 16777216,
+   "origem": "prepare_native_vit_block_gpu.py:23",
+   "sha256": "bf5a6c7ec1eec05eff4bff63b1f01ca62956ab7be377f2932ad797883edd6201"
+  },
+  "block36-contract.f32": {
+   "bytes": 16781312,
+   "origem": "prepare_native_vit_block_gpu.py:25",
+   "sha256": "db68f0c99832f89a5365adeea1979ab8f94b55644a2a406fc2170f320589e81f"
+  },
+  "block36-projection.f32": {
+   "bytes": 4198400,
+   "origem": "prepare_native_vit_block_gpu.py:25",
+   "sha256": "75151da357c8d5b9077c6df4fcfa7d4ce803cfb6134c912f1f7850ef68c82818"
+  },
+  "block36-qkv.f32": {
+   "bytes": 12583040,
+   "origem": "prepare_native_vit_block_gpu.py:26",
+   "sha256": "3c8238955b7ffa8e60d426a480c18d9aa86dc47065975ceed8c883910195ad13"
+  },
+  "block37-expand.f32": {
+   "bytes": 16777216,
+   "origem": "prepare_native_vit_block_gpu.py:23",
+   "sha256": "67561f0baafee678a31fb7eadfdd9ba993f1898b7367e3b31f9636685f8d0786"
+  },
+  "block37-contract.f32": {
+   "bytes": 16781312,
+   "origem": "prepare_native_vit_block_gpu.py:25",
+   "sha256": "abf16731a474191dcfc16a5079aaa3768dc8bb303923d04c7d419493cab6310e"
+  },
+  "block37-projection.f32": {
+   "bytes": 4198400,
+   "origem": "prepare_native_vit_block_gpu.py:25",
+   "sha256": "17720114f38c31b4193d34420f54904f268d5de3541b3968f201fddcc4423d54"
+  },
+  "block37-qkv.f32": {
+   "bytes": 12583040,
+   "origem": "prepare_native_vit_block_gpu.py:26",
+   "sha256": "a080bcc863140a422b5931355dc75bd51cdc196ce3c341bd8f194f81cd0cbfb8"
+  },
+  "block38-expand.f32": {
+   "bytes": 16777216,
+   "origem": "prepare_native_vit_block_gpu.py:23",
+   "sha256": "6cbd75a77b2a52c5f46c14bb4dd46ef9b1da7ea56b8d5895f9e829c4cabbbd3c"
+  },
+  "block38-contract.f32": {
+   "bytes": 16781312,
+   "origem": "prepare_native_vit_block_gpu.py:25",
+   "sha256": "aab240be09e0f82d77f980b0ec72dc5b69b3cb2a81206b08506115d7cd63dbcb"
+  },
+  "block38-projection.f32": {
+   "bytes": 4198400,
+   "origem": "prepare_native_vit_block_gpu.py:25",
+   "sha256": "0559c77e2655fc1632bac5ec6992ae5e8e6f121fff399712732e10c9a17ed6fd"
+  },
+  "block38-qkv.f32": {
+   "bytes": 12583040,
+   "origem": "prepare_native_vit_block_gpu.py:26",
+   "sha256": "ca606ed599c983e86d41f4fe1b6cdfaae0d63f0e7b2b861ab2fffea77ecafb0e"
+  },
+  "decoder39-weights.f32": {
+   "bytes": 2099200,
+   "origem": "prepare_native_rgb512_decoder.py:50",
+   "sha256": "7a7749aacb2d6a875b54009bbf5c50748ed265607657756995f47375a8f965d2"
+  },
+  "block49-ffn.f32": {
+   "bytes": 2360320,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "20aa759c46bdccb3b9ecb225c0077d5611ed2c5cae1123966260f150f2196fac"
+  },
+  "block49-attention.f32": {
+   "bytes": 1180704,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "ccb832a83fcdbfafe64934eacea197cbe3971ceb5c4f0a9b4492f4ff52df6923"
+  },
+  "block50-ffn.f32": {
+   "bytes": 2360320,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "740c334ecb59d65101ad90ca81dde026db1b35f82b3c72a4ec4c648bc2443442"
+  },
+  "block50-attention.f32": {
+   "bytes": 1180704,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "336a249d2d97403d4d420f6f95366cec612ce7add77871915c50b770a7d0901e"
+  },
+  "block51-ffn.f32": {
+   "bytes": 2360320,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "44a60f8449073f26334f09a3cbf60e0539c9ccc2fda60758680906d1f63f372f"
+  },
+  "block51-attention.f32": {
+   "bytes": 1180704,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "528dfb025080fe9a79b5cd17adec15fc8f2a1b0a8e87d73d7709cc42abc33f75"
+  },
+  "block52-ffn.f32": {
+   "bytes": 2360320,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "c996b87a5211578f76892fd8e8ea22632986ee8eb0688099c605c2d21b8b27e9"
+  },
+  "block52-attention.f32": {
+   "bytes": 1180704,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "5b025322890be9b4cdc48ef7179c766faf9d68dbbc64dea5fabb7e09ccffb630"
+  },
+  "block53-ffn.f32": {
+   "bytes": 2360320,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "d4f2d19341f2ac4a32f7415508e5c41ed90ada5c0ae9fcb837388c149bc9ba87"
+  },
+  "block53-attention.f32": {
+   "bytes": 1180704,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "8718c3fe4567e872657625da63b2d360a92d0e8ca2d471bf8ef671ad73c467b5"
+  },
+  "block54-ffn.f32": {
+   "bytes": 2360320,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "3ed187abe460d36544fa3e7c119aef1ade6a42c6488f5cf02141e21feae1c91d"
+  },
+  "block54-attention.f32": {
+   "bytes": 1180704,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "0cb2b8cd171fbe90a289f05244411fb7f2216405447ab653d5ae50c9ead2ced8"
+  },
+  "block55-ffn.f32": {
+   "bytes": 2360320,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "ce76515a894358387f291e498f99b4f19f235e23e4b0f0c245fa34239dee903c"
+  },
+  "block55-attention.f32": {
+   "bytes": 1180704,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "5c06a2477df47207de9c22d14b45084864eeba349839a722c8cda02dafe7446c"
+  },
+  "block57-ffn.f32": {
+   "bytes": 590336,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "2dba0af3a6d69139d0fa96bb45e40fbe4e37239c3aa3e4be38b514e49b971114"
+  },
+  "block57-attention.f32": {
+   "bytes": 328208,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "f2b1cf5e21885970f7a5808150ca4f08326a8ad51cc5a86e72cc4b687c9d9123"
+  },
+  "block58-ffn.f32": {
+   "bytes": 590336,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "0f128be9094365d8c0f6050a5e2ebfde16b031d9380e170931acdee6be6d3fad"
+  },
+  "block58-attention.f32": {
+   "bytes": 328208,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "f66ec751fa69aa34c9262cd774678a22145694948c49c9aa44331c3364e1508b"
+  },
+  "block59-ffn.f32": {
+   "bytes": 590336,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "705174acf19dc44a4e9e0459535c44d08cbbf5dcadbb3f82013bdf4e23f01a75"
+  },
+  "block59-attention.f32": {
+   "bytes": 328208,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "907014c920ac784e752f98e89e8790bf177e6c599df8eb1a2a6a6f0862ce1e5c"
+  },
+  "block60-ffn.f32": {
+   "bytes": 590336,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "e66552b44e5113214c82e911375c99fb6c688e39e85159e50c31a78d63b9b6ee"
+  },
+  "block60-attention.f32": {
+   "bytes": 328208,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "693a7aad0484ae448aa7193f4e6af4c200bb5951e58edc3b7e8af4f575e4cf27"
+  },
+  "block61-ffn.f32": {
+   "bytes": 590336,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "184f355b82f2ffd143e81c4e04c2cd204b4657bd13e9df449151233f75773d4e"
+  },
+  "block61-attention.f32": {
+   "bytes": 328208,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "85d682fd6370b061c60deba2cbb14ca1dc4dee46b61954bb6ca46de7c0a446f4"
+  },
+  "block63-ffn.f32": {
+   "bytes": 147712,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "74d1d63da95f523680353fdf596f605b2b9fe005c529a8a7ff8e8d05e2a772ae"
+  },
+  "block63-attention.f32": {
+   "bytes": 98568,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "dfdd4d6260f66da03f847dffce66af25a42e02332bf74080efb6ccf33741b9ea"
+  },
+  "block64-ffn.f32": {
+   "bytes": 147712,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "426b16e98daf718c704565274eadd68a4ede72dba1d05700911747017231d9cc"
+  },
+  "block64-attention.f32": {
+   "bytes": 98568,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "94b085af0336af2d7e30ee01350727a8ab98e456a96ef3cfa25e98ce21b2d077"
+  },
+  "block65-ffn.f32": {
+   "bytes": 147712,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "cab23bc9299af1504afa6f83a65d1841643c176cd0e081292236c954ef045476"
+  },
+  "block65-attention.f32": {
+   "bytes": 98568,
+   "origem": "prepare_native_rgb512_tail69_gpu.py",
+   "sha256": "6ff310a161489f22bac0134032390510c78b57f092207d9c1d176c7c78dcc19e"
+  },
+  "block48-weights.f32": {
+   "bytes": 525312,
+   "origem": "prepare_native_valid1080_full_gpu.py:33",
+   "sha256": "5164cd34c010c31eb529ac207458119007f37af8a74f40eeac080eddf37fcf99"
+  },
+  "block48-ffn.f32": {
+   "bytes": 2360320,
+   "origem": "prepare_native_valid1080_full_gpu.py:42",
+   "sha256": "11bb634d1b80064b05d615bf3d1e30b1842c871ee11be3ae61659dc7baa910b2"
+  },
+  "block48-attention.f32": {
+   "bytes": 1180704,
+   "origem": "prepare_native_valid1080_full_gpu.py:43",
+   "sha256": "98487b36f8d051fdc3028b3a3fa53b1646ef0d4462549981a9411cee91e2b1b6"
+  },
+  "block56-weights.f32": {
+   "bytes": 131584,
+   "origem": "prepare_native_valid1080_full_gpu.py:33",
+   "sha256": "f0c653094606b9d91ab2eaf06c6abfbc694d5ac3c7f0f1f1746738828dc3117e"
+  },
+  "block56-ffn.f32": {
+   "bytes": 590336,
+   "origem": "prepare_native_valid1080_full_gpu.py:42",
+   "sha256": "5961aa26ca883ed9c4745f5bdb80cd677afece680bbe40237b2bfdee84ca0396"
+  },
+  "block56-attention.f32": {
+   "bytes": 328208,
+   "origem": "prepare_native_valid1080_full_gpu.py:43",
+   "sha256": "7ccd3d65d39f84ecd7f240e551c9e3fe1521eb607957410c2276ed7af79b3e64"
+  },
+  "block62-weights.f32": {
+   "bytes": 33024,
+   "origem": "prepare_native_valid1080_full_gpu.py:33",
+   "sha256": "af06a6021b82831af84d285825c91f5c51a42b5ce26190c94d4ca14711974631"
+  },
+  "block62-ffn.f32": {
+   "bytes": 147712,
+   "origem": "prepare_native_valid1080_full_gpu.py:42",
+   "sha256": "fa716c3daaafde58fa578912ac7ce18c1a41d0ea37c819ad179a68dfdc619d7d"
+  },
+  "block62-attention.f32": {
+   "bytes": 98568,
+   "origem": "prepare_native_valid1080_full_gpu.py:43",
+   "sha256": "61bdbf764100628232c06012d35b96966a70c3c77dc9c18677c93dc1015283d6"
+  },
+  "block0-ffn.f32": {
+   "bytes": 34944,
+   "origem": "C32 + mistura (preblock_mix_reference.unpack_mix)",
+   "sha256": "049341f1b4f330934ec52f02408d34c6cd635f81aff8659719f4744c931f2371"
+  },
+  "block0-attention.f32": {
+   "bytes": 32900,
+   "origem": "C32 deslocado 1024 B",
+   "sha256": "63ad38a4469fd791c4972cce2df16851d3474974c15d72a67fff1b84d8adaaf3"
+  },
+  "block1-ffn.f32": {
+   "bytes": 34944,
+   "origem": "prepare_native_front_chain.py:12",
+   "sha256": "63cb1b24eaaa72b5029bb6e36c5e8d22ab2eba4a6aab58176b7ef7e89476e7ad"
+  },
+  "block1-attention.f32": {
+   "bytes": 32900,
+   "origem": "prepare_native_front_chain.py:13",
+   "sha256": "cbed8549c6b8bcbdd4004b359cae491bbcf6f9ded4cefda7a6e8dd24a177a34c"
+  },
+  "block2-ffn.f32": {
+   "bytes": 34944,
+   "origem": "prepare_native_front_chain.py:12",
+   "sha256": "97e7dfecbe2788e2d59e236be2a1971635d75ce575d1ede83a759659e6086b95"
+  },
+  "block2-attention.f32": {
+   "bytes": 32900,
+   "origem": "prepare_native_front_chain.py:13",
+   "sha256": "ee32d1c7e72f307270c429814d4d3c2bdc4db23e69a4767a6467628c804e986a"
+  },
+  "block3-ffn.f32": {
+   "bytes": 34944,
+   "origem": "prepare_native_front_chain.py:12",
+   "sha256": "9854588baebbad5bde6f768090a8e64d6936d2278def53e16aedf88967c2144f"
+  },
+  "block3-attention.f32": {
+   "bytes": 32900,
+   "origem": "prepare_native_front_chain.py:13",
+   "sha256": "75aa3cc6cc9fb6956c1c7e2a74740f1c80859145883c8d29a6887c2db9e722c6"
+  },
+  "block4-ffn.f32": {
+   "bytes": 34944,
+   "origem": "prepare_native_front_chain.py:12",
+   "sha256": "a6c76e8ee6010452dfe90ce795aa639e6bc5a786da77c7ddf2943b25259d6ad4"
+  },
+  "block4-attention.f32": {
+   "bytes": 32900,
+   "origem": "prepare_native_front_chain.py:13",
+   "sha256": "773270a49595017743cd8fb1037ca3a926f9a6c3685d6e81b811f6e36cdaeac6"
+  },
+  "block4-ds.f32": {
+   "bytes": 8192,
+   "origem": "prepare_native_front_chain.py:17",
+   "sha256": "bae6d9b7cce934afd832208a99dee7db0620dbea5a2b4798758c4418854217e6"
+  },
+  "block67-ffn.f32": {
+   "bytes": 34944,
+   "origem": "prepare_native_front_chain.py:12",
+   "sha256": "6ccb97d19840ad7325213a40fcbba45dac26a54c65b55dacaa2332d14e36b448"
+  },
+  "block67-attention.f32": {
+   "bytes": 32900,
+   "origem": "prepare_native_front_chain.py:13",
+   "sha256": "1ba99074ba3eb676fa25e22160516ca6954c2f88ffce76fd494888bee51f6764"
+  },
+  "block68-ffn.f32": {
+   "bytes": 34944,
+   "origem": "prepare_native_front_chain.py:12",
+   "sha256": "2c5012ee3d88e636ac68aac1f06f5e3da89400103b4eb540bd3cbc920d550ff2"
+  },
+  "block68-attention.f32": {
+   "bytes": 32900,
+   "origem": "prepare_native_front_chain.py:13",
+   "sha256": "6a4288ccf1b745492ad3a1afcda63de010c62ac07ee480c1eb45ed1ba4739959"
+  },
+  "block69-ffn.f32": {
+   "bytes": 34944,
+   "origem": "prepare_native_front_chain.py:12",
+   "sha256": "4c8589b3352fc8ace4d9d3a6f4af52060b8a31df93fe56b0bd4e5258dcc7f909"
+  },
+  "block69-attention.f32": {
+   "bytes": 32900,
+   "origem": "prepare_native_front_chain.py:13",
+   "sha256": "e9730dded705fff91723dd8393218e672e863819a839f503ff65cbeecff51d10"
+  },
+  "block66-weights.f32": {
+   "bytes": 8320,
+   "origem": "prepare_native_rgb512_tail69_gpu.py:14",
+   "sha256": "4f4409f94dc3c4d942b9488db2524fc947ab71b0e8d79a95d768095ff58ec94c"
+  },
+  "block66-ffn.f32": {
+   "bytes": 34944,
+   "origem": "prepare_native_rgb512_tail69_gpu.py:17",
+   "sha256": "30b9142226f6f40f946590c66f6c4e6293883676cef0fcce92b3ebf039aecdf7"
+  },
+  "block66-attention.f32": {
+   "bytes": 32900,
+   "origem": "prepare_native_rgb512_tail69_gpu.py:17",
+   "sha256": "a8894dde5fad8fa7ab5a0efdb3d125aeb14567803297581807bcfd4a5b5d1adb"
+  },
+  "post70-scales.f32": {
+   "bytes": 256,
+   "origem": "prepare_native_post70_gpu.py:17",
+   "sha256": "58cb432d6b26c2c53174098166f564d1571567ac50dbd3719986538f83555ebe"
+  },
+  "post70-head.f32": {
+   "bytes": 384,
+   "origem": "prepare_native_post70_gpu.py:17",
+   "sha256": "e44d62b9ddca4f1479fa6357557f8e26f5f1e3e775b4c594f72901821d43603c"
+  },
+  "post70-ffn.f32": {
+   "bytes": 34944,
+   "origem": "prepare_native_post70_gpu.py:19",
+   "sha256": "f20c52b673bcc127774b593cb89b05acb8c764ca100e475755b2087b98ba2c50"
+  },
+  "post70-attention.f32": {
+   "bytes": 32900,
+   "origem": "prepare_native_post70_gpu.py:20",
+   "sha256": "159213f985d93f6579ef111ebcbae44796f6e2f20367e7ab26cd02b211efb385"
+  }
+ },
+ "lacunas": {},
+ "hipoteses": {
+  "native-c64/attention-layout/skip-channels.npy": "ordem do skip da FFN (native_c64_reference.py:29); o autor mediu numa GPU NVIDIA - conferir contra o runtime AMD",
+  "native-c128/attention-layout/skip-channels.npy": "ordem do skip da FFN (native_c64_reference.py:29); o autor mediu numa GPU NVIDIA - conferir contra o runtime AMD",
+  "native-c256/attention-layout/skip-channels.npy": "ordem do skip da FFN (native_c64_reference.py:29); o autor mediu numa GPU NVIDIA - conferir contra o runtime AMD",
+  "preblock-*-layout (C32)": "fórmulas de bits de C64..C256 com d=5; skip da atenção = ordem do skip da FFN C32; conferir contra o runtime AMD"
+ }
+}

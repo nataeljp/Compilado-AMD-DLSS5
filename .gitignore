@@ -1,0 +1,23 @@
+# saidas de build
+source/optiscaler/x64/
+source/optiscaler/.vs/
+source/optiscaler/build.log
+source/lmxxf_runtime/lmxxf/
+source/adaptador/*.obj
+source/adaptador/*.res
+source/adaptador/*.dll
+source/adaptador/*.lib
+source/adaptador/*.exp
+# dependencias baixadas por buscar_externos.ps1
+source/optiscaler/external/FidelityFX-SDK/
+source/optiscaler/external/FidelityFX-SDK-v2/
+source/optiscaler/external/magic_enum/
+source/optiscaler/external/nvapi/
+source/optiscaler/external/simpleini/
+source/optiscaler/external/spdlog/
+source/optiscaler/external/unordered_dense/
+source/optiscaler/external/vulkan/
+source/optiscaler/external/xess/
+# logs e estado que o OptiScaler grava ao lado do jogo
+inteiro/*.log
+inteiro/lmxxf2_sessao.json
