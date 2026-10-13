@@ -97,6 +97,12 @@ inline void Rede(Config* c)
     SliderF("Protecao de borda", c->AmdLmxxfEdgeGuard, 0.f, 1.f,
             "Apaga a edicao atravessando bordas de profundidade, para a luz de uma superficie nao vazar como halo no "
             "objeto da frente. 0 = desligado, 1 = nenhuma edicao atravessa.");
+    Check("Rejeicao estilo TSR no arrasto", c->AmdLmxxfTsrCarry,
+          "A edicao da rede chega um quadro depois e e arrastada pelos vetores de movimento. Ligado: ela so e carregada\n"
+          "onde a cor crua do quadro dela bate com a deste, com tolerancia ao ruido aprendida por pixel (como a\n"
+          "rejeicao de sombreamento com deteccao de cintilacao do TSR): o que so pisca segura a edicao, o que mudou de\n"
+          "verdade (folha mexendo sem vetor, desoclusao) perde a edicao em vez de deixar rastro. E o Edit accumulation\n"
+          "do AMDNR tambem sem Model interleave.");
 
     if (ImGui::TreeNode("Exposicao que a rede recebe"))
     {
@@ -140,16 +146,10 @@ inline void Rede(Config* c)
                                "A rede ja rodou pelo upscaler nesta sessao: o modo captura de video so assume quando o jogo reabrir.");
         ImGui::PopTextWrapPos();
     }
-    Check("FSR1 antes da rede", c->DlssNrFsr1Input,
-          "Redimensiona a imagem que a rede recebe com o FSR1 (EASU) em vez de bilinear.\n"
-          "A resolucao de saida do FSR1 e o \"NR resolution (%)\" do cartao Desempenho da rede.");
     {
-        const bool fsr1 = c->DlssNrFsr1Input.value_or_default();
-        const float esc = c->AmdNrScale.value_or_default() * 100.f;
         const auto st = DlssNr::AmdBridge::Stats();
         if (st.width != 0 && st.height != 0)
-            ImGui::TextDisabled("A rede esta recebendo %ux%u%s", st.width, st.height,
-                                fsr1 && std::abs(esc - 100.f) > 0.5f ? " (saida do FSR1)" : "");
+            ImGui::TextDisabled("A rede esta recebendo %ux%u", st.width, st.height);
         else
         {
             ImGui::TextDisabled("A rede ainda nao recebeu quadro (tamanho aparece quando ela rodar).");
@@ -168,12 +168,11 @@ inline void Rede(Config* c)
         const bool depois = rr || pos == 1;
         const bool naFinal = pos == 2;
         const float esc = c->AmdNrScale.value_or_default();
-        const bool fsr1 = c->DlssNrFsr1Input.value_or_default() && std::abs(esc - 1.f) > 0.001f;
         if (naFinal)
             ImGui::TextDisabled("Cadeia: CAPTURA DO QUADRO (Present) > REDE > tela");
         else
-            ImGui::TextDisabled("Cadeia: %s%s > REDE (resolucao da rede %.0f%%)%s", depois ? "DEPOIS_UPSCALE" : "ANTES_UPSCALE",
-                                fsr1 ? " > FSR1" : "", esc * 100.f, rr && pos == 0 ? "  [RR ativo: depois]" : "");
+            ImGui::TextDisabled("Cadeia: %s > REDE (resolucao da rede %.0f%%)%s", depois ? "DEPOIS_UPSCALE" : "ANTES_UPSCALE",
+                                esc * 100.f, rr && pos == 0 ? "  [RR ativo: depois]" : "");
     }
     ImGui::Spacing();
 }
@@ -432,6 +431,40 @@ inline void RrJogo(Config* c)
         ImGui::SameLine();
         ImGui::TextDisabled("(%llu)", (unsigned long long) e.resets);
     }
+}
+
+// TSR proprio (upscalers/tsr): os ajustes valem na hora; o upscaler e escolhido no seletor do cartao de upscaler
+inline void Tsr(Config* c)
+{
+    auto* f = State::Instance().currentFeature;
+    const bool ativo = f != nullptr && f->GetUpscalerType() == Upscaler::TSR;
+    ImGui::PushTextWrapPos(0.0f);
+    if (ativo)
+        ImGui::TextDisabled("Ativo: %ux%u -> %ux%u", f->RenderWidth(), f->RenderHeight(), f->TargetWidth(),
+                            f->TargetHeight());
+    else
+        ImGui::TextDisabled("Escolha \"TSR (lmxxf2)\" na lista de upscalers do cartao acima (troca na hora).");
+    ImGui::TextDisabled("Upscaler temporal proprio no estilo do TSR da UE5: paralaxe pela profundidade, recorte de cor "
+                        "do historico (corta rastro de folhagem sem vetor), anti-aliasing espacial onde nao ha "
+                        "historico. Nitidez: cartao Sharpness (RCAS).");
+    ImGui::PopTextWrapPos();
+    SliderF("Amostras acumuladas", c->TsrMaxSamples, 2.f, 64.f,
+            "Quantos quadros o historico soma no maximo. Menos: responde rapido, menos rastro, mais serrilhado/ruido.\n"
+            "Mais: imagem mais estavel e lisa, mais rastro em coisa que se mexe sem vetor.", "%.0f");
+    SliderF("Rigidez do recorte", c->TsrClipGamma, 0.25f, 3.f,
+            "Largura da caixa de cor que o historico pode ter. Menos: corta mais rastro (folhagem), pode tremer.\n"
+            "Mais: mais estavel, deixa mais rastro.");
+    SliderF("Sensibilidade a desoclusao", c->TsrParallax, 0.1f, 4.f,
+            "Quanto a diferenca de profundidade entre quadros descarta o historico (objeto saindo da frente).");
+    SliderF("Anti-aliasing espacial", c->TsrSpatialAA, 0.f, 1.f,
+            "Suaviza bordas onde o historico foi descartado (o pixel novo nao tem quadros anteriores).");
+    SliderF("Protecao contra cintilacao", c->TsrFlicker, 0.f, 1.f,
+            "Rejeicao com deteccao de cintilacao: pixel cuja luz oscila quadro a quadro (brilho especular, ruido, a\n"
+            "edicao da rede DLSS5 tremendo) segura o historico em vez de piscar; mudanca de verdade continua cortando.\n"
+            "0 = desligada.");
+    SliderF("Movimento maximo protegido", c->TsrFlickerMaxVel, 0.5f, 32.f,
+            "Acima deste movimento (pixels por quadro) a protecao some: estabilizar algo que anda deixaria rastro.",
+            "%.1f");
 }
 
 // Créditos do compilado (Help / Status). O aviso do AMDNR pede o crédito visível no menu e a versão marcada como

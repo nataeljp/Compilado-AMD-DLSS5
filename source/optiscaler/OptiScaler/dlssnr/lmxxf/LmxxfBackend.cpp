@@ -192,81 +192,6 @@ cbuffer P : register(b0) { uint w; uint h; uint mode; float k; float sx; float s
 // The edit lives in the space of the frame the network was fed; the answer may be many frames
 // old at high frame rates (GTA V: one answer per ~7 frames at 160 fps), which is exactly when
 // an in-place carry ghosts and a colour gate cannot tell a moving texture from a still one.
-// [lmxxf2] FSR1 antes da rede: o mesmo papel do BlitShader (cópia que alimenta a rede, com a exposição), mas o
-// redimensionamento é o EASU do FSR1 (AMD FidelityFX, MIT; caminho float de ffx_fsr1.h, FsrEasuF + FsrEasuCon), não
-// bilinear. Só entra quando o tamanho da rede difere do quadro (Resolução da rede != 100%).
-inline constexpr char Fsr1FeedShader[] = R"(
-Texture2D<float4> src : register(t0);
-Texture2D<float> expo : register(t1);
-Texture2D<float4> edit : register(t2);
-RWTexture2D<OUT_T> dst : register(u0);
-SamplerState samp : register(s0);
-cbuffer P : register(b0) { uint w; uint h; uint mode; float k; float sx; float sy; float srcW; float srcH; }
-float RcpLo(float a) { return asfloat(0x7ef07ebbu - asuint(a)); }
-float RsqLo(float a) { return asfloat(0x5f347d74u - (asuint(a) >> 1)); }
-float4 Fin(float4 v) { return float4(isfinite(v.x) ? v.x : 0.0, isfinite(v.y) ? v.y : 0.0, isfinite(v.z) ? v.z : 0.0, isfinite(v.w) ? v.w : 0.0); }
-void Tap(inout float3 aC, inout float aW, float2 off, float2 dir, float2 len, float lob, float clp, float3 c) {
- float2 v; v.x = off.x * dir.x + off.y * dir.y; v.y = off.x * (-dir.y) + off.y * dir.x; v *= len;
- float d2 = min(v.x * v.x + v.y * v.y, clp);
- float wB = (2.0 / 5.0) * d2 - 1.0; float wA = lob * d2 - 1.0; wB *= wB; wA *= wA;
- wB = (25.0 / 16.0) * wB - (25.0 / 16.0 - 1.0);
- float wt = wB * wA; aC += c * wt; aW += wt;
-}
-void SetF(inout float2 dir, inout float len, float2 pp, uint q, float lA, float lB, float lC, float lD, float lE) {
- float wt = q == 0u ? (1.0 - pp.x) * (1.0 - pp.y) : q == 1u ? pp.x * (1.0 - pp.y) : q == 2u ? (1.0 - pp.x) * pp.y : pp.x * pp.y;
- float dc = lD - lC; float cb = lC - lB; float lenX = RcpLo(max(abs(dc), abs(cb))); float dirX = lD - lB;
- dir.x += dirX * wt; lenX = saturate(abs(dirX) * lenX); lenX *= lenX; len += lenX * wt;
- float ec = lE - lC; float ca = lC - lA; float lenY = RcpLo(max(abs(ec), abs(ca))); float dirY = lE - lA;
- dir.y += dirY * wt; lenY = saturate(abs(dirY) * lenY); lenY *= lenY; len += lenY * wt;
-}
-[numthreads(8,8,1)] void main(uint3 tid : SV_DispatchThreadID) {
- if (tid.x >= w || tid.y >= h) return;
- float2 rin = 1.0 / float2(srcW, srcH);
- float2 pp = float2(tid.xy) * float2(sx, sy) + (0.5 * float2(sx, sy) - 0.5);
- float2 fp = floor(pp); pp -= fp;
- float2 p0 = fp * rin + float2(1.0, -1.0) * rin;
- float2 p1 = p0 + float2(-1.0, 2.0) * rin; float2 p2 = p0 + float2(1.0, 2.0) * rin; float2 p3 = p0 + float2(0.0, 4.0) * rin;
- float4 bczzR = Fin(src.GatherRed(samp, p0)), bczzG = Fin(src.GatherGreen(samp, p0)), bczzB = Fin(src.GatherBlue(samp, p0));
- float4 ijfeR = Fin(src.GatherRed(samp, p1)), ijfeG = Fin(src.GatherGreen(samp, p1)), ijfeB = Fin(src.GatherBlue(samp, p1));
- float4 klhgR = Fin(src.GatherRed(samp, p2)), klhgG = Fin(src.GatherGreen(samp, p2)), klhgB = Fin(src.GatherBlue(samp, p2));
- float4 zzonR = Fin(src.GatherRed(samp, p3)), zzonG = Fin(src.GatherGreen(samp, p3)), zzonB = Fin(src.GatherBlue(samp, p3));
- float4 bczzL = bczzB * 0.5 + (bczzR * 0.5 + bczzG); float4 ijfeL = ijfeB * 0.5 + (ijfeR * 0.5 + ijfeG);
- float4 klhgL = klhgB * 0.5 + (klhgR * 0.5 + klhgG); float4 zzonL = zzonB * 0.5 + (zzonR * 0.5 + zzonG);
- float bL = bczzL.x, cL = bczzL.y, iL = ijfeL.x, jL = ijfeL.y, fL = ijfeL.z, eL = ijfeL.w;
- float kL = klhgL.x, lL = klhgL.y, hL = klhgL.z, gL = klhgL.w, oL = zzonL.z, nL = zzonL.w;
- float2 dir = 0.0; float len = 0.0;
- SetF(dir, len, pp, 0u, bL, eL, fL, gL, jL); SetF(dir, len, pp, 1u, cL, fL, gL, hL, kL);
- SetF(dir, len, pp, 2u, fL, iL, jL, kL, nL); SetF(dir, len, pp, 3u, gL, jL, kL, lL, oL);
- float2 dir2 = dir * dir; float dirR = dir2.x + dir2.y; bool zro = dirR < (1.0 / 32768.0);
- dirR = RsqLo(dirR); dirR = zro ? 1.0 : dirR; dir.x = zro ? 1.0 : dir.x; dir *= dirR;
- len = len * 0.5; len *= len;
- float stretch = (dir.x * dir.x + dir.y * dir.y) * RcpLo(max(abs(dir.x), abs(dir.y)));
- float2 len2 = float2(1.0 + (stretch - 1.0) * len, 1.0 - 0.5 * len);
- float lob = 0.5 + ((1.0 / 4.0 - 0.04) - 0.5) * len; float clp = RcpLo(lob);
- float3 f3 = float3(ijfeR.z, ijfeG.z, ijfeB.z), g3 = float3(klhgR.w, klhgG.w, klhgB.w), j3 = float3(ijfeR.y, ijfeG.y, ijfeB.y), k3 = float3(klhgR.x, klhgG.x, klhgB.x);
- float3 min4 = min(min(f3, min(g3, j3)), k3); float3 max4 = max(max(f3, max(g3, j3)), k3);
- float3 aC = 0.0; float aW = 0.0;
- Tap(aC, aW, float2(0.0, -1.0) - pp, dir, len2, lob, clp, float3(bczzR.x, bczzG.x, bczzB.x));
- Tap(aC, aW, float2(1.0, -1.0) - pp, dir, len2, lob, clp, float3(bczzR.y, bczzG.y, bczzB.y));
- Tap(aC, aW, float2(-1.0, 1.0) - pp, dir, len2, lob, clp, float3(ijfeR.x, ijfeG.x, ijfeB.x));
- Tap(aC, aW, float2(0.0, 1.0) - pp, dir, len2, lob, clp, j3);
- Tap(aC, aW, float2(0.0, 0.0) - pp, dir, len2, lob, clp, f3);
- Tap(aC, aW, float2(-1.0, 0.0) - pp, dir, len2, lob, clp, float3(ijfeR.w, ijfeG.w, ijfeB.w));
- Tap(aC, aW, float2(1.0, 1.0) - pp, dir, len2, lob, clp, k3);
- Tap(aC, aW, float2(2.0, 1.0) - pp, dir, len2, lob, clp, float3(klhgR.y, klhgG.y, klhgB.y));
- Tap(aC, aW, float2(2.0, 0.0) - pp, dir, len2, lob, clp, float3(klhgR.z, klhgG.z, klhgB.z));
- Tap(aC, aW, float2(1.0, 0.0) - pp, dir, len2, lob, clp, g3);
- Tap(aC, aW, float2(1.0, 2.0) - pp, dir, len2, lob, clp, float3(zzonR.z, zzonG.z, zzonB.z));
- Tap(aC, aW, float2(0.0, 2.0) - pp, dir, len2, lob, clp, float3(zzonR.w, zzonG.w, zzonB.w));
- float3 c = min(max4, max(min4, aC / aW));
- if (!all(isfinite(c))) c = 0.0;
- float2 uv = ((float2(tid.xy) + 0.5) * float2(sx, sy)) / float2(srcW, srcH);
- float a = src.SampleLevel(samp, uv, 0).a; if (!isfinite(a)) a = 1.0;
- float4 v = float4(max(c, 0.0), a);
- if ((mode & 1u) != 0u) { float e = expo.Load(int3(0,0,0)).r; v.rgb *= e; }
- dst[tid.xy] = (OUT_T) v;
-}
-)";
 inline constexpr char LumaDownShader[] = R"(
 Texture2D<float4> src : register(t0);
 RWTexture2D<float> dst : register(u0);
@@ -1161,8 +1086,6 @@ struct Backend::Impl
     UINT vkWarmW = 0, vkWarmH = 0;
     double cpuWaitMax = 0.0;
     std::unique_ptr<Pass> exposurePass, blitColour, blitMotion, motionChain, residual, lookPass, blitDepth;
-    std::unique_ptr<Pass> fsr1Feed; // [lmxxf2] FSR1 (EASU) na cópia que alimenta a rede
-    Pass* lastFeedPass = nullptr; // [lmxxf2] só para o log
     std::unique_ptr<Pass> lightPass; // [lmxxf2-luz]
     std::unique_ptr<Pass> autoExposure; // the loop above, when the title publishes no exposure
     // No-motion mode (final image): the edit in the space of the frame it belongs to (ping-pong),
@@ -2287,15 +2210,6 @@ ID3D12Resource* Backend::Impl::Record(ID3D12GraphicsCommandList* cmd, const AmdP
         const D3D_SHADER_MACRO m2[] = { { "OUT_T", "float2" }, { nullptr, nullptr } };
         exposurePass = std::make_unique<Pass>(device.Get(), ExposureShader, sizeof(ExposureShader), "lmxxf exposure", 1u, nullptr);
         blitColour = std::make_unique<Pass>(device.Get(), BlitShader, sizeof(BlitShader), "lmxxf blit", 3u, m4);
-        try // [lmxxf2] opcional: sem ele a entrada segue no blit bilinear
-        {
-            fsr1Feed = std::make_unique<Pass>(device.Get(), Fsr1FeedShader, sizeof(Fsr1FeedShader), "lmxxf fsr1 feed", 3u, m4);
-        }
-        catch (const std::exception& e)
-        {
-            fsr1Feed.reset();
-            Log(std::string("lmxxf: FSR1 feed unavailable: ") + e.what());
-        }
         blitMotion = std::make_unique<Pass>(device.Get(), BlitShader, sizeof(BlitShader), "lmxxf motion blit", 3u, m2);
         motionChain = std::make_unique<Pass>(device.Get(), MotionChainShader, sizeof(MotionChainShader), "lmxxf motion chain", 2u, nullptr);
         residual = std::make_unique<Pass>(device.Get(), ResidualShader, sizeof(ResidualShader), "lmxxf residual", 4u, nullptr);
@@ -2754,7 +2668,9 @@ ID3D12Resource* Backend::Impl::Record(ID3D12GraphicsCommandList* cmd, const AmdP
     // has the full note): this frame's raw + the carried edit on every frame, validated raw against
     // raw, each answer spread over two frames, the stored edit never multiplied by `keep`. With
     // interleave off, or in no-motion mode (its own carry), the classic carry (9) runs as before.
-    const bool accumulate = cfg.interleave >= 2.f && cfg.interleavePreset == 10 && !noMotion;
+    // [lmxxf2] e também com a rede todo quadro quando a rejeição estilo TSR está ligada (AmdLmxxfTsrCarry): a mesma
+    // validação cor crua contra cor crua corta a edição arrastada onde a folhagem anda sem vetor
+    const bool accumulate = ((cfg.interleave >= 2.f && cfg.interleavePreset == 10) || cfg.lmxxfTsrCarry) && !noMotion;
     if (int(accumulate) != loggedFillMode)
     {
         loggedFillMode = int(accumulate);
@@ -3290,18 +3206,8 @@ ID3D12Resource* Backend::Impl::Record(ID3D12GraphicsCommandList* cmd, const AmdP
             ID3D12Resource* srv2[3] = { full.Get(), expoJob.Get(), full.Get() };
             const DXGI_FORMAT fmts2[3] = { kFp16, DXGI_FORMAT_R32_FLOAT, kFp16 };
             Barrier(cmd, fed.Get(), kSrv, kUav);
-            // [lmxxf2] FSR1 antes da rede: com o tamanho da rede diferente do quadro, o EASU redimensiona a entrada
-            Pass* feed = cfg.fsr1Feed && (mw != w || mh != h) && fsr1Feed ? fsr1Feed.get() : blitColour.get();
-            if (feed != lastFeedPass) // [lmxxf2] uma linha por troca: qual amostragem alimenta a rede
-            {
-                lastFeedPass = feed;
-                const std::string statusKept = status; // só no arquivo: o status é o que o menu mostra
-                Log("lmxxf: network input " + std::to_string(w) + "x" + std::to_string(h) + " -> " + std::to_string(mw) + "x" +
-                    std::to_string(mh) + (feed == fsr1Feed.get() ? " via FSR1 (EASU)" : " via bilinear blit"));
-                status = statusKept;
-            }
-            feed->Run(cmd, srv2, fmts2, fed.Get(), kFp16, mw, mh, 1u,
-                      float(w) / float(mw), float(h) / float(mh), float(w), float(h));
+            blitColour->Run(cmd, srv2, fmts2, fed.Get(), kFp16, mw, mh, 1u,
+                            float(w) / float(mw), float(h) / float(mh), float(w), float(h));
             Barrier(cmd, fed.Get(), kUav, kSrv);
         }
         // The network's temporal history (upstream's path): the vectors at the model's size, raw

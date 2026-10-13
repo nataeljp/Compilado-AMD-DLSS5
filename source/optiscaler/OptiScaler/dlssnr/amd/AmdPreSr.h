@@ -114,7 +114,6 @@ struct Settings
     UINT slots = 3;
     bool toneChannels = false;
     float modelScale = 1;
-    bool fsr1Feed = false; // [lmxxf2] entrada da rede redimensionada com FSR1 (EASU) em vez de bilinear
     UINT sizeStep = 64; // leak audit R4 (0.3.3.2 rebuild): danielblnc working-size snap, see AmdPreSr.cpp
     // Temporal stabilisation of the final NR colour (0 off = byte-identical,
     // 1 max history). Motion-reprojected, neighbourhood-clamped feedback run on
@@ -180,6 +179,10 @@ struct Settings
     // lmxxf only: feed the network its own previous answer, reprojected by the motion vectors,
     // as temporal history (upstream's temporal path; off = every answer from scratch).
     bool lmxxfHistory = true;
+    // [lmxxf2] o arrasto da edição usa o Edit accumulation (preset 11) também com a rede todo quadro: a edição só é
+    // carregada onde a cor crua do quadro dela e a deste batem, com a tolerância ao ruído aprendida por pixel (o que
+    // pisca segura, o que mudou de verdade - folha sem vetor - perde a edição). Ver TemporalStability.h, preset 11.
+    bool lmxxfTsrCarry = true;
     // lmxxf only, "Full network" ([DlssNr] LmxxfFullNetwork): run all 71 blocks instead of the
     // runtime's production schedule (blocks 42, 43, 46 skipped; about 1 ms at 1080p). A change
     // rebuilds the runtime's network at the next model frame (LMXXF_NR_FRAME_FLAG_FULL_NETWORK).

@@ -1107,6 +1107,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             AmdInterleaveFreshHistory.set_from_config(readBool("DlssNr", "AmdInterleaveFreshHistory"));
             AmdInterleaveModelHistory.set_from_config(readBool("DlssNr", "AmdInterleaveModelHistory"));
             AmdLmxxfHistory.set_from_config(readBool("DlssNr", "AmdLmxxfHistory"));
+            AmdLmxxfTsrCarry.set_from_config(readBool("DlssNr", "AmdLmxxfTsrCarry")); // [lmxxf2]
             LmxxfFullNetwork.set_from_config(readBool("DlssNr", "LmxxfFullNetwork"));
             AmdLmxxfEditDetail.set_from_config(readFloat("DlssNr", "AmdLmxxfEditDetail"));
             AmdLmxxfEditSaturation.set_from_config(readFloat("DlssNr", "AmdLmxxfEditSaturation"));
@@ -1171,6 +1172,12 @@ bool Config::Reload(std::filesystem::path iniPath)
             AmdRtgiFade.set_from_config(readFloat("AmdRtgi", "Fade"));
             AmdRtgiFov.set_from_config(readFloat("AmdRtgi", "Fov"));
             AmdRtgiFarPlane.set_from_config(readFloat("AmdRtgi", "FarPlane"));
+            TsrMaxSamples.set_from_config(readFloat("TSR", "MaxSamples")); // [lmxxf2]
+            TsrClipGamma.set_from_config(readFloat("TSR", "ClipGamma"));
+            TsrParallax.set_from_config(readFloat("TSR", "Parallax"));
+            TsrSpatialAA.set_from_config(readFloat("TSR", "SpatialAA"));
+            TsrFlicker.set_from_config(readFloat("TSR", "Flicker"));
+            TsrFlickerMaxVel.set_from_config(readFloat("TSR", "FlickerMaxVelocity"));
             RrJogoAjustar.set_from_config(readBool("RayRegenJogo", "Ajustar"));
             RrJogoCrossBlNormStr.set_from_config(readFloat("RayRegenJogo", "CrossBilateralNormal"));
             RrJogoStabilityBias.set_from_config(readFloat("RayRegenJogo", "StabilityBias"));
@@ -1216,7 +1223,6 @@ bool Config::Reload(std::filesystem::path iniPath)
             AmdLookFlatAreaProtection.set_from_config(readFloat("AmdLook", "FlatAreaProtection"));
             AmdLookInspect.set_from_config(readUInt("AmdLook", "Inspect"));
             AmdLookStrength.set_from_config(readInt("AmdLook", "Strength")); // [lmxxf2]
-            DlssNrFsr1Input.set_from_config(readBool("DlssNr", "Fsr1Input")); // [lmxxf2]
             Lmxxf2Placement.set_from_config(readInt("DlssNr", "Placement")); // [lmxxf2]
             Lmxxf2ModoSeguro.set_from_config(readBool("DlssNr", "ModoSeguro")); // [lmxxf2]
             Lmxxf2MenuShowAll.set_from_config(readBool("Menu", "Lmxxf2ShowAll")); // [lmxxf2]
@@ -2299,6 +2305,7 @@ bool Config::SaveIni()
     ini.SetValue("DlssNr", "AmdInterleaveFreshHistory", GetBoolValue(Instance()->AmdInterleaveFreshHistory.value_for_config()).c_str());
     ini.SetValue("DlssNr", "AmdInterleaveModelHistory", GetBoolValue(Instance()->AmdInterleaveModelHistory.value_for_config()).c_str());
     ini.SetValue("DlssNr", "AmdLmxxfHistory", GetBoolValue(Instance()->AmdLmxxfHistory.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "AmdLmxxfTsrCarry", GetBoolValue(Instance()->AmdLmxxfTsrCarry.value_for_config()).c_str()); // [lmxxf2]
     ini.SetValue("DlssNr", "LmxxfFullNetwork", GetBoolValue(Instance()->LmxxfFullNetwork.value_for_config()).c_str());
     ini.SetValue("DlssNr", "AmdLmxxfEditDetail", GetFloatValue(Instance()->AmdLmxxfEditDetail.value_for_config()).c_str());
     ini.SetValue("DlssNr", "AmdLmxxfEditSaturation", GetFloatValue(Instance()->AmdLmxxfEditSaturation.value_for_config()).c_str());
@@ -2357,6 +2364,12 @@ bool Config::SaveIni()
     ini.SetValue("AmdRtgi", "Fade", GetFloatValue(Instance()->AmdRtgiFade.value_for_config()).c_str());
     ini.SetValue("AmdRtgi", "Fov", GetFloatValue(Instance()->AmdRtgiFov.value_for_config()).c_str());
     ini.SetValue("AmdRtgi", "FarPlane", GetFloatValue(Instance()->AmdRtgiFarPlane.value_for_config()).c_str());
+    ini.SetValue("TSR", "MaxSamples", GetFloatValue(Instance()->TsrMaxSamples.value_for_config()).c_str()); // [lmxxf2]
+    ini.SetValue("TSR", "ClipGamma", GetFloatValue(Instance()->TsrClipGamma.value_for_config()).c_str());
+    ini.SetValue("TSR", "Parallax", GetFloatValue(Instance()->TsrParallax.value_for_config()).c_str());
+    ini.SetValue("TSR", "SpatialAA", GetFloatValue(Instance()->TsrSpatialAA.value_for_config()).c_str());
+    ini.SetValue("TSR", "Flicker", GetFloatValue(Instance()->TsrFlicker.value_for_config()).c_str());
+    ini.SetValue("TSR", "FlickerMaxVelocity", GetFloatValue(Instance()->TsrFlickerMaxVel.value_for_config()).c_str());
     ini.SetValue("RayRegenJogo", "Ajustar", GetBoolValue(Instance()->RrJogoAjustar.value_for_config()).c_str());
     ini.SetValue("RayRegenJogo", "CrossBilateralNormal", GetFloatValue(Instance()->RrJogoCrossBlNormStr.value_for_config()).c_str());
     ini.SetValue("RayRegenJogo", "StabilityBias", GetFloatValue(Instance()->RrJogoStabilityBias.value_for_config()).c_str());
@@ -2396,7 +2409,6 @@ bool Config::SaveIni()
     ini.SetValue("AmdLook", "FlatAreaProtection", GetFloatValue(Instance()->AmdLookFlatAreaProtection.value_for_config()).c_str());
     ini.SetValue("AmdLook", "Inspect", GetIntValue(Instance()->AmdLookInspect.value_for_config()).c_str());
         ini.SetValue("AmdLook", "Strength", GetIntValue(Instance()->AmdLookStrength.value_for_config()).c_str()); // [lmxxf2]
-        ini.SetValue("DlssNr", "Fsr1Input", GetBoolValue(Instance()->DlssNrFsr1Input.value_for_config()).c_str()); // [lmxxf2]
         ini.SetValue("DlssNr", "Placement", GetIntValue(Instance()->Lmxxf2Placement.value_for_config()).c_str()); // [lmxxf2]
         ini.SetValue("DlssNr", "ModoSeguro", GetBoolValue(Instance()->Lmxxf2ModoSeguro.value_for_config()).c_str()); // [lmxxf2]
         ini.SetValue("Menu", "Lmxxf2ShowAll", GetBoolValue(Instance()->Lmxxf2MenuShowAll.value_for_config()).c_str()); // [lmxxf2]

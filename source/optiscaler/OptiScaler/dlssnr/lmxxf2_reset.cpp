@@ -32,13 +32,13 @@ const Cartao kCartoes[] = {
             Zera(c->AmdLmxxfEditDetail);
             Zera(c->AmdLmxxfEditSaturation);
             Zera(c->AmdLmxxfHighlightChromaGuard);
+            Zera(c->AmdLmxxfTsrCarry);
             Zera(c->AmdResidualIntensity);
             Zera(c->AmdResidualLimit);
             Zera(c->AmdRuntimeStyle);
             Zera(c->AmdUseGameExposure);
             Zera(c->AmdVkLateCopyWait);
             Zera(c->DlssNrAutoMask);
-            Zera(c->DlssNrFsr1Input);
             Zera(c->DlssNrLocalStructure);
             Zera(c->DlssNrLocalTone);
             Zera(c->DlssNrSkinStructure);
@@ -233,6 +233,14 @@ const Cartao kCartoes[] = {
             Zera(c->RrJogoMaxRadiance);
             Zera(c->RrJogoRadianceClip);
             Zera(c->RrJogoStabilityBias);
+        } },
+        { "lmxxf2_tsr", 6, [](Config* c) {
+            Zera(c->TsrClipGamma);
+            Zera(c->TsrFlicker);
+            Zera(c->TsrFlickerMaxVel);
+            Zera(c->TsrMaxSamples);
+            Zera(c->TsrParallax);
+            Zera(c->TsrSpatialAA);
         } },
         { "sharpness", 14, [](Config* c) {
             Zera(c->Contrast);

@@ -24,6 +24,7 @@ FORA = re.compile(r'^(FGEnabled|DlssNrEnabled|DLSSEnabled|AmdRtgiEnabled|AmdLook
 EXTRA = {
     'lmxxf2_rrjogo': ['RrJogo*'],
     'lmxxf2_gi': ['AmdRtgi*'],
+    'lmxxf2_tsr': ['Tsr*'],
     'menu_scale': ['MenuScale', 'MenuWidth', 'MenuHeight', 'FontSize'],
 }
 # membros que aparecem em vários cartões (ajudantes comuns) ficam só no cartão dono

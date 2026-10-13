@@ -20,6 +20,20 @@ publicar é que mais gente consiga estudar, montar o próprio e fazer melhor.
 - **Controles da rede**: estilo, tom, estrutura, pele, máscara de personagem, força do detalhe/cor/resíduo, edição,
   exposição; presets e estilos salvos, desempenho e qualidade do AMDNR; filtro de aparência; iluminação
   **RenoDRT / ACES**; **RTGI** (GI de tela).
+- **Rejeição estilo TSR no arrasto da edição da rede**: a edição do lmxxf chega um quadro depois e é levada pelos
+  vetores de movimento; agora ela só é carregada onde a cor crua do quadro dela bate com a deste, com tolerância ao
+  ruído aprendida por pixel (o "Edit accumulation" do AMDNR, também sem Model interleave). O que só pisca segura a
+  edição; folhagem que anda sem vetor perde a edição em vez de deixar rastro.
+- **TSR próprio** (`TSR (lmxxf2)` na lista de upscalers, `Dx12Upscaler=tsr` no ini): upscaler temporal escrito do zero
+  seguindo as etapas que a Epic descreve publicamente para o TSR da UE5 (nenhum código da Unreal):
+  - heurística de paralaxe (desoclusão pela profundidade reprojetada);
+  - anti-aliasing espacial onde não há histórico;
+  - histórico com recorte por variância em YCoCg;
+  - **rejeição de sombreamento com detecção de cintilação**, que conta em tempo e não em quadros (como o ajuste ao
+    frame rate do TSR), então se comporta igual com FreeSync/VRR.
+
+  Os ajustes ficam no cartão "TSR (lmxxf2)" da aba Upscaling: amostras, rigidez do recorte, desoclusão,
+  anti-aliasing, proteção contra cintilação e movimento máximo protegido.
 - **Ray Regeneration**:
   - **FSR-RR** (denoiser AMD FFX 1.2 + FSR no lugar do DLSS Ray Reconstruction);
   - o **Ray Regeneration do próprio jogo** (ex.: Crimson Desert) agora recebe os ajustes que o jogo manda (o
@@ -95,7 +109,9 @@ O caminho que este compilado seguiu, peça por peça:
    a rede e devolve a cor editada ao upscaler; `lmxxf/LmxxfBackend.cpp` é o lado do runtime lmxxf; o modo captura de
    vídeo está em `amd/PresentExperimental.h`.
 4. **Adaptador** (`source/adaptador`): traduz a API de runtime que o AMDNR espera para a do lmxxf.
-5. **Menu** (`source/optiscaler/OptiScaler/menu/lmxxf2_menu.inl` e `menu_common.cpp`).
+5. **TSR próprio** (`source/optiscaler/OptiScaler/upscalers/tsr/`): `TsrShaders.h` tem os três passes (paralaxe,
+   anti-aliasing, histórico) e `TsrFeature_Dx12.cpp` liga ao OptiScaler como mais um upscaler.
+6. **Menu** (`source/optiscaler/OptiScaler/menu/lmxxf2_menu.inl` e `menu_common.cpp`).
 
 ## Créditos
 

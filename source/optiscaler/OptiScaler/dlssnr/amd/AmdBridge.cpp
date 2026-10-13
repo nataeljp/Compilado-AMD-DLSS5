@@ -962,7 +962,6 @@ static AmdPreSr::Settings BuildSettings(float sessionScale)
     s.look.flatAreaProtection = cfg.AmdLookFlatAreaProtection.value_or_default();
     s.look.inspect = cfg.AmdLookInspect.value_or_default();
     s.look.strength = UINT(std::clamp(cfg.AmdLookStrength.value_or_default(), 1, 4)); // [lmxxf2]
-    s.fsr1Feed = cfg.DlssNrFsr1Input.value_or_default(); // [lmxxf2]
     s.look.tone = cfg.AmdLookTone.value_or_default();
     s.look.exposureEV = cfg.AmdLookExposureEV.value_or_default();
     s.look.contrast = cfg.AmdLookContrast.value_or_default();
@@ -1052,6 +1051,7 @@ static AmdPreSr::Settings BuildSettings(float sessionScale)
         s.interleaveFreshHistory = cfg.AmdInterleaveFreshHistory.value_or_default();
         s.interleaveModelHistory = cfg.AmdInterleaveModelHistory.value_or_default();
         s.lmxxfHistory = cfg.AmdLmxxfHistory.value_or_default();
+    s.lmxxfTsrCarry = cfg.AmdLmxxfTsrCarry.value_or_default(); // [lmxxf2]
         s.lmxxfFullNetwork = cfg.LmxxfFullNetwork.value_or_default();
         s.lmxxfEditDetail = std::clamp(cfg.AmdLmxxfEditDetail.value_or_default(), 0.f, 2.f);
         s.lmxxfEditSaturation = std::clamp(cfg.AmdLmxxfEditSaturation.value_or_default(), 0.f, 2.f);

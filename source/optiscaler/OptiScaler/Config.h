@@ -853,6 +853,8 @@ class Config
     CustomOptional<bool> AmdInterleaveFreshHistory { false };
     CustomOptional<bool> AmdInterleaveModelHistory { false };
     CustomOptional<bool> AmdLmxxfHistory { true };
+    // [lmxxf2] rejeição estilo TSR no arrasto da edição (Edit accumulation também sem Model interleave)
+    CustomOptional<bool> AmdLmxxfTsrCarry { true };
     CustomOptional<bool> LmxxfFullNetwork { false };
     CustomOptional<float> AmdLmxxfEditDetail { 1.0f };
     CustomOptional<float> AmdLmxxfEditSaturation { 1.0f };
@@ -911,6 +913,13 @@ class Config
     CustomOptional<float> AmdRtgiFov { 60 };
     CustomOptional<float> AmdRtgiFarPlane { 600 };
     // [lmxxf2] Ray Regeneration do jogo (denoiser FFX 1.2 que o jogo cria): sem valor = o que o jogo pediu
+    // [lmxxf2] TSR proprio (upscalers/tsr)
+    CustomOptional<float> TsrMaxSamples { 16.0f }; // amostras acumuladas no maximo: menos = menos rastro, mais ruido
+    CustomOptional<float> TsrClipGamma { 1.0f };   // largura do recorte de cor do historico: menos = menos rastro
+    CustomOptional<float> TsrParallax { 1.0f };    // sensibilidade a desoclusao pela profundidade
+    CustomOptional<float> TsrSpatialAA { 0.5f };   // anti-aliasing espacial onde nao ha historico
+    CustomOptional<float> TsrFlicker { 0.75f };    // rejeicao com deteccao de cintilacao (0 = desligada)
+    CustomOptional<float> TsrFlickerMaxVel { 4.0f }; // px de render: movimento acima disso nao e protegido
     CustomOptional<bool> RrJogoAjustar { false };
     CustomOptional<float, NoDefault> RrJogoCrossBlNormStr;
     CustomOptional<float, NoDefault> RrJogoStabilityBias;
@@ -956,7 +965,6 @@ class Config
     CustomOptional<float> AmdLookFlatAreaProtection { 0.0f };
     CustomOptional<uint32_t> AmdLookInspect { 0 };
     CustomOptional<int> AmdLookStrength { 1 }; // [lmxxf2] força do filtro: 1x..4x
-    CustomOptional<bool> DlssNrFsr1Input { false }; // [lmxxf2] entrada da rede redimensionada com FSR1 (EASU)
     CustomOptional<int> Lmxxf2Placement { 0 }; // [lmxxf2] 0 = rede antes do upscale, 1 = depois (na saída)
     CustomOptional<bool> Lmxxf2ModoSeguro { true }; // [lmxxf2] aprende com queda no carregamento (dlssnr/lmxxf2_seguro.h)
     CustomOptional<bool> Lmxxf2MenuShowAll { false }; // [lmxxf2] mostra as abas ocultas do OptiScaler

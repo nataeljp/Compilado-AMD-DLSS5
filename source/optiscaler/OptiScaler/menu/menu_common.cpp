@@ -906,7 +906,8 @@ void MenuCommon::AddDx11Backends(Upscaler upscaler)
 void MenuCommon::AddDx12Backends(Upscaler upscaler)
 {
     RenderUpscalerCombo(API::DX12, upscaler,
-                        { Upscaler::XeSS, Upscaler::FSR21, Upscaler::FSR22, Upscaler::FFX, Upscaler::DLSS });
+                        { Upscaler::XeSS, Upscaler::FSR21, Upscaler::FSR22, Upscaler::FFX, Upscaler::DLSS,
+                          Upscaler::TSR }); // [lmxxf2] TSR proprio
 }
 
 void MenuCommon::AddVulkanBackends(Upscaler upscaler)
@@ -8287,6 +8288,8 @@ const MenuCommon::MenuBox* MenuCommon::GetMenuBoxes(size_t& count)
           [](RenderMenuContext& c) { if (IsUpscalerActive(c.currentFeature)) RenderCard(c, RenderActiveUpscalerSettings); } },
         { "lmxxf2_rrjogo", "Upscaling", "Ray Regeneration do jogo (AMD)",
           [](RenderMenuContext& c) { RenderCard(c, [](RenderMenuContext& cc) { SectionTitle("Ray Regeneration do jogo (AMD)"); Lmxxf2Menu::RrJogo(cc.config); }); } },
+        { "lmxxf2_tsr", "Upscaling", "TSR (lmxxf2)",
+          [](RenderMenuContext& c) { RenderCard(c, [](RenderMenuContext& cc) { SectionTitle("TSR (lmxxf2)"); Lmxxf2Menu::Tsr(cc.config); }); } },
         { "sharpness", "Upscaling", "Sharpness",
           [](RenderMenuContext& c) { if (IsUpscalerActive(c.currentFeature)) RenderCard(c, RenderActiveImageSettings); } },
         { "upscale_ratio", "Upscaling", "Upscale Ratio Override",
