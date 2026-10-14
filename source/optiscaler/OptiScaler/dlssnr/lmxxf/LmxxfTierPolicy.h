@@ -59,38 +59,21 @@ inline bool FreeFits(unsigned w, unsigned h)
     FreeProcessing(w, h, pw, ph);
     return pw <= 8192u && ph <= 8192u && 1ull * pw * ph <= 3840ull * 2176ull;
 }
-// O tamanho exato da rede. Screen Percentage (25..200, o do TSR; acima de 100 a rede recebe uma copia ampliada): cada eixo
-// do quadro x SP. 0: o quadro x NR resolution encaixado em 1920x1080 (o teto dos degraus). Depois, o que nao couber na
-// superficie do runtime encolhe 1% por vez, mantendo a proporcao.
-inline void FreeNetworkSize(unsigned frameW, unsigned frameH, float nrScale, float screenPct, unsigned& mw, unsigned& mh)
+// [lmxxf2] Tamanho FIXO da rede: a altura escolhida (0 = a do quadro) e a largura pela proporcao do quadro (16:9, 21:9,
+// o que for). O que nao couber na superficie do runtime encolhe 1% por vez, mantendo a proporcao. A rede pode ser maior
+// que o quadro ("Antes do upscale" com o quadro de render): o TSR da rede reduz a edicao para o quadro.
+inline void FixedNetworkSize(unsigned frameW, unsigned frameH, unsigned height, unsigned& mw, unsigned& mh)
 {
     frameW = (std::max)(frameW, 1u);
     frameH = (std::max)(frameH, 1u);
-    double fw, fh;
-    if (screenPct > 0.f)
-    {
-        const double sp = std::clamp(double(screenPct), 25.0, 200.0) / 100.0;
-        fw = frameW * sp;
-        fh = frameH * sp;
-    }
-    else
-    {
-        const double s = std::clamp(double(nrScale), 0.25, 2.0);
-        fw = frameW * s;
-        fh = frameH * s;
-        if (fw > 1920.0 || fh > 1080.0)
-        {
-            const double k = (std::min)(1920.0 / fw, 1080.0 / fh);
-            fw *= k;
-            fh *= k;
-        }
-    }
-    // o minimo do runtime (320 nos dois eixos), mantendo a proporcao enquanto der
+    const double aspect = double(frameW) / double(frameH);
+    double fh = height > 0u ? double(height) : double(frameH);
+    double fw = fh * aspect;
     if (fh < 320.0) { fw *= 320.0 / fh; fh = 320.0; }
     if (fw < 320.0) { fh *= 320.0 / fw; fw = 320.0; }
     mw = static_cast<unsigned>(std::lround(fw));
     mh = static_cast<unsigned>(std::lround(fh));
-    for (int i = 0; i < 200 && !FreeFits(mw, mh) && mw > 320u && mh > 320u; ++i)
+    for (int i = 0; i < 400 && !FreeFits(mw, mh) && mw > 320u && mh > 320u; ++i)
     {
         fw *= 0.99;
         fh *= 0.99;
@@ -98,6 +81,13 @@ inline void FreeNetworkSize(unsigned frameW, unsigned frameH, float nrScale, flo
         mh = (std::max)(320u, static_cast<unsigned>(std::lround(fh)));
     }
 }
+// a altura cabe inteira na superficie do runtime, na proporcao do quadro (o menu so oferece as que cabem)
+inline bool FixedHeightFits(unsigned frameW, unsigned frameH, unsigned height)
+{
+    const double aspect = double((std::max)(frameW, 1u)) / double((std::max)(frameH, 1u));
+    return FreeFits(static_cast<unsigned>(std::lround(height * aspect)), height);
+}
+
 // custo relativo estimado: pixels de processamento contra os do degrau de 1080 (1920x1152). O CHANGELOG do lmxxf mede
 // 1440p ~1,7x e 4K ~3,6x, o que esta conta da com folga de poucos %.
 inline double FreeCostVs1080(unsigned w, unsigned h)

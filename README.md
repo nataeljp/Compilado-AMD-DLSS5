@@ -21,9 +21,11 @@ publicar é que mais gente consiga estudar, montar o próprio e fazer melhor.
   exposição; presets e estilos salvos, desempenho e qualidade do AMDNR; filtro de aparência; iluminação
   **RenoDRT / ACES**; **RTGI** (GI de tela).
 - **Resolução livre da rede, de 720p a 4K**: o runtime lmxxf roda o tamanho exato pedido
-  (`DLSS5_NETWORK_FREE_RES`), sem os três degraus 720/900/1080 nem o teto de 1920x1080. O tamanho é escolhido por
-  **Screen Percentage da rede**, como o do TSR: 50% de uma saída 4K = 1920x1080, 100% = 3840x2160. Pelas medições do
-  lmxxf, 1440p custa cerca de 1,7x e 4K cerca de 3,6x a rede em 1080p.
+  (`DLSS5_NETWORK_FREE_RES`), sem os três degraus 720/900/1080 nem o teto de 1920x1080.
+  - O tamanho é **fixo**, escolhido numa lista (igual ao quadro, 720p, 900p, 1080p, 1440p, 2160p) com só as
+    resoluções que cabem no display, na proporção do quadro.
+  - Ele nunca muda durante o jogo, porque cada troca recria a rede e trava um instante.
+  - Pelas medições do lmxxf, 1440p custa cerca de 1,7x e 4K cerca de 3,6x a rede em 1080p.
 - **TSR da rede DLSS5** (aba DLSS5, cartão "Resolução e TSR da rede"): o acúmulo temporal do TSR da UE5, escrito do zero
   a partir das etapas que a Epic descreve publicamente (nenhum código da Unreal), aplicado na **edição da rede**, não no
   quadro do jogo. O upscaler do jogo (FSR4 etc.) continua o mesmo e o quadro dele fica intacto.
@@ -39,8 +41,10 @@ publicar é que mais gente consiga estudar, montar o próprio e fazer melhor.
     - detecção de cintilação que conta em tempo, não em quadros, e por isso funciona igual com FreeSync/VRR.
 
     Onde o histórico é rejeitado, a edição some em vez de deixar rastro.
-  - O Screen Percentage pode vir da **vazão alvo** (padrão 124,4 MP/s, a referência da Epic): pixels da rede =
-    alvo ÷ respostas por segundo, entre um mínimo e um máximo de SP.
+  - O TSR leva a edição da rede até o quadro: amplia se a rede é menor, reduz se é maior.
+  - **Ritmo da rede**: todo quadro, **alvo de vazão** (padrão 124,4 MP/s, a referência da Epic) ou **alvo de FPS**.
+    Com o tamanho fixo, os alvos escolhem em quantos quadros a rede roda; o TSR acumula no tempo, então nada é
+    recriado.
   - **Ressurreição de histórico**: grava dois quadros persistentes a cada 31 quadros. Onde o histórico é descartado,
     a edição volta se a vizinhança da cor crua bate. O TSR da Epic reprojeta esses quadros pelas matrizes da câmera,
     que o jogo não entrega ao upscaler; aqui a comparação é no mesmo lugar da tela, então ajuda com a câmera parada.

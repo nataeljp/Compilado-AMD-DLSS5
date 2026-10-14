@@ -858,6 +858,9 @@ class Config
     // [lmxxf2] resolucao livre da rede: o runtime roda o tamanho exato pedido (DLSS5_NETWORK_FREE_RES=1), sem os degraus
     // 720/900/1080, ate a superficie 4K dele. O runtime le a flag uma vez por processo: vale ao reabrir o jogo.
     CustomOptional<bool> AmdLmxxfFreeRes { true };
+    // [lmxxf2] altura FIXA da rede com a resolucao livre: 720 / 900 / 1080 / 1440 / 2160 / 4320 (a largura segue a
+    // proporcao do quadro), 0 = a do quadro. Fixa porque cada troca de tamanho recria a rede e trava o jogo um instante.
+    CustomOptional<int> AmdLmxxfNetHeight { 1080 };
     CustomOptional<bool> LmxxfFullNetwork { false };
     CustomOptional<float> AmdLmxxfEditDetail { 1.0f };
     CustomOptional<float> AmdLmxxfEditSaturation { 1.0f };
@@ -920,12 +923,12 @@ class Config
     CustomOptional<bool> TsrRede { true };         // liga o TSR na edicao da rede
     CustomOptional<bool> TsrJitter { true };       // jitter subpixel na entrada da rede (a edicao converge para a saida)
     CustomOptional<bool> TsrResurrection { true }; // ressurreicao de historico (2 quadros persistentes, a cada 31 quadros)
-    // Screen Percentage da rede pela vazao do TSR: (pixels da rede) x (respostas/s) = alvo em MP/s, com o SP entre o
-    // minimo e o maximo (% de cada eixo do quadro). Desligado: o SP e o NR resolution (cartao Desempenho), exato.
-    CustomOptional<bool> TsrFeedAuto { true };
+    // Ritmo da rede pelo TSR (o tamanho dela e fixo): 0 = todo quadro, 1 = alvo de vazao (pixels da rede x respostas/s
+    // em MP/s), 2 = alvo de FPS. Os alvos escolhem em quantos quadros a rede roda, nunca o tamanho dela.
+    CustomOptional<int> TsrModo { 0 };
     CustomOptional<float> TsrFeedMps { 124.4f };   // a referencia da Epic: 1080p a 60 Hz (ou 4K a 50% a 60 Hz)
-    CustomOptional<float> TsrFeedSpMin { 50.0f };
-    CustomOptional<float> TsrFeedSpMax { 100.0f };
+    CustomOptional<float> TsrFpsAlvo { 60.0f };
+    CustomOptional<float> TsrRitmoMin { 50.0f };   // % minimo de quadros com rede (abaixo de 50 ela perde o historico proprio)
     CustomOptional<float> TsrMaxSamples { 16.0f }; // amostras acumuladas no maximo: menos = responde rapido, mais = estavel
     CustomOptional<float> TsrClipGamma { 1.0f };   // largura do recorte do historico pela resposta nova: menos = menos atraso
     CustomOptional<float> TsrParallax { 1.0f };    // sensibilidade a desoclusao pela profundidade

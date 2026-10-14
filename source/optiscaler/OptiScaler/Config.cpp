@@ -1109,6 +1109,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             AmdLmxxfHistory.set_from_config(readBool("DlssNr", "AmdLmxxfHistory"));
             AmdLmxxfTsrCarry.set_from_config(readBool("DlssNr", "AmdLmxxfTsrCarry")); // [lmxxf2]
             AmdLmxxfFreeRes.set_from_config(readBool("DlssNr", "AmdLmxxfFreeRes"));
+            AmdLmxxfNetHeight.set_from_config(readInt("DlssNr", "AmdLmxxfNetHeight"));
             LmxxfFullNetwork.set_from_config(readBool("DlssNr", "LmxxfFullNetwork"));
             AmdLmxxfEditDetail.set_from_config(readFloat("DlssNr", "AmdLmxxfEditDetail"));
             AmdLmxxfEditSaturation.set_from_config(readFloat("DlssNr", "AmdLmxxfEditSaturation"));
@@ -1175,11 +1176,11 @@ bool Config::Reload(std::filesystem::path iniPath)
             AmdRtgiFarPlane.set_from_config(readFloat("AmdRtgi", "FarPlane"));
             TsrRede.set_from_config(readBool("TSR", "Rede")); // [lmxxf2]
             TsrJitter.set_from_config(readBool("TSR", "Jitter"));
-            TsrFeedAuto.set_from_config(readBool("TSR", "FeedAuto"));
+            TsrModo.set_from_config(readInt("TSR", "Modo"));
+            TsrFpsAlvo.set_from_config(readFloat("TSR", "FpsAlvo"));
+            TsrRitmoMin.set_from_config(readFloat("TSR", "RitmoMin"));
             TsrResurrection.set_from_config(readBool("TSR", "Resurrection"));
             TsrFeedMps.set_from_config(readFloat("TSR", "FeedMps"));
-            TsrFeedSpMin.set_from_config(readFloat("TSR", "FeedSpMin"));
-            TsrFeedSpMax.set_from_config(readFloat("TSR", "FeedSpMax"));
             TsrMaxSamples.set_from_config(readFloat("TSR", "MaxSamples"));
             TsrClipGamma.set_from_config(readFloat("TSR", "ClipGamma"));
             TsrParallax.set_from_config(readFloat("TSR", "Parallax"));
@@ -2314,6 +2315,7 @@ bool Config::SaveIni()
     ini.SetValue("DlssNr", "AmdLmxxfHistory", GetBoolValue(Instance()->AmdLmxxfHistory.value_for_config()).c_str());
     ini.SetValue("DlssNr", "AmdLmxxfTsrCarry", GetBoolValue(Instance()->AmdLmxxfTsrCarry.value_for_config()).c_str()); // [lmxxf2]
     ini.SetValue("DlssNr", "AmdLmxxfFreeRes", GetBoolValue(Instance()->AmdLmxxfFreeRes.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "AmdLmxxfNetHeight", GetIntValue(Instance()->AmdLmxxfNetHeight.value_for_config()).c_str());
     ini.SetValue("DlssNr", "LmxxfFullNetwork", GetBoolValue(Instance()->LmxxfFullNetwork.value_for_config()).c_str());
     ini.SetValue("DlssNr", "AmdLmxxfEditDetail", GetFloatValue(Instance()->AmdLmxxfEditDetail.value_for_config()).c_str());
     ini.SetValue("DlssNr", "AmdLmxxfEditSaturation", GetFloatValue(Instance()->AmdLmxxfEditSaturation.value_for_config()).c_str());
@@ -2374,11 +2376,11 @@ bool Config::SaveIni()
     ini.SetValue("AmdRtgi", "FarPlane", GetFloatValue(Instance()->AmdRtgiFarPlane.value_for_config()).c_str());
     ini.SetValue("TSR", "Rede", GetBoolValue(Instance()->TsrRede.value_for_config()).c_str()); // [lmxxf2]
     ini.SetValue("TSR", "Jitter", GetBoolValue(Instance()->TsrJitter.value_for_config()).c_str());
-    ini.SetValue("TSR", "FeedAuto", GetBoolValue(Instance()->TsrFeedAuto.value_for_config()).c_str());
+    ini.SetValue("TSR", "Modo", GetIntValue(Instance()->TsrModo.value_for_config()).c_str());
+    ini.SetValue("TSR", "FpsAlvo", GetFloatValue(Instance()->TsrFpsAlvo.value_for_config()).c_str());
+    ini.SetValue("TSR", "RitmoMin", GetFloatValue(Instance()->TsrRitmoMin.value_for_config()).c_str());
     ini.SetValue("TSR", "Resurrection", GetBoolValue(Instance()->TsrResurrection.value_for_config()).c_str());
     ini.SetValue("TSR", "FeedMps", GetFloatValue(Instance()->TsrFeedMps.value_for_config()).c_str());
-    ini.SetValue("TSR", "FeedSpMin", GetFloatValue(Instance()->TsrFeedSpMin.value_for_config()).c_str());
-    ini.SetValue("TSR", "FeedSpMax", GetFloatValue(Instance()->TsrFeedSpMax.value_for_config()).c_str());
     ini.SetValue("TSR", "MaxSamples", GetFloatValue(Instance()->TsrMaxSamples.value_for_config()).c_str());
     ini.SetValue("TSR", "ClipGamma", GetFloatValue(Instance()->TsrClipGamma.value_for_config()).c_str());
     ini.SetValue("TSR", "Parallax", GetFloatValue(Instance()->TsrParallax.value_for_config()).c_str());

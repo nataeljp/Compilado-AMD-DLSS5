@@ -183,12 +183,14 @@ struct Settings
     // carregada onde a cor crua do quadro dela e a deste batem, com a tolerância ao ruído aprendida por pixel (o que
     // pisca segura, o que mudou de verdade - folha sem vetor - perde a edição). Ver TemporalStability.h, preset 11.
     bool lmxxfTsrCarry = true;
-    // [lmxxf2] resolucao livre: o que o runtime DESTE processo recebeu (a flag so vale na carga); com ela o NR resolution
-    // (modelScale) e o Screen Percentage exato da rede, ou o SP sai da vazao alvo do TSR (tsrFeed*). TSR da rede
-    // (lmxxf/EditTsr.h): liga, jitter na entrada e os ajustes.
+    // [lmxxf2] resolucao livre: o que o runtime DESTE processo recebeu (a flag so vale na carga); com ela a rede roda na
+    // altura fixa lmxxfNetHeight (0 = a do quadro). Ritmo da rede pelo TSR: tsrModo 0 todo quadro, 1 alvo de vazao
+    // (tsrFeedMps), 2 alvo de FPS (tsrFpsAlvo), nunca abaixo de tsrRitmoMin % dos quadros. TSR da rede (lmxxf/EditTsr.h):
+    // liga, jitter na entrada e os ajustes.
     bool lmxxfFreeRes = false;
-    bool tsrFeedAuto = true;
-    float tsrFeedMps = 124.4f, tsrFeedSpMin = 50.f, tsrFeedSpMax = 100.f;
+    UINT lmxxfNetHeight = 1080;
+    int tsrModo = 0;
+    float tsrFeedMps = 124.4f, tsrFpsAlvo = 60.f, tsrRitmoMin = 50.f;
     bool tsrRede = true, tsrJitter = true, tsrResurrection = true;
     float tsrMaxSamples = 16.f, tsrClipGamma = 1.f, tsrParallax = 1.f, tsrFlicker = 0.75f, tsrFlickerMaxVel = 4.f;
     // lmxxf only, "Full network" ([DlssNr] LmxxfFullNetwork): run all 71 blocks instead of the
@@ -357,8 +359,10 @@ struct Stats
     UINT frameW = 0, frameH = 0;
     bool tsrActive = false, tsrJitter = false;
     float answersPerSec = 0.f;
-    float screenPct = 0.f;  // o Screen Percentage aplicado agora (% de cada eixo do quadro); 0 = degraus
-    bool feedAuto = false;  // o SP vem da vazao alvo
+    float screenPct = 0.f;  // a rede contra o quadro, em % de cada eixo (resolucao livre); 0 = degraus
+    int tsrModo = 0;        // ritmo: 0 todo quadro, 1 alvo de vazao, 2 alvo de FPS
+    float netRate = 1.f;    // fracao dos quadros em que a rede roda
+    float fps = 0.f;        // quadros do jogo por segundo (os que passam pela rede; gerados por FG nao contam)
 };
 // Stats::compositionWhiteSource. None: not composing (Classic, refused, or no model frame yet).
 // Title: W = 1/e from the title's exposure texture (danielblnc). Estimate: W = 1/e from NrCompose's

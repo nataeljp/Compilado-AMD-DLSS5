@@ -1059,10 +1059,12 @@ static AmdPreSr::Settings BuildSettings(float sessionScale)
             return GetEnvironmentVariableA("DLSS5_NETWORK_FREE_RES", v, sizeof v) == 1 && v[0] == '1';
         }();
         s.lmxxfFreeRes = freeResVivo;
-        s.tsrFeedAuto = cfg.TsrFeedAuto.value_or_default();
+        const int alt = cfg.AmdLmxxfNetHeight.value_or_default();
+        s.lmxxfNetHeight = alt <= 0 ? 0u : static_cast<UINT>(std::clamp(alt, 320, 4320));
+        s.tsrModo = std::clamp(cfg.TsrModo.value_or_default(), 0, 2);
         s.tsrFeedMps = std::clamp(cfg.TsrFeedMps.value_or_default(), 10.f, 1000.f);
-        s.tsrFeedSpMin = std::clamp(cfg.TsrFeedSpMin.value_or_default(), 25.f, 150.f);
-        s.tsrFeedSpMax = std::clamp((std::max)(cfg.TsrFeedSpMax.value_or_default(), s.tsrFeedSpMin), 25.f, 150.f);
+        s.tsrFpsAlvo = std::clamp(cfg.TsrFpsAlvo.value_or_default(), 20.f, 500.f);
+        s.tsrRitmoMin = std::clamp(cfg.TsrRitmoMin.value_or_default(), 15.f, 100.f);
         s.tsrRede = cfg.TsrRede.value_or_default();
         s.tsrJitter = cfg.TsrJitter.value_or_default();
         s.tsrResurrection = cfg.TsrResurrection.value_or_default();

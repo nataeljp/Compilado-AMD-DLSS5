@@ -1308,12 +1308,15 @@ struct Backend::Impl
     float statAnswersPerSec = 0.f;
     bool statTsrOn = false, statTsrJitter = false, statFreeRes = false;
     UINT loggedFreeW = 0, loggedFreeH = 0;
-    // [lmxxf2] Screen Percentage pela vazao alvo do TSR: o SP em uso (fracao de cada eixo, 0 = ainda nao), a ultima troca
-    // (cada troca recria a rede: no maximo uma a cada 3 s, e so se os pixels mudarem mais de 8%) e o SP aplicado (menu).
-    float feedSp = 0.f;
-    ULONGLONG feedTroca = 0;
+    // [lmxxf2] a rede contra o quadro (% da altura, menu) e o ritmo da rede pelo TSR: a fracao dos quadros em que ela
+    // roda (alvo de vazao ou de FPS), o acumulador que espalha essa fracao pelos quadros, a ultima revisao e os quadros
+    // por segundo do jogo (contados aqui, uma vez por quadro renderizado)
     float statScreenPct = 0.f;
-    bool statFeedAuto = false; // the model's edit of the frame it was last fed, render size, game units
+    float ritmo = 1.f, ritmoAcc = 0.f, ritmoLog = 1.f;
+    ULONGLONG ritmoRevisto = 0;
+    unsigned framesWindow = 0;
+    float statFps = 0.f;
+    int statModo = 0; // the model's edit of the frame it was last fed, render size, game units
     ComPtr<ID3D12Resource> expoJob;   // 1x1: the exposure the job in flight was fed with
     ComPtr<ID3D12Resource> autoExpo;  // 4x1: the auto-exposure loop's state (see AutoExposureShader)
     ComPtr<ID3D12Resource> motionScratch;
@@ -2302,37 +2305,10 @@ ID3D12Resource* Backend::Impl::Record(ID3D12GraphicsCommandList* cmd, const AmdP
     Lmxxf::TierPlan tierPlan {};
     if (freeRes)
     {
-        // NR resolution = Screen Percentage exato; com a vazao alvo, o SP que da (alvo MP/s) / (respostas/s) pixels
-        float sp = std::clamp(cfg.modelScale, 0.25f, 2.f);
-        statFeedAuto = cfg.tsrFeedAuto;
-        if (cfg.tsrFeedAuto)
-        {
-            const float lo = cfg.tsrFeedSpMin / 100.f, hi = cfg.tsrFeedSpMax / 100.f;
-            if (!(feedSp > 0.f))
-                feedSp = std::clamp(sp, lo, hi);
-            const ULONGLONG agora = GetTickCount64();
-            if (statAnswersPerSec > 1.f && agora - feedTroca >= 3000)
-            {
-                const double pix = double(cfg.tsrFeedMps) * 1e6 / double(statAnswersPerSec);
-                const float quer = std::clamp(static_cast<float>(std::sqrt(pix / (double(f.width) * double(f.height)))), lo, hi);
-                if (std::fabs(quer * quer / (feedSp * feedSp) - 1.f) > 0.08f)
-                {
-                    char buf[200];
-                    std::snprintf(buf, sizeof buf,
-                                  "lmxxf2: vazao alvo %.1f MP/s a %.1f respostas/s -> Screen Percentage %.0f%% (era %.0f%%)",
-                                  double(cfg.tsrFeedMps), double(statAnswersPerSec), 100.0 * quer, 100.0 * feedSp);
-                    Log(buf);
-                    feedSp = quer;
-                    feedTroca = agora;
-                }
-            }
-            feedSp = std::clamp(feedSp, lo, hi);
-            sp = feedSp;
-        }
-        else
-            feedSp = 0.f;
-        statScreenPct = sp * 100.f;
-        Lmxxf::FreeNetworkSize(f.width, f.height, cfg.modelScale, sp * 100.f, wantW, wantH);
+        // tamanho FIXO: a altura escolhida, a largura pela proporcao do quadro. Nunca muda jogando (cada troca recria a
+        // rede e trava o jogo um instante); os alvos de vazao / FPS mexem so no ritmo (em quantos quadros ela roda)
+        Lmxxf::FixedNetworkSize(f.width, f.height, cfg.lmxxfNetHeight, wantW, wantH);
+        statScreenPct = 100.f * float(wantH) / float((std::max)(f.height, 1u));
         askedW = wantW;
         askedH = wantH;
         if (wantW != loggedFreeW || wantH != loggedFreeH)
@@ -2343,10 +2319,9 @@ ID3D12Resource* Backend::Impl::Record(ID3D12GraphicsCommandList* cmd, const AmdP
             Lmxxf::FreeProcessing(wantW, wantH, pw, ph);
             char buf[256];
             std::snprintf(buf, sizeof buf,
-                          "lmxxf2: resolucao livre - rede %ux%u exata (%s %.0f%%; processamento %ux%u, ~%.2fx o custo do "
-                          "1080p) sobre o quadro %ux%u",
-                          wantW, wantH, cfg.tsrFeedAuto ? "Screen Percentage pela vazao alvo" : "Screen Percentage = NR resolution",
-                          double(statScreenPct), pw, ph,
+                          "lmxxf2: resolucao livre - rede %ux%u fixa (%s; %.0f%% da altura do quadro; processamento %ux%u, "
+                          "~%.2fx o custo do 1080p) sobre o quadro %ux%u",
+                          wantW, wantH, cfg.lmxxfNetHeight ? "altura escolhida" : "a do quadro", double(statScreenPct), pw, ph,
                           Lmxxf::FreeCostVs1080(wantW, wantH), f.width, f.height);
             Log(buf);
         }
@@ -2814,10 +2789,13 @@ ID3D12Resource* Backend::Impl::Record(ID3D12GraphicsCommandList* cmd, const AmdP
         const ULONGLONG agora = GetTickCount64();
         if (!answersWindowStart)
             answersWindowStart = agora;
+        ++framesWindow;
         if (agora - answersWindowStart >= 1000)
         {
             statAnswersPerSec = answersWindow * 1000.f / float(agora - answersWindowStart);
+            statFps = framesWindow * 1000.f / float(agora - answersWindowStart);
             answersWindow = 0;
+            framesWindow = 0;
             answersWindowStart = agora;
         }
     }
@@ -3376,7 +3354,53 @@ ID3D12Resource* Backend::Impl::Record(ID3D12GraphicsCommandList* cmd, const AmdP
     // No-motion mode: one job at a time, and at least `cadence` frames between two feeds (Model
     // interleave = the network's rest, i.e. how much of the GPU it may take beside the game).
     const bool restDone = lastFedFrame == ~0ull || frames - lastFedFrame >= cadence;
-    const bool cadenceModel = answerPending ? false : noMotion ? (!inFlight && restDone) : (modelCounter++ % cadence) == 0u;
+    // [lmxxf2] Ritmo da rede pelo TSR (o tamanho dela e fixo; o TSR acumula no tempo, entao pular quadros so diminui a
+    // vazao): alvo de vazao = (alvo MP/s) / (pixels da rede x FPS) dos quadros; alvo de FPS = a fracao desce enquanto o
+    // jogo fica abaixo do alvo e sobe acima dele. Revista a cada 0,5 s; o acumulador espalha a fracao pelos quadros
+    // (0,5 = um sim, um nao). Nada e recriado: so deixa de alimentar a rede naquele quadro.
+    const bool ritmoTsr = tsrOn && cfg.tsrModo != 0;
+    statModo = tsrOn ? cfg.tsrModo : 0;
+    bool ritmoVez = true;
+    if (ritmoTsr)
+    {
+        const float rMin = std::clamp(cfg.tsrRitmoMin / 100.f, 0.15f, 1.f);
+        const ULONGLONG agora = GetTickCount64();
+        if (statFps > 1.f && agora - ritmoRevisto >= 500)
+        {
+            ritmoRevisto = agora;
+            if (cfg.tsrModo == 1)
+                ritmo = static_cast<float>(double(cfg.tsrFeedMps) * 1e6 / (double(mw) * double(mh) * double(statFps)));
+            else
+            {
+                const float r = statFps / (std::max)(cfg.tsrFpsAlvo, 1.f);
+                if (r < 0.97f || r > 1.03f)
+                    ritmo *= std::clamp(r, 0.85f, 1.15f);
+            }
+            ritmo = std::clamp(ritmo, rMin, 1.f);
+            if (std::fabs(ritmo - ritmoLog) > 0.1f)
+            {
+                ritmoLog = ritmo;
+                char buf[200];
+                std::snprintf(buf, sizeof buf, "lmxxf2: ritmo da rede %.0f%% dos quadros (%s; jogo a %.1f fps, rede %ux%u)",
+                              100.0 * ritmo, cfg.tsrModo == 1 ? "alvo de vazao" : "alvo de FPS", double(statFps), mw, mh);
+                Log(buf);
+            }
+        }
+        ritmo = std::clamp(ritmo, rMin, 1.f);
+        ritmoAcc = (std::min)(ritmoAcc + ritmo, 2.f);
+        ritmoVez = ritmoAcc >= 1.f - 1e-4f;
+        if (ritmoVez)
+            ritmoAcc -= 1.f;
+    }
+    else
+    {
+        ritmo = 1.f;
+        ritmoAcc = 0.f;
+    }
+    const bool cadenceModel = answerPending ? false
+                            : noMotion      ? (!inFlight && restDone)
+                            : ritmoTsr      ? ritmoVez
+                                            : (modelCounter++ % cadence) == 0u;
     // (0.3.4, P3) A grace frame feeds nothing: the runtime still holds the late job (one job at a time).
     const bool wantModel = cadenceModel && !graceFill;
     // Colour composition for a job fed now ([DlssNr] AmdComposition; decided every frame, so the
@@ -4305,7 +4329,9 @@ AmdPreSr::Stats Backend::GetStats() const
     s.tsrJitter = p->statTsrJitter;
     s.answersPerSec = p->statAnswersPerSec;
     s.screenPct = p->statFreeRes ? p->statScreenPct : 0.f;
-    s.feedAuto = p->statFreeRes && p->statFeedAuto;
+    s.tsrModo = p->statModo;
+    s.netRate = p->ritmo;
+    s.fps = p->statFps;
     if (p->statAccumulating && p->temporal)
     {
         s.carryTone = p->temporal->ChangeFraction();

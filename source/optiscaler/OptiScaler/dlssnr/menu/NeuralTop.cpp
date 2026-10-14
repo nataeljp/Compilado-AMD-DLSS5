@@ -812,7 +812,11 @@ void DrawStatusLine(Config* config, const TopFrame& f, bool enabled)
             text += " (Dynamic NR)";
         else
         {
-            std::snprintf(buf, sizeof buf, " at %.0f%%", config->AmdNrScale.value_or_default() * 100.f);
+            // [lmxxf2] com a resolucao livre o tamanho da rede e fixo: o que ele e contra o quadro
+            if (st.screenPct > 0.f)
+                std::snprintf(buf, sizeof buf, " fixa (%.0f%% do quadro)", st.screenPct);
+            else
+                std::snprintf(buf, sizeof buf, " at %.0f%%", config->AmdNrScale.value_or_default() * 100.f);
             text += buf;
         }
         std::snprintf(buf, sizeof buf, "%sNR %.0f/s%s", kSep, ns.nrFps, kSep);

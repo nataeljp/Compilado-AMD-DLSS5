@@ -296,7 +296,9 @@ void DrawPerformance(const Ctx& ctx)
     editingScale = ImGui::IsItemActive();
     // Commit once after dragging or text entry, not one model rebuild per mouse move.
     if (ImGui::IsItemDeactivatedAfterEdit())
+    {
         config->AmdNrScale = scale / 100.f;
+    }
     // runtime work HB 8: on a handheld lmxxf runs at the 360 tier (the cap's auto); only once the running session has
     // the small tiers (Lmxxf::SmallTierPolicy), before that the APU runs the 720 tier.
     const bool handheld360 = IsLmxxf(rt) && AmdBridge::GpuSupportInfo().lmxxfExperimental &&
@@ -308,13 +310,13 @@ void DrawPerformance(const Ctx& ctx)
                          " (1024x576): sharper, about 1.7x the cost."
                        : nullptr },
          "[DlssNr] AmdModelScale");
-    // [lmxxf2] com a resolucao livre (lida uma vez por processo) e a vazao alvo do TSR, o Screen Percentage nao e este
-    if (ctx.lmxxfMenu && config->TsrFeedAuto.value_or_default())
+    // [lmxxf2] com a resolucao livre (lida uma vez por processo) a rede tem tamanho fixo: este slider nao vale
+    if (ctx.lmxxfMenu)
     {
         char v[4] {};
         if (GetEnvironmentVariableA("DLSS5_NETWORK_FREE_RES", v, sizeof v) == 1 && v[0] == '1')
-            ImGui::TextDisabled("Ignorado agora: o Screen Percentage da rede vem da vazao alvo do TSR (cartao Resolucao e "
-                                "TSR da rede).");
+            ImGui::TextDisabled("Ignorado com a resolucao livre: a rede usa a resolucao fixa do cartao \"Resolucao e TSR da "
+                                "rede\" (aba DLSS5).");
     }
     // What the slider COSTS, where the hand is and live while dragging, passes included: a tester once set 125%
     // and three passes and read "2.25x" for a 6.75x bill. Two controls that multiply are priced together.

@@ -459,52 +459,77 @@ inline void ResolucaoTsr(Config* c)
         ImGui::TextColored(ImVec4(1.f, 0.6f, 0.f, 1.f), "Reabra o jogo para valer (este processo esta com %s).",
                            livre ? "a resolucao livre" : "os degraus");
 
-    // Screen Percentage da rede: pela vazao alvo do TSR, ou o NR resolution (o mesmo valor do cartao Desempenho), exato
-    Check("Screen Percentage pela vazao do TSR", c->TsrFeedAuto,
-          "Como o \"feed\" do TSR da UE5: vazao = pixels da rede x respostas por segundo. Ligado, o Screen Percentage e\n"
-          "o que da a vazao alvo com o FPS medido, entre o minimo e o maximo abaixo (revisto a cada 3 s; cada troca\n"
-          "recria a rede, um soluco). FPS baixo pede rede maior, que custa mais: o maximo segura.\n"
-          "Desligado: o Screen Percentage e o NR resolution, exato.");
-    if (c->TsrFeedAuto.value_or_default())
+    // Resolucao FIXA da rede: a lista so tem as alturas que cabem no display e na superficie do runtime (4K); a largura
+    // segue a proporcao do quadro em que a rede entra
+    unsigned dispH = 0;
+    if (auto* feat = State::Instance().currentFeature)
+        dispH = feat->DisplayHeight();
+    if (dispH == 0)
+        dispH = st.frameH > 0 ? st.frameH : 2160u;
+    const unsigned qW = st.frameW > 0 ? st.frameW : 16u, qH = st.frameH > 0 ? st.frameH : 9u;
+    static constexpr unsigned kAlturas[] = { 0u, 720u, 900u, 1080u, 1440u, 2160u, 4320u };
+    auto rotulo = [&](unsigned alt) {
+        unsigned w = 0, h = 0;
+        Lmxxf::FixedNetworkSize(qW, qH, alt, w, h);
+        char b[96];
+        if (alt == 0u)
+            std::snprintf(b, sizeof b, "Igual ao quadro (%ux%u)", w, h);
+        else
+            std::snprintf(b, sizeof b, "%up (%ux%u)%s", alt, w, h, Lmxxf::FixedHeightFits(qW, qH, alt) ? "" : " - reduzida");
+        return std::string(b);
+    };
+    const unsigned altCfg = static_cast<unsigned>((std::max)(0, c->AmdLmxxfNetHeight.value_or_default()));
+    if (ImGui::BeginCombo("Resolucao da rede", rotulo(altCfg).c_str()))
     {
-        SliderF("Vazao alvo (MP/s)", c->TsrFeedMps, 30.f, 400.f,
-                "A referencia da Epic e 124,4 MP/s: 1080p a 60 Hz, ou 4K a 50% a 60 Hz. Mais: a edicao da rede converge\n"
-                "mais rapido para a resolucao do quadro, a rede fica maior.", "%.1f");
-        SliderF("Screen Percentage minimo", c->TsrFeedSpMin, 25.f, 150.f, "% de cada eixo do quadro.", "%.0f%%");
-        SliderF("Screen Percentage maximo", c->TsrFeedSpMax, 25.f, 150.f,
-                "% de cada eixo do quadro. Acima de 100%% a rede recebe uma copia ampliada (custa, nao ganha detalhe).",
-                "%.0f%%");
+        for (unsigned alt : kAlturas)
+        {
+            if (alt != 0u && (alt > dispH || !Lmxxf::FixedHeightFits(qW, qH, alt)))
+                continue;
+            if (ImGui::Selectable(rotulo(alt).c_str(), alt == altCfg))
+                c->AmdLmxxfNetHeight = static_cast<int>(alt);
+        }
+        ImGui::EndCombo();
     }
-    else
-    {
-        static float edita = 100.f;
-        static bool editando = false;
-        if (!editando)
-            edita = c->AmdNrScale.value_or_default() * 100.f;
-        ImGui::SliderFloat("Screen Percentage da rede", &edita, 25.f, 150.f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp);
-        editando = ImGui::IsItemActive();
-        // uma recriacao da rede ao soltar, nao uma por movimento do mouse; passos de 5% como o NR resolution
-        if (ImGui::IsItemDeactivatedAfterEdit())
-            c->AmdNrScale = std::round(edita / 5.f) * 5.f / 100.f;
-        Dica("O mesmo valor do NR resolution (cartao Desempenho da rede), agora exato: cada eixo do quadro x SP. Na saida\n"
-             "4K: 50% = 1920x1080, 67% = 2560x1440, 100% = 3840x2160. Com \"Antes do upscale\" o quadro e o de render.");
-    }
+    Dica("Tamanho FIXO em que a rede trabalha: so as resolucoes que cabem no seu display (e no limite 4K do runtime),\n"
+         "na proporcao do quadro. Nunca muda jogando: cada troca recria a rede e trava o jogo um instante, entao escolha\n"
+         "aqui e deixe. O TSR leva a edicao da rede ate o quadro: amplia se a rede e menor, reduz se e maior.\n"
+         "Custo da rede: 1440p ~1,7x e 2160p ~3,6x o de 1080p (medido no lmxxf).");
     if (!livre)
         ImGui::TextColored(ImVec4(1.f, 0.6f, 0.f, 1.f),
-                           "Sem a resolucao livre neste processo: degraus 720/900/1080 e teto 1080p (NR resolution como antes).");
-    if (st.frameW > 0 && st.frameH > 0)
+                           "Sem a resolucao livre neste processo: degraus 720/900/1080 e NR resolution (cartao Desempenho).");
+    if (st.frameW > 0 && st.frameH > 0 && st.width > 0)
     {
-        const double frac = double(st.width) * st.height / (double(st.frameW) * st.frameH);
-        ImGui::TextDisabled("Rede agora: %ux%u = Screen Percentage %.0f%% do quadro %ux%u%s", st.width, st.height,
-                            100.0 * std::sqrt(frac), st.frameW, st.frameH, livre ? " (exato)" : " (degraus)");
+        const double k = double(st.frameH) / double(st.height);
+        ImGui::TextDisabled("Rede agora: %ux%u fixa, quadro %ux%u: %s", st.width, st.height, st.frameW, st.frameH,
+                            k > 1.001 ? "o TSR amplia a edicao" : k < 0.999 ? "o TSR reduz a edicao" : "1:1");
         if (livre)
-        {
-            unsigned pw = 0, ph = 0;
-            Lmxxf::FreeProcessing(st.width, st.height, pw, ph);
-            ImGui::TextDisabled("Processamento %ux%u, ~%.1fx o custo da rede em 1080p; vazao %.1f MP/s a %.1f respostas/s%s",
-                                pw, ph, Lmxxf::FreeCostVs1080(st.width, st.height), double(st.width) * st.height * st.answersPerSec / 1e6,
-                                st.answersPerSec, st.feedAuto ? " (alvo acima)" : "");
-        }
+            ImGui::TextDisabled("~%.1fx o custo da rede em 1080p", Lmxxf::FreeCostVs1080(st.width, st.height));
+    }
+
+    ImGui::SeparatorText("Ritmo da rede (vazao do TSR)");
+    {
+        static const char* kModos[] = { "Todo quadro", "Alvo de vazao (MP/s)", "Alvo de FPS" };
+        int modo = std::clamp(c->TsrModo.value_or_default(), 0, 2);
+        if (ImGui::Combo("Ritmo", &modo, kModos, 3))
+            c->TsrModo = modo;
+        Dica("Com o tamanho fixo, o que o alvo ajusta e em quantos quadros a rede roda (o TSR acumula no tempo):\n"
+             "- Todo quadro: a rede roda em todo quadro.\n"
+             "- Alvo de vazao: vazao = pixels da rede x respostas/s; a rede roda so nos quadros que a vazao pede\n"
+             "  (124,4 MP/s = 1080p a 60; a 120 fps a rede 1080p roda 1 quadro sim, 1 nao).\n"
+             "- Alvo de FPS: a rede pula quadros enquanto o jogo fica abaixo do FPS alvo.\n"
+             "Mudar o ritmo nao recria nada (sem travada).");
+        if (modo == 1)
+            SliderF("Vazao alvo (MP/s)", c->TsrFeedMps, 30.f, 400.f,
+                    "A referencia da Epic: 124,4 MP/s (1080p a 60 Hz, ou 4K a 50% a 60 Hz).", "%.1f");
+        if (modo == 2)
+            SliderF("FPS alvo", c->TsrFpsAlvo, 30.f, 240.f, "Quadros do jogo por segundo (os gerados por FG nao contam).", "%.0f");
+        if (modo != 0)
+            SliderF("Minimo de quadros com rede", c->TsrRitmoMin, 15.f, 100.f,
+                    "A rede nunca roda em menos que isso dos quadros. Abaixo de 50%% ela perde o historico proprio entre\n"
+                    "respostas (resposta mais instavel; o TSR segura).", "%.0f%%");
+        if (st.tsrActive && st.fps > 0.f)
+            ImGui::TextDisabled("Rede em %.0f%% dos quadros (jogo a %.0f fps, %.1f respostas/s)", 100.0 * st.netRate, st.fps,
+                                st.answersPerSec);
     }
 
     ImGui::SeparatorText("TSR da rede");
