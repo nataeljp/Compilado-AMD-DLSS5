@@ -4059,7 +4059,7 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
         {
             try
             {
-                if (!p->rtgi) p->rtgi = std::make_unique<RtgiNative>(p->device.Get(), p->directory / L"experimental_lighting");
+                if (!p->rtgi) p->rtgi = std::make_unique<RtgiNative>(p->device.Get(), LightingDir(p->directory));
                 Frame rtgiFrame = f;
                 rtgiFrame.colour = finalColour;
                 rtgiFrame.width=w;rtgiFrame.height=h;

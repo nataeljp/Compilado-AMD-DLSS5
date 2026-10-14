@@ -176,7 +176,8 @@ inline constexpr Cell kMatrix[] = {
     { Cap::NetworkOutput,                   Support::Yes,       Support::Yes },     // port 7.6 (0.3.4)
     { Cap::Rtgi,                            Support::Yes,       Support::Yes },     // port 7.7 (0.3.4); the inherited
         // screen-space GI (label "Screen-space GI (experimental)", owner decision 6): both backends load its
-        // experimental_lighting shaders (OptiScaler-AMD-PreSR lineage, not AMDNR's own) from beside OptiScaler.dll
+        // experimental_lighting shaders (OptiScaler-AMD-PreSR lineage, not AMDNR's own) from DLSS5-AMD\ or beside
+        // OptiScaler.dll ([lmxxf2] AmdPreSr::LightingDir)
     { Cap::PacingReadout,                   Support::Yes,       Support::Yes },     // port 7.9 readout (FB-L5, 0.3.4)
     { Cap::DebugViewWithoutInterleave,      Support::No,        Support::Yes },     // conditional grey on danielblnc (NeverHidden)
     { Cap::AllPassesOnVulkan,               Support::No,        Support::Yes },     // danielblnc: 1 pass on Vulkan (NeverHidden)

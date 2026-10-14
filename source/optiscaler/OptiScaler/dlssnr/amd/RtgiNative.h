@@ -4,6 +4,14 @@
 #include <memory>
 namespace AmdPreSr
 {
+// [lmxxf2] a pasta dos shaders da iluminacao: DLSS5-AMD\experimental_lighting (o pacote organizado), senao a antiga ao
+// lado do OptiScaler.dll
+inline std::filesystem::path LightingDir(const std::filesystem::path& dir)
+{
+    std::error_code ec;
+    const auto novo = dir / L"DLSS5-AMD" / L"experimental_lighting";
+    return std::filesystem::is_directory(novo, ec) ? novo : dir / L"experimental_lighting";
+}
 // Called only at the owning backend's quiescent frame boundary. The caller
 // retains this object and its resources until its GPU completion fence retires.
 class RtgiNative

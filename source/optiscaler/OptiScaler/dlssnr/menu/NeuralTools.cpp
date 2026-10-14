@@ -726,7 +726,7 @@ void DrawExperimental(const Ctx& ctx)
             Help("Adds bounced light and ambient occlusion, traced in screen space from the game's depth. Costs GPU"
                  " time. Set Camera FOV and Depth range to match the game.",
                  { "Uses the experimental_lighting shaders from the OptiScaler-AMD-PreSR lineage (not AMDNR's own):"
-                   " the experimental_lighting folder must be beside OptiScaler.dll." },
+                   " the experimental_lighting folder must be in DLSS5-AMD\\ or beside OptiScaler.dll." },
                  "[AmdRtgi] Enabled");
         }
         else
@@ -735,7 +735,7 @@ void DrawExperimental(const Ctx& ctx)
                  " your OptiScaler.ini and still works from there ([AmdRtgi] keys). To turn it off, untick it, then"
                  " press Save Settings (or set [AmdRtgi] Enabled=false in the ini).",
                  { "Uses the experimental_lighting shaders from the OptiScaler-AMD-PreSR lineage (not AMDNR's own):"
-                   " the experimental_lighting folder must be beside OptiScaler.dll." },
+                   " the experimental_lighting folder must be in DLSS5-AMD\\ or beside OptiScaler.dll." },
                  "[AmdRtgi] Enabled");
             DimTag("retired");
         }

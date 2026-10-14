@@ -91,8 +91,17 @@ source/    tudo o que é preciso para compilar e para refazer o seu
 
 ## Instalar
 
-1. Copie **todo o conteúdo de `inteiro/`** para a pasta do executável do jogo (a pasta onde está o `.exe` que roda o
-   jogo; em Unreal é `...\Binaries\Win64`).
+1. Baixe o `.zip` em **Releases** (ou use a pasta `inteiro/`) e copie **todo o conteúdo** para a pasta do executável
+   do jogo (a pasta onde está o `.exe` que roda o jogo; em Unreal é `...\Binaries\Win64`). São 4 itens:
+   ```
+   dxgi.dll          o OptiScaler deste compilado
+   OptiScaler.ini    as configurações
+   OptiScaler\       FidelityFX, XeSS, Streamline, plugins (OptiPatcher) e licenças
+   DLSS5-AMD\        a rede: runtime (LmxxfNrRuntime.dll + lmxxf_upstream.dll), pesos e kernels
+                     (native-game-tiled-assets\) e os shaders da iluminação (experimental_lighting\)
+   ```
+   Uma instalação antiga, com essas DLLs, os `plugins` e o `experimental_lighting` soltos na pasta do jogo, também
+   continua funcionando.
 2. Abra o jogo, escolha **FSR** (ou o upscaler que o jogo tiver) no menu do jogo.
 3. **Insert** abre o menu. A aba **DLSS5** tem a rede; a aba **Frame Gen** tem o FG automático, o spoof e o modo
    seguro; **Upscaling** tem o Ray Regeneration do jogo.
@@ -140,7 +149,7 @@ O caminho que este compilado seguiu, peça por peça:
 
 ## Créditos
 
-Cada um pela sua parte (licenças completas em `inteiro/Licenses`):
+Cada um pela sua parte (licenças completas em `inteiro/OptiScaler/Licenses`):
 
 | Quem | O quê | Licença |
 |---|---|---|
@@ -165,4 +174,4 @@ autor foram mantidas.
 ## Licença
 
 O código do fork é **GPL-3.0** (`LICENSE`), com os termos adicionais do AMDNR para o material dele
-(`inteiro/Licenses/AMDNR_NOTICE.txt`). Componentes de terceiros seguem as próprias licenças, na mesma pasta.
+(`inteiro/OptiScaler/Licenses/AMDNR_NOTICE.txt`). Componentes de terceiros seguem as próprias licenças, na mesma pasta.

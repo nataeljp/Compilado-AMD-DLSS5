@@ -3851,7 +3851,7 @@ ID3D12Resource* Backend::Impl::Record(ID3D12GraphicsCommandList* cmd, const AmdP
             auto& inst = rtgi[rtgiNext];
             rtgiNext = (rtgiNext + 1u) % kRtgiRing;
             if (!inst)
-                inst = std::make_unique<AmdPreSr::RtgiNative>(device.Get(), directory / L"experimental_lighting");
+                inst = std::make_unique<AmdPreSr::RtgiNative>(device.Get(), AmdPreSr::LightingDir(directory));
             ID3D12Resource* gDepth = f.writeBack && depthScratch ? depthScratch.Get() : f.depth;
             D3D12_RESOURCE_STATES gDepthState = f.writeBack && depthScratch ? kSrv : f.depthState;
             const DXGI_FORMAT gFmt = gDepth->GetDesc().Format;

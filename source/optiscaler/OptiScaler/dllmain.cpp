@@ -1562,12 +1562,16 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             std::filesystem::absolute(Config::Instance()->MainDllPath.value()));
 
         // If path is not set or incorrect
+        // [lmxxf2] o pacote organizado guarda os plugins em OptiScaler\plugins; a pasta plugins antiga segue valendo
         if (!Config::Instance()->PluginPath.has_value() ||
             (!std::filesystem::exists(Config::Instance()->PluginPath.value()) ||
              !std::filesystem::is_directory(Config::Instance()->PluginPath.value())))
         {
+            const std::filesystem::path base(Config::Instance()->MainDllPath.value());
+            std::error_code ec;
+            const auto organizado = base / L"OptiScaler" / L"plugins";
             Config::Instance()->PluginPath.set_volatile_value(
-                std::filesystem::path(Config::Instance()->MainDllPath.value()) / L"plugins");
+                std::filesystem::is_directory(organizado, ec) ? organizado : base / L"plugins");
         }
 
         CheckForExcludedProcess();
