@@ -1316,7 +1316,13 @@ struct Backend::Impl
     ULONGLONG ritmoRevisto = 0;
     unsigned framesWindow = 0;
     float statFps = 0.f;
-    int statModo = 0; // the model's edit of the frame it was last fed, render size, game units
+    int statModo = 0;
+    // [lmxxf2] ajuste automatico do TSR da rede: o tempo de historico (s) e a rigidez do recorte que o controle mantem,
+    // a ultima revisao, o que foi aplicado e as medidas que levaram a isso (menu)
+    float autoT = 0.4f, autoRecorte = 1.f, autoParalaxe = 1.f, autoCintil = 0.75f;
+    ULONGLONG autoRevisto = 0;
+    float statAmostras = 0.f, statRecorte = 0.f, statParalaxe = 0.f, statCintil = 0.f;
+    EditTsr::Leitura statMed {}; // the model's edit of the frame it was last fed, render size, game units
     ComPtr<ID3D12Resource> expoJob;   // 1x1: the exposure the job in flight was fed with
     ComPtr<ID3D12Resource> autoExpo;  // 4x1: the auto-exposure loop's state (see AutoExposureShader)
     ComPtr<ID3D12Resource> motionScratch;
@@ -2809,6 +2815,65 @@ ID3D12Resource* Backend::Impl::Record(ID3D12GraphicsCommandList* cmd, const AmdP
             tsrFrameRatio = static_cast<float>(std::clamp(double(qn.QuadPart - tsrQpc) * 1000.0 / double(qf.QuadPart) / 16.667, 0.1, 6.0));
         tsrQpc = qn.QuadPart;
     }
+    // [lmxxf2] Ajuste automatico do TSR da rede, pelas medidas da GPU (o quadro de 5 quadros atras): o historico conta em
+    // TEMPO (amostras = tempo x respostas/s x cobertura da rede no quadro), entao FPS variando (FreeSync, VSync) nao muda
+    // o rastro; o atraso medido (historico longe da resposta nova, em desvios dela) acima do aceito encurta o historico e
+    // aperta o recorte (menos rastro e borrado); abaixo, alonga (mais anti-aliasing e estabilidade), e com cintilacao
+    // abre o recorte. A preferencia move o atraso aceito: -1 nitidez, +1 estabilidade. Revisto a cada 0,25 s.
+    float autoAmostras = cfg.tsrMaxSamples, autoRecorteEf = cfg.tsrClipGamma, autoParalaxeEf = cfg.tsrParallax,
+          autoCintilEf = cfg.tsrFlicker;
+    if (tsrOn && cfg.tsrAuto)
+    {
+        const ULONGLONG agora = GetTickCount64();
+        EditTsr::Leitura m {};
+        if (agora - autoRevisto >= 250 && editTsr->Medidas(m))
+        {
+            autoRevisto = agora;
+            statMed = m;
+            const float aceito = 0.45f * (1.f + 0.5f * cfg.tsrPreferencia);
+            if (m.integrou)
+            {
+                if (m.atraso > aceito * 1.3f)
+                {
+                    autoT *= 0.85f;
+                    autoRecorte *= 0.93f;
+                }
+                else if (m.atraso < aceito * 0.6f)
+                {
+                    autoT *= 1.06f;
+                    if (m.cintil > 0.12f)
+                        autoRecorte *= 1.05f;
+                }
+            }
+            if (m.movimento > 6.f)
+                autoT *= 0.97f; // movimento rapido: historico mais curto, menos borrado
+            // desoclusao: rejeicao pela profundidade com a camera quase parada e ruido do depth, nao objeto saindo da
+            // frente (afrouxa); em movimento sem quase nenhuma rejeicao, aperta de volta
+            if (m.movimento < 0.5f && m.rejParal > 0.02f)
+                autoParalaxe *= 0.9f;
+            else if (m.movimento > 2.f && m.rejParal < 0.005f)
+                autoParalaxe *= 1.04f;
+            // cintilacao: cintilando sem atraso, protege mais (segura o historico); historico atrasado, protege menos
+            if (m.integrou && m.atraso > aceito * 1.3f)
+                autoCintil *= 0.95f;
+            else if (m.cintil > 0.15f && (!m.integrou || m.atraso < aceito))
+                autoCintil *= 1.04f;
+            autoT = std::clamp(autoT, 0.12f, 1.2f);
+            autoRecorte = std::clamp(autoRecorte, 0.5f, 2.5f);
+            autoParalaxe = std::clamp(autoParalaxe, 0.3f, 2.f);
+            autoCintil = std::clamp(autoCintil, 0.3f, 1.f);
+        }
+        const float cobertura = (std::min)(1.f, float(mw) * float(mh) / (float(w) * float(h)));
+        const float rps = statAnswersPerSec > 1.f ? statAnswersPerSec : 30.f;
+        autoAmostras = std::clamp(autoT * rps * cobertura, 2.f, 32.f);
+        autoRecorteEf = std::clamp(autoRecorte * (1.f + 0.3f * cfg.tsrPreferencia), 0.35f, 3.f);
+        autoParalaxeEf = autoParalaxe;
+        autoCintilEf = autoCintil;
+    }
+    statAmostras = autoAmostras;
+    statRecorte = autoRecorteEf;
+    statParalaxe = autoParalaxeEf;
+    statCintil = autoCintilEf;
     auto tsrParams = [&](float jx, float jy) {
         EditTsr::Params k {};
         k.outW = w;
@@ -2817,10 +2882,10 @@ ID3D12Resource* Backend::Impl::Record(ID3D12GraphicsCommandList* cmd, const AmdP
         k.netH = mh;
         k.jitX = jx;
         k.jitY = jy;
-        k.maxSamples = cfg.tsrMaxSamples;
-        k.clipGamma = cfg.tsrClipGamma;
-        k.parallax = cfg.tsrParallax;
-        k.flicker = cfg.tsrFlicker;
+        k.maxSamples = autoAmostras;
+        k.clipGamma = autoRecorteEf;
+        k.parallax = autoParalaxeEf;
+        k.flicker = autoCintilEf;
         k.flickerMaxVel = cfg.tsrFlickerMaxVel;
         k.frameRatio = tsrFrameRatio;
         k.kernelK = 3.f;
@@ -4332,6 +4397,17 @@ AmdPreSr::Stats Backend::GetStats() const
     s.tsrModo = p->statModo;
     s.netRate = p->ritmo;
     s.fps = p->statFps;
+    s.tsrAuto = p->statTsrOn && p->autoRevisto != 0;
+    s.tsrHistMs = p->autoT * 1000.f;
+    s.tsrAmostras = p->statAmostras;
+    s.tsrRecorte = p->statRecorte;
+    s.tsrParalaxe = p->statParalaxe;
+    s.tsrProtecao = p->statCintil;
+    s.tsrAtraso = p->statMed.atraso;
+    s.tsrRejSomb = p->statMed.rejSomb;
+    s.tsrRejParal = p->statMed.rejParal;
+    s.tsrCintil = p->statMed.cintil;
+    s.tsrMovimento = p->statMed.movimento;
     if (p->statAccumulating && p->temporal)
     {
         s.carryTone = p->temporal->ChangeFraction();

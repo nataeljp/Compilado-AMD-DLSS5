@@ -62,7 +62,41 @@ float3 ClipAabb(float3 h, float3 bmin, float3 bmax)
     return m > 1.0 ? c + v / m : h;
 }
 
-#if defined(EDIT_TSR_INTEGRA)
+// Medidas para o ajuste automatico: somas do quadro, por grupo de 8x8 (o host copia e zera depois da reprojecao e le
+// com alguns quadros de atraso). Bytes: 0 atraso do historico (x64), 4 pixels com historico na integracao, 8 rejeicao de
+// sombreamento (x255), 12 rejeicao de paralaxe (x255), 16 cintilacao (x255), 20 pixels, 24 movimento (px por quadro de
+// 60 fps, x16), 28 pixels com historico na reprojecao.
+RWByteAddressBuffer medidas : register(u4);
+groupshared float gsM0[64], gsM1[64], gsM2[64], gsM3[64];
+void Soma4(uint gi, float4 v, uint4 bytes, float4 escala)
+{
+    gsM0[gi] = v.x;
+    gsM1[gi] = v.y;
+    gsM2[gi] = v.z;
+    gsM3[gi] = v.w;
+    GroupMemoryBarrierWithGroupSync();
+    [unroll] for (uint st = 32u; st > 0u; st >>= 1u)
+    {
+        if (gi < st)
+        {
+            gsM0[gi] += gsM0[gi + st];
+            gsM1[gi] += gsM1[gi + st];
+            gsM2[gi] += gsM2[gi + st];
+            gsM3[gi] += gsM3[gi + st];
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+    if (gi == 0u)
+    {
+        medidas.InterlockedAdd(bytes.x, uint(gsM0[0] * escala.x + 0.5));
+        medidas.InterlockedAdd(bytes.y, uint(gsM1[0] * escala.y + 0.5));
+        medidas.InterlockedAdd(bytes.z, uint(gsM2[0] * escala.z + 0.5));
+        medidas.InterlockedAdd(bytes.w, uint(gsM3[0] * escala.w + 0.5));
+    }
+}
+
+)"
+R"(#if defined(EDIT_TSR_INTEGRA)
 Texture2D<float4> editNet  : register(t0); // edicao da resposta, na resolucao da rede (unidades do jogo)
 Texture2D<float4> histPrev : register(t1); // historico no espaco de N-1: rgb edicao, a peso acumulado
 Texture2D<float4> metaPrev : register(t2); // x luminancia, y placar de cintilacao, z sinal, w ruido
@@ -75,9 +109,12 @@ float3 EditAt(int2 k)
     return all(isfinite(e)) ? e : float3(0.0, 0.0, 0.0);
 }
 
-[numthreads(8, 8, 1)] void CSIntegra(uint3 id : SV_DispatchThreadID)
+// atraso: quanto o historico esta longe da media da resposta nova em volta (em desvios dela, antes do recorte, entao nao
+// depende da rigidez): ruido da rede da pouco; historico que ficou para tras (rastro, borrado) da muito
+void IntegraPixel(uint3 id, out float atraso, out float comHist)
 {
-    if (id.x >= outW || id.y >= outH) return;
+    atraso = 0.0;
+    comHist = 0.0;
     float2 netSz = float2(float(netW), float(netH));
     float2 s = float2(float(outW), float(outH)) / netSz; // pixels de saida por pixel da rede
     float2 jit = float2(jitX, jitY);
@@ -116,6 +153,12 @@ float3 EditAt(int2 k)
     // caixa abre e o historico segura (a resposta da rede oscilando nao vira tremor)
     float g = clipGamma * 2.0 * (1.0 + 2.0 * prot);
     float3 hy = ToYCoCg(h.rgb);
+    // so onde a resposta tem dispersao de verdade: em area chapada o desvio e quase zero e a razao explodiria
+    if (h.a > 0.5 && length(desvio) > 0.05 * length(media) + 1e-3)
+    {
+        atraso = min(length(hy - media) / max(length(desvio) + 1e-3, 1e-3), 4.0);
+        comHist = 1.0;
+    }
     float3 hc = ClipAabb(hy, media - g * desvio - 1e-3, media + g * desvio + 1e-3);
     float dist = length(hc - hy) / max(length(desvio) + 1e-3, 1e-3);
     float wh = max(h.a, 0.0) * (1.0 - 0.5 * saturate(dist * 0.5) * (1.0 - prot));
@@ -128,9 +171,18 @@ float3 EditAt(int2 k)
     if (!all(isfinite(res))) { res = espacial; wt = 0.0; }
     histOut[id.xy] = float4(res, min(wt, maxSamples));
 }
+
+[numthreads(8, 8, 1)] void CSIntegra(uint3 id : SV_DispatchThreadID, uint gi : SV_GroupIndex)
+{
+    float atraso = 0.0, comHist = 0.0;
+    if (id.x < outW && id.y < outH)
+        IntegraPixel(id, atraso, comHist);
+    Soma4(gi, float4(atraso, comHist, 0.0, 0.0), uint4(0u, 4u, 0u, 4u), float4(64.0, 1.0, 0.0, 0.0));
+}
 #endif
 
-#if defined(EDIT_TSR_REPROJETA)
+)"
+R"(#if defined(EDIT_TSR_REPROJETA)
 Texture2D<float4> histSrc   : register(t0); // historico no espaco de N-1 (ja integrado se chegou resposta)
 Texture2D<float4> metaPrev  : register(t1);
 Texture2D<float>  depthPrev : register(t2); // profundidade linear de N-1 (nossa)
@@ -183,7 +235,8 @@ float PatchDiff(Texture2D<float4> snap, int2 p, int2 last, float e)
     return d / 9.0;
 }
 
-float4 HistCatmull(float2 uv)
+)"
+R"(float4 HistCatmull(float2 uv)
 {
     float2 size = float2(float(outW), float(outH));
     float2 pos = uv * size;
@@ -233,9 +286,8 @@ float3 FitResidual(float3 b, float3 r)
     return r * saturate(a);
 }
 
-[numthreads(8, 8, 1)] void CSReprojeta(uint3 id : SV_DispatchThreadID)
+void ReprojetaPixel(uint3 id, out float4 med1, out float2 med2)
 {
-    if (id.x >= outW || id.y >= outH) return;
     int2 p = int2(id.xy);
     int2 last = int2(int(outW) - 1, int(outH) - 1);
     float2 size = float2(float(outW), float(outH));
@@ -314,7 +366,7 @@ float3 FitResidual(float3 b, float3 r)
     float sinal = abs(dif) > limiar ? sign(dif) : 0.0;
     bool cruzou = sinal * meta.z < 0.0;
     float placar = fora ? 0.0 : saturate(cruzou ? meta.y + 0.34 : meta.y * pow(sinal != 0.0 ? 0.6 : 0.92, frameRatio));
-    float veloc = length(m);
+    float veloc = length(m) / max(frameRatio, 0.1); // px por quadro de 60 fps: igual em qualquer FPS (VRR)
     float prot = placar * flickerStrength * (1.0 - saturate(veloc / max(flickerMaxVel, 0.01)));
     rejS *= 1.0 - prot;
 
@@ -355,6 +407,21 @@ float3 FitResidual(float3 b, float3 r)
     if (!isfinite(raw.a)) raw.a = 1.0;
     float3 r = FitResidual(raw.rgb, BoundResidual(edit, raw.rgb, residualCap));
     outTex[p] = float4(raw.rgb + r, raw.a);
+
+    const bool tinha = !fora && H.a > 0.5;
+    med1 = float4(tinha ? rejS : 0.0, tinha ? rejP : 0.0, placar, 1.0);
+    med2 = float2(min(veloc, 16.0), tinha ? 1.0 : 0.0);
+}
+
+)"
+R"([numthreads(8, 8, 1)] void CSReprojeta(uint3 id : SV_DispatchThreadID, uint gi : SV_GroupIndex)
+{
+    float4 med1 = 0.0;
+    float2 med2 = 0.0;
+    if (id.x < outW && id.y < outH)
+        ReprojetaPixel(id, med1, med2);
+    Soma4(gi, med1, uint4(8u, 12u, 16u, 20u), float4(255.0, 255.0, 255.0, 1.0));
+    Soma4(gi, float4(med2, 0.0, 0.0), uint4(24u, 28u, 24u, 28u), float4(16.0, 1.0, 0.0, 0.0));
 }
 #endif
 )";
@@ -377,6 +444,17 @@ class EditTsr
     };
     static_assert(sizeof(Params) == 24 * 4, "as constantes do shader sao 24 dwords");
     enum : UINT { kInvertida = 1u, kRecomeca = 2u, kSemProfundidade = 4u, kSemVetores = 8u };
+    // medidas de um quadro (o de kAtraso quadros atras): medias por pixel
+    struct Leitura
+    {
+        bool integrou = false; // houve resposta da rede (integracao) naquele quadro
+        float atraso = 0.f;    // historico contra a media da resposta nova, em desvios dela (rastro / borrado)
+        float rejSomb = 0.f;   // fracao do historico rejeitada por sombreamento (cor crua)
+        float rejParal = 0.f;  // fracao rejeitada por paralaxe (profundidade)
+        float cintil = 0.f;    // placar medio de cintilacao
+        float movimento = 0.f; // px por quadro de 60 fps
+        float comHist = 0.f;   // fracao dos pixels com historico
+    };
 
     explicit EditTsr(ID3D12Device* d) : device(d)
     {
@@ -411,6 +489,18 @@ class EditTsr
         hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         Check(d->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&heap)), "edit TSR descriptor heap");
         passo = d->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        // medidas: o buffer que os passes somam (UAV), um zerado para limpar (upload) e o anel de leitura (readback)
+        med = Buffer(D3D12_HEAP_TYPE_DEFAULT, kMedBytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+        zero = Buffer(D3D12_HEAP_TYPE_UPLOAD, kMedBytes, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ);
+        {
+            void* p = nullptr;
+            const D3D12_RANGE nada { 0, 0 };
+            Check(zero->Map(0, &nada, &p), "edit TSR zero buffer");
+            std::memset(p, 0, kMedBytes);
+            zero->Unmap(0, nullptr);
+        }
+        for (auto& r : leitura)
+            r = Buffer(D3D12_HEAP_TYPE_READBACK, kMedBytes, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST);
     }
 
     // texturas do tamanho do quadro; true quando foram (re)criadas: o proximo quadro recomeca o historico. As antigas
@@ -455,8 +545,9 @@ class EditTsr
             k.flags |= kRecomeca;
         ID3D12Resource* srv[kSrvs] = { editNet, hist[atual].Get(), meta[atual].Get() };
         const DXGI_FORMAT fmt[kSrvs] = { kFp16, kFp16, kFp16 };
-        ID3D12Resource* uav[kUavs] = { histInt.Get() };
-        const DXGI_FORMAT ufmt[kUavs] = { kFp16 };
+        ID3D12Resource* uav[kUavTex] = { histInt.Get() };
+        const DXGI_FORMAT ufmt[kUavTex] = { kFp16 };
+        MedidasProntas(c);
         Barrier(c, histInt.Get(), kSrv, kUav);
         Despacha(c, psoIntegra.Get(), srv, fmt, uav, ufmt, k);
         Barrier(c, histInt.Get(), kUav, kSrv);
@@ -477,13 +568,23 @@ class EditTsr
                                        perRaw[1].Get() };
         const DXGI_FORMAT fmt[kSrvs] = { kFp16, kFp16, DXGI_FORMAT_R32_FLOAT, kFp16, motionFmt, depthFmt, DXGI_FORMAT_R32_FLOAT,
                                          kFp16, kFp16, kFp16, kFp16 };
-        ID3D12Resource* uav[kUavs] = { hist[prox].Get(), meta[prox].Get(), prof[prox].Get(), out.Get() };
-        const DXGI_FORMAT ufmt[kUavs] = { kFp16, kFp16, DXGI_FORMAT_R32_FLOAT, kFp16 };
+        ID3D12Resource* uav[kUavTex] = { hist[prox].Get(), meta[prox].Get(), prof[prox].Get(), out.Get() };
+        const DXGI_FORMAT ufmt[kUavTex] = { kFp16, kFp16, DXGI_FORMAT_R32_FLOAT, kFp16 };
+        MedidasProntas(c);
         for (auto* r : uav)
             Barrier(c, r, kSrv, kUav);
         Despacha(c, psoReprojeta.Get(), srv, fmt, uav, ufmt, k);
         for (auto* r : uav)
             Barrier(c, r, kUav, kSrv);
+        // as somas deste quadro vao para o anel de leitura e o buffer volta zerado para o proximo
+        const D3D12_RESOURCE_STATES kCopiaDe = D3D12_RESOURCE_STATE_COPY_SOURCE, kCopiaPara = D3D12_RESOURCE_STATE_COPY_DEST;
+        Barrier(c, med.Get(), kUav, kCopiaDe);
+        c->CopyBufferRegion(leitura[anel].Get(), 0, med.Get(), 0, kMedUsados);
+        Barrier(c, med.Get(), kCopiaDe, kCopiaPara);
+        c->CopyBufferRegion(med.Get(), 0, zero.Get(), 0, kMedUsados);
+        Barrier(c, med.Get(), kCopiaPara, kUav);
+        anel = (anel + 1u) % kAnel;
+        ++gravados;
         atual = prox;
         integrado = false;
         vazio = false;
@@ -510,17 +611,75 @@ class EditTsr
         persist |= 1u << slot;
         slot ^= 1u;
     }
+    // as medidas do quadro de kAtraso quadros atras (a lista dele ja terminou na GPU); false enquanto nao ha
+    bool Medidas(Leitura& m)
+    {
+        if (gravados <= kAtraso)
+            return false;
+        ID3D12Resource* r = leitura[(anel + kAnel - kAtraso) % kAnel].Get();
+        void* p = nullptr;
+        const D3D12_RANGE le { 0, kMedUsados };
+        if (FAILED(r->Map(0, &le, &p)) || !p)
+            return false;
+        UINT v[kMedUsados / 4] {};
+        std::memcpy(v, p, sizeof v);
+        const D3D12_RANGE nada { 0, 0 };
+        r->Unmap(0, &nada);
+        const float pix = float((std::max)(v[5], 1u));
+        m.integrou = v[1] > 0u;
+        m.atraso = v[1] > 0u ? float(v[0]) / 64.f / float(v[1]) : 0.f;
+        m.comHist = float(v[7]) / pix;
+        m.rejSomb = v[7] > 0u ? float(v[2]) / 255.f / float(v[7]) : 0.f;
+        m.rejParal = v[7] > 0u ? float(v[3]) / 255.f / float(v[7]) : 0.f;
+        m.cintil = float(v[4]) / 255.f / pix;
+        m.movimento = float(v[6]) / 16.f / pix;
+        return true;
+    }
     // o historico recomeca no proximo quadro (reset do jogo, troca de modo, rede calada); os persistentes tambem
     void Recomeca() { vazio = true; integrado = false; persist = 0; contador = 0; }
 
   private:
-    static constexpr UINT kSrvs = 11, kUavs = 4, kBloco = kSrvs + kUavs, kRegioes = 16, kConstants = 24, kIntervalo = 31;
+    static constexpr UINT kSrvs = 11, kUavTex = 4, kUavs = kUavTex + 1, kBloco = kSrvs + kUavs, kRegioes = 16, kConstants = 24,
+                          kIntervalo = 31;
+    static constexpr UINT kMedBytes = 64, kMedUsados = 32, kAnel = 8, kAtraso = 5;
     ComPtr<ID3D12Device> device;
     ComPtr<ID3D12RootSignature> root;
     ComPtr<ID3D12PipelineState> psoIntegra, psoReprojeta;
     ComPtr<ID3D12DescriptorHeap> heap;
     UINT passo = 0, regiao = 0;
     ComPtr<ID3D12Resource> hist[2], meta[2], prof[2], histInt, out, perEdit[2], perRaw[2];
+    ComPtr<ID3D12Resource> med, zero, leitura[kAnel];
+    UINT anel = 0;
+    UINT64 gravados = 0;
+    bool medPronto = false;
+
+    ComPtr<ID3D12Resource> Buffer(D3D12_HEAP_TYPE tipo, UINT64 bytes, D3D12_RESOURCE_FLAGS flags, D3D12_RESOURCE_STATES estado)
+    {
+        D3D12_HEAP_PROPERTIES hp {};
+        hp.Type = tipo;
+        D3D12_RESOURCE_DESC rd {};
+        rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        rd.Width = bytes;
+        rd.Height = 1;
+        rd.DepthOrArraySize = 1;
+        rd.MipLevels = 1;
+        rd.SampleDesc.Count = 1;
+        rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        rd.Flags = flags;
+        ComPtr<ID3D12Resource> r;
+        Check(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, estado, nullptr, IID_PPV_ARGS(&r)), "edit TSR buffer");
+        return r;
+    }
+    // o buffer de medidas nasce em COMMON e zerado: na primeira vez vai para UAV (depois fica em UAV entre os usos)
+    void MedidasProntas(ID3D12GraphicsCommandList* c)
+    {
+        if (medPronto)
+            return;
+        Barrier(c, med.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+        c->CopyBufferRegion(med.Get(), 0, zero.Get(), 0, kMedUsados);
+        Barrier(c, med.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kUav);
+        medPronto = true;
+    }
     UINT largura = 0, altura = 0, atual = 0, persist = 0, slot = 0, contador = 0;
     bool integrado = false, vazio = true;
 
@@ -558,12 +717,22 @@ class EditTsr
             s.Format = srv[i] ? fmt[i] : DXGI_FORMAT_R16G16B16A16_FLOAT;
             device->CreateShaderResourceView(srv[i], &s, cpu);
         }
-        for (UINT i = 0; i < kUavs; ++i, cpu.ptr += passo)
+        for (UINT i = 0; i < kUavTex; ++i, cpu.ptr += passo)
         {
             D3D12_UNORDERED_ACCESS_VIEW_DESC u {};
             u.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
             u.Format = uav[i] ? ufmt[i] : DXGI_FORMAT_R16G16B16A16_FLOAT;
             device->CreateUnorderedAccessView(uav[i], nullptr, &u, cpu);
+        }
+        {
+            // u4: as medidas, buffer cru de uint
+            D3D12_UNORDERED_ACCESS_VIEW_DESC u {};
+            u.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+            u.Format = DXGI_FORMAT_R32_TYPELESS;
+            u.Buffer.NumElements = kMedBytes / 4;
+            u.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+            device->CreateUnorderedAccessView(med.Get(), nullptr, &u, cpu);
+            cpu.ptr += passo;
         }
         auto hh = heap.Get();
         c->SetDescriptorHeaps(1, &hh);

@@ -561,6 +561,33 @@ inline void ResolucaoTsr(Config* c)
     }
     else
         ImGui::TextDisabled("Inativo (desligado, modo sem vetores de movimento ou rede parada).");
+    Check("Ajuste automatico (medido)", c->TsrAuto,
+          "Mede na GPU, a cada quadro, quanto o historico da edicao esta atrasado em relacao a resposta nova da rede\n"
+          "(rastro / borrado), a rejeicao, a cintilacao e o movimento, e ajusta sozinho:\n"
+          "- o historico conta em TEMPO (amostras = tempo x respostas/s x cobertura): FPS variando (FreeSync, VSync)\n"
+          "  nao muda o rastro;\n"
+          "- atrasado: encurta o historico e aperta o recorte (menos rastro e borrado);\n"
+          "- em dia e cintilando: alonga e abre (mais anti-aliasing e estabilidade);\n"
+          "- desoclusao: rejeicao pela profundidade com a camera parada e ruido do depth, afrouxa;\n"
+          "- protecao contra cintilacao: sobe quando cintila sem atraso, desce quando o historico atrasa.\n"
+          "Desligado: os quatro ajustes abaixo, fixos.");
+    const bool autoTsr = c->TsrAuto.value_or_default();
+    if (autoTsr)
+    {
+        SliderF("Preferencia", c->TsrPreferencia, -1.f, 1.f,
+                "-1 = nitidez e menos rastro (aceita menos atraso do historico); +1 = estabilidade e anti-aliasing (aceita\n"
+                "mais). 0 = equilibrio.", "%.2f");
+        if (st.tsrActive && st.tsrAuto)
+        {
+            ImGui::TextDisabled("Automatico: historico %.0f ms = %.1f amostras (a %.1f respostas/s), recorte %.2f, desoclusao "
+                                "%.2f, protecao %.2f", st.tsrHistMs, st.tsrAmostras, st.answersPerSec, st.tsrRecorte,
+                                st.tsrParalaxe, st.tsrProtecao);
+            ImGui::TextDisabled("Medido: atraso %.2f desvios, rejeicao %.0f%% (paralaxe %.0f%%), cintilacao %.0f%%, movimento "
+                                "%.1f px/quadro (60 fps)", st.tsrAtraso, 100.0 * st.tsrRejSomb, 100.0 * st.tsrRejParal,
+                                100.0 * st.tsrCintil, st.tsrMovimento);
+        }
+    }
+    ImGui::BeginDisabled(autoTsr);
     SliderF("Amostras no historico", c->TsrMaxSamples, 2.f, 32.f,
             "Quantas amostras (em pixels de saida) o historico da edicao soma no maximo. Menos: responde rapido a mudanca\n"
             "da rede. Mais: edicao mais estavel e mais fina. A conversao em tempo esta na linha Vazao acima.", "%.0f");
@@ -573,9 +600,10 @@ inline void ResolucaoTsr(Config* c)
             "Pixel cuja luz oscila quadro a quadro (brilho especular, ruido, a resposta da rede tremendo) segura a edicao\n"
             "em vez de piscar; mudanca de verdade continua cortando. Conta em tempo (60 fps de referencia): igual com\n"
             "FreeSync / VRR. 0 = desligada.");
+    ImGui::EndDisabled();
     SliderF("Movimento maximo protegido", c->TsrFlickerMaxVel, 0.5f, 32.f,
-            "Acima deste movimento (pixels do quadro por quadro) a protecao contra cintilacao some: segurar o que anda\n"
-            "deixaria rastro.", "%.1f");
+            "Acima deste movimento a protecao contra cintilacao some: segurar o que anda deixaria rastro. Em pixels do\n"
+            "quadro por quadro de 60 fps (conta em tempo: igual com FPS variando).", "%.1f");
     ImGui::PopTextWrapPos();
 }
 

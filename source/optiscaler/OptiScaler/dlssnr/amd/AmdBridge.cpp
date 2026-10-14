@@ -1068,6 +1068,8 @@ static AmdPreSr::Settings BuildSettings(float sessionScale)
         s.tsrRede = cfg.TsrRede.value_or_default();
         s.tsrJitter = cfg.TsrJitter.value_or_default();
         s.tsrResurrection = cfg.TsrResurrection.value_or_default();
+        s.tsrAuto = cfg.TsrAuto.value_or_default();
+        s.tsrPreferencia = std::clamp(cfg.TsrPreferencia.value_or_default(), -1.f, 1.f);
         s.tsrMaxSamples = std::clamp(cfg.TsrMaxSamples.value_or_default(), 1.f, 64.f);
         s.tsrClipGamma = std::clamp(cfg.TsrClipGamma.value_or_default(), 0.1f, 8.f);
         s.tsrParallax = std::clamp(cfg.TsrParallax.value_or_default(), 0.f, 8.f);

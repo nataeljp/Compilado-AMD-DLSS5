@@ -923,6 +923,11 @@ class Config
     CustomOptional<bool> TsrRede { true };         // liga o TSR na edicao da rede
     CustomOptional<bool> TsrJitter { true };       // jitter subpixel na entrada da rede (a edicao converge para a saida)
     CustomOptional<bool> TsrResurrection { true }; // ressurreicao de historico (2 quadros persistentes, a cada 31 quadros)
+    // ajuste automatico medido: o historico em TEMPO (amostras = tempo x respostas/s x cobertura) e o recorte, corrigidos
+    // pelas medidas da GPU (atraso do historico = rastro/borrado; cintilacao = falta de estabilidade). Preferencia: -1 =
+    // nitidez / menos rastro, +1 = estabilidade / anti-aliasing.
+    CustomOptional<bool> TsrAuto { true };
+    CustomOptional<float> TsrPreferencia { 0.0f };
     // Ritmo da rede pelo TSR (o tamanho dela e fixo): 0 = todo quadro, 1 = alvo de vazao (pixels da rede x respostas/s
     // em MP/s), 2 = alvo de FPS. Os alvos escolhem em quantos quadros a rede roda, nunca o tamanho dela.
     CustomOptional<int> TsrModo { 0 };

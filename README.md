@@ -42,6 +42,12 @@ publicar é que mais gente consiga estudar, montar o próprio e fazer melhor.
 
     Onde o histórico é rejeitado, a edição some em vez de deixar rastro.
   - O TSR leva a edição da rede até o quadro: amplia se a rede é menor, reduz se é maior.
+  - **Ajuste automático medido**: a cada quadro a GPU mede o atraso do histórico contra a resposta nova da rede
+    (rastro e borrado), a rejeição, a cintilação e o movimento.
+    - O histórico conta em tempo (amostras = tempo × respostas/s × cobertura), então FPS variando (FreeSync, VSync)
+      não muda o rastro.
+    - O controle ajusta sozinho o tempo de histórico, o recorte, a desoclusão e a proteção contra cintilação.
+    - Uma preferência vai de nitidez e menos rastro até estabilidade e anti-aliasing.
   - **Ritmo da rede**: todo quadro, **alvo de vazão** (padrão 124,4 MP/s, a referência da Epic) ou **alvo de FPS**.
     Com o tamanho fixo, os alvos escolhem em quantos quadros a rede roda; o TSR acumula no tempo, então nada é
     recriado.

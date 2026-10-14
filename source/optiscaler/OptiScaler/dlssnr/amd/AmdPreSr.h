@@ -191,7 +191,8 @@ struct Settings
     UINT lmxxfNetHeight = 1080;
     int tsrModo = 0;
     float tsrFeedMps = 124.4f, tsrFpsAlvo = 60.f, tsrRitmoMin = 50.f;
-    bool tsrRede = true, tsrJitter = true, tsrResurrection = true;
+    bool tsrRede = true, tsrJitter = true, tsrResurrection = true, tsrAuto = true;
+    float tsrPreferencia = 0.f;
     float tsrMaxSamples = 16.f, tsrClipGamma = 1.f, tsrParallax = 1.f, tsrFlicker = 0.75f, tsrFlickerMaxVel = 4.f;
     // lmxxf only, "Full network" ([DlssNr] LmxxfFullNetwork): run all 71 blocks instead of the
     // runtime's production schedule (blocks 42, 43, 46 skipped; about 1 ms at 1080p). A change
@@ -363,6 +364,10 @@ struct Stats
     int tsrModo = 0;        // ritmo: 0 todo quadro, 1 alvo de vazao, 2 alvo de FPS
     float netRate = 1.f;    // fracao dos quadros em que a rede roda
     float fps = 0.f;        // quadros do jogo por segundo (os que passam pela rede; gerados por FG nao contam)
+    // ajuste automatico do TSR da rede: os valores escolhidos e as medidas da GPU que os escolheram
+    bool tsrAuto = false;
+    float tsrHistMs = 0.f, tsrAmostras = 0.f, tsrRecorte = 0.f, tsrParalaxe = 0.f, tsrProtecao = 0.f;
+    float tsrAtraso = 0.f, tsrRejSomb = 0.f, tsrRejParal = 0.f, tsrCintil = 0.f, tsrMovimento = 0.f;
 };
 // Stats::compositionWhiteSource. None: not composing (Classic, refused, or no model frame yet).
 // Title: W = 1/e from the title's exposure texture (danielblnc). Estimate: W = 1/e from NrCompose's

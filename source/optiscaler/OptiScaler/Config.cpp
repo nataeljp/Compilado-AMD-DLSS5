@@ -1180,6 +1180,8 @@ bool Config::Reload(std::filesystem::path iniPath)
             TsrFpsAlvo.set_from_config(readFloat("TSR", "FpsAlvo"));
             TsrRitmoMin.set_from_config(readFloat("TSR", "RitmoMin"));
             TsrResurrection.set_from_config(readBool("TSR", "Resurrection"));
+            TsrAuto.set_from_config(readBool("TSR", "Auto"));
+            TsrPreferencia.set_from_config(readFloat("TSR", "Preferencia"));
             TsrFeedMps.set_from_config(readFloat("TSR", "FeedMps"));
             TsrMaxSamples.set_from_config(readFloat("TSR", "MaxSamples"));
             TsrClipGamma.set_from_config(readFloat("TSR", "ClipGamma"));
@@ -2380,6 +2382,8 @@ bool Config::SaveIni()
     ini.SetValue("TSR", "FpsAlvo", GetFloatValue(Instance()->TsrFpsAlvo.value_for_config()).c_str());
     ini.SetValue("TSR", "RitmoMin", GetFloatValue(Instance()->TsrRitmoMin.value_for_config()).c_str());
     ini.SetValue("TSR", "Resurrection", GetBoolValue(Instance()->TsrResurrection.value_for_config()).c_str());
+    ini.SetValue("TSR", "Auto", GetBoolValue(Instance()->TsrAuto.value_for_config()).c_str());
+    ini.SetValue("TSR", "Preferencia", GetFloatValue(Instance()->TsrPreferencia.value_for_config()).c_str());
     ini.SetValue("TSR", "FeedMps", GetFloatValue(Instance()->TsrFeedMps.value_for_config()).c_str());
     ini.SetValue("TSR", "MaxSamples", GetFloatValue(Instance()->TsrMaxSamples.value_for_config()).c_str());
     ini.SetValue("TSR", "ClipGamma", GetFloatValue(Instance()->TsrClipGamma.value_for_config()).c_str());

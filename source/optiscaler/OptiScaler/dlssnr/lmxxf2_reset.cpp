@@ -44,9 +44,10 @@ const Cartao kCartoes[] = {
             Zera(c->DlssNrSkinStructure);
             Zera(c->Lmxxf2Placement);
         } },
-        { "lmxxf2_tsr", 14, [](Config* c) {
+        { "lmxxf2_tsr", 16, [](Config* c) {
             Zera(c->AmdLmxxfFreeRes);
             Zera(c->AmdLmxxfNetHeight);
+            Zera(c->TsrAuto);
             Zera(c->TsrClipGamma);
             Zera(c->TsrFeedMps);
             Zera(c->TsrFlicker);
@@ -56,6 +57,7 @@ const Cartao kCartoes[] = {
             Zera(c->TsrMaxSamples);
             Zera(c->TsrModo);
             Zera(c->TsrParallax);
+            Zera(c->TsrPreferencia);
             Zera(c->TsrRede);
             Zera(c->TsrResurrection);
             Zera(c->TsrRitmoMin);
