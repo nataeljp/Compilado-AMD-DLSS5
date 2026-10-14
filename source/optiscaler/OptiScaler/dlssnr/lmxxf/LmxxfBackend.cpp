@@ -1307,7 +1307,13 @@ struct Backend::Impl
     ULONGLONG answersWindowStart = 0;
     float statAnswersPerSec = 0.f;
     bool statTsrOn = false, statTsrJitter = false, statFreeRes = false;
-    UINT loggedFreeW = 0, loggedFreeH = 0; // the model's edit of the frame it was last fed, render size, game units
+    UINT loggedFreeW = 0, loggedFreeH = 0;
+    // [lmxxf2] Screen Percentage pela vazao alvo do TSR: o SP em uso (fracao de cada eixo, 0 = ainda nao), a ultima troca
+    // (cada troca recria a rede: no maximo uma a cada 3 s, e so se os pixels mudarem mais de 8%) e o SP aplicado (menu).
+    float feedSp = 0.f;
+    ULONGLONG feedTroca = 0;
+    float statScreenPct = 0.f;
+    bool statFeedAuto = false; // the model's edit of the frame it was last fed, render size, game units
     ComPtr<ID3D12Resource> expoJob;   // 1x1: the exposure the job in flight was fed with
     ComPtr<ID3D12Resource> autoExpo;  // 4x1: the auto-exposure loop's state (see AutoExposureShader)
     ComPtr<ID3D12Resource> motionScratch;
@@ -2296,7 +2302,37 @@ ID3D12Resource* Backend::Impl::Record(ID3D12GraphicsCommandList* cmd, const AmdP
     Lmxxf::TierPlan tierPlan {};
     if (freeRes)
     {
-        Lmxxf::FreeNetworkSize(f.width, f.height, cfg.modelScale, cfg.lmxxfScreenPct, wantW, wantH);
+        // NR resolution = Screen Percentage exato; com a vazao alvo, o SP que da (alvo MP/s) / (respostas/s) pixels
+        float sp = std::clamp(cfg.modelScale, 0.25f, 2.f);
+        statFeedAuto = cfg.tsrFeedAuto;
+        if (cfg.tsrFeedAuto)
+        {
+            const float lo = cfg.tsrFeedSpMin / 100.f, hi = cfg.tsrFeedSpMax / 100.f;
+            if (!(feedSp > 0.f))
+                feedSp = std::clamp(sp, lo, hi);
+            const ULONGLONG agora = GetTickCount64();
+            if (statAnswersPerSec > 1.f && agora - feedTroca >= 3000)
+            {
+                const double pix = double(cfg.tsrFeedMps) * 1e6 / double(statAnswersPerSec);
+                const float quer = std::clamp(static_cast<float>(std::sqrt(pix / (double(f.width) * double(f.height)))), lo, hi);
+                if (std::fabs(quer * quer / (feedSp * feedSp) - 1.f) > 0.08f)
+                {
+                    char buf[200];
+                    std::snprintf(buf, sizeof buf,
+                                  "lmxxf2: vazao alvo %.1f MP/s a %.1f respostas/s -> Screen Percentage %.0f%% (era %.0f%%)",
+                                  double(cfg.tsrFeedMps), double(statAnswersPerSec), 100.0 * quer, 100.0 * feedSp);
+                    Log(buf);
+                    feedSp = quer;
+                    feedTroca = agora;
+                }
+            }
+            feedSp = std::clamp(feedSp, lo, hi);
+            sp = feedSp;
+        }
+        else
+            feedSp = 0.f;
+        statScreenPct = sp * 100.f;
+        Lmxxf::FreeNetworkSize(f.width, f.height, cfg.modelScale, sp * 100.f, wantW, wantH);
         askedW = wantW;
         askedH = wantH;
         if (wantW != loggedFreeW || wantH != loggedFreeH)
@@ -2309,8 +2345,8 @@ ID3D12Resource* Backend::Impl::Record(ID3D12GraphicsCommandList* cmd, const AmdP
             std::snprintf(buf, sizeof buf,
                           "lmxxf2: resolucao livre - rede %ux%u exata (%s %.0f%%; processamento %ux%u, ~%.2fx o custo do "
                           "1080p) sobre o quadro %ux%u",
-                          wantW, wantH, cfg.lmxxfScreenPct > 0.f ? "Screen Percentage" : "automatica, NR resolution com teto 1080p:",
-                          cfg.lmxxfScreenPct > 0.f ? double(cfg.lmxxfScreenPct) : 100.0 * wantH / (std::max)(f.height, 1u), pw, ph,
+                          wantW, wantH, cfg.tsrFeedAuto ? "Screen Percentage pela vazao alvo" : "Screen Percentage = NR resolution",
+                          double(statScreenPct), pw, ph,
                           Lmxxf::FreeCostVs1080(wantW, wantH), f.width, f.height);
             Log(buf);
         }
@@ -3302,12 +3338,15 @@ ID3D12Resource* Backend::Impl::Record(ID3D12GraphicsCommandList* cmd, const AmdP
         k.residualCap = residualCap;
         k.flags = (f.depthInverted ? EditTsr::kInvertida : 0u) | (reset ? EditTsr::kRecomeca : 0u) |
                   (depthMuted ? EditTsr::kSemProfundidade : 0u) | (motionMuted ? EditTsr::kSemVetores : 0u);
+        k.resurrect = cfg.tsrResurrection ? 1.f : 0.f;
         Barrier(cmd, motion, motionState, kSrv);
         Barrier(cmd, depth, depthState, kSrv);
         out = editTsr->Reprojeta(cmd, full.Get(), motion, MotionViewFormat(motion->GetDesc().Format), depth,
                                  DepthViewFormat(depth->GetDesc().Format), expoJob.Get(), k);
         Barrier(cmd, depth, kSrv, depthState);
         Barrier(cmd, motion, kSrv, motionState);
+        if (cfg.tsrResurrection)
+            editTsr->Grava(cmd, full.Get());
     }
     // Debug view 5 (lmxxf): the model's fresh edit added to this frame directly, no reprojection,
     // no carry. One frame late and unwarped, so it smears in motion - but it shows the edit
@@ -4265,6 +4304,8 @@ AmdPreSr::Stats Backend::GetStats() const
     s.tsrActive = p->statTsrOn;
     s.tsrJitter = p->statTsrJitter;
     s.answersPerSec = p->statAnswersPerSec;
+    s.screenPct = p->statFreeRes ? p->statScreenPct : 0.f;
+    s.feedAuto = p->statFreeRes && p->statFeedAuto;
     if (p->statAccumulating && p->temporal)
     {
         s.carryTone = p->temporal->ChangeFraction();

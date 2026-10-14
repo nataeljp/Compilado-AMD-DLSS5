@@ -308,6 +308,14 @@ void DrawPerformance(const Ctx& ctx)
                          " (1024x576): sharper, about 1.7x the cost."
                        : nullptr },
          "[DlssNr] AmdModelScale");
+    // [lmxxf2] com a resolucao livre (lida uma vez por processo) e a vazao alvo do TSR, o Screen Percentage nao e este
+    if (ctx.lmxxfMenu && config->TsrFeedAuto.value_or_default())
+    {
+        char v[4] {};
+        if (GetEnvironmentVariableA("DLSS5_NETWORK_FREE_RES", v, sizeof v) == 1 && v[0] == '1')
+            ImGui::TextDisabled("Ignorado agora: o Screen Percentage da rede vem da vazao alvo do TSR (cartao Resolucao e "
+                                "TSR da rede).");
+    }
     // What the slider COSTS, where the hand is and live while dragging, passes included: a tester once set 125%
     // and three passes and read "2.25x" for a 6.75x bill. Two controls that multiply are priced together.
     // (0.3.4) Always the mock's form "N.NNx cost" / "N.NNx cost (N passes)"; lmxxf's tier goes into the hover.

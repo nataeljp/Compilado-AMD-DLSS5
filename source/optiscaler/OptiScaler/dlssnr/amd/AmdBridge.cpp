@@ -1059,10 +1059,13 @@ static AmdPreSr::Settings BuildSettings(float sessionScale)
             return GetEnvironmentVariableA("DLSS5_NETWORK_FREE_RES", v, sizeof v) == 1 && v[0] == '1';
         }();
         s.lmxxfFreeRes = freeResVivo;
-        const float sp = cfg.AmdLmxxfScreenPct.value_or_default();
-        s.lmxxfScreenPct = std::isfinite(sp) && sp > 0.f ? std::clamp(sp, 25.f, 100.f) : 0.f;
+        s.tsrFeedAuto = cfg.TsrFeedAuto.value_or_default();
+        s.tsrFeedMps = std::clamp(cfg.TsrFeedMps.value_or_default(), 10.f, 1000.f);
+        s.tsrFeedSpMin = std::clamp(cfg.TsrFeedSpMin.value_or_default(), 25.f, 150.f);
+        s.tsrFeedSpMax = std::clamp((std::max)(cfg.TsrFeedSpMax.value_or_default(), s.tsrFeedSpMin), 25.f, 150.f);
         s.tsrRede = cfg.TsrRede.value_or_default();
         s.tsrJitter = cfg.TsrJitter.value_or_default();
+        s.tsrResurrection = cfg.TsrResurrection.value_or_default();
         s.tsrMaxSamples = std::clamp(cfg.TsrMaxSamples.value_or_default(), 1.f, 64.f);
         s.tsrClipGamma = std::clamp(cfg.TsrClipGamma.value_or_default(), 0.1f, 8.f);
         s.tsrParallax = std::clamp(cfg.TsrParallax.value_or_default(), 0.f, 8.f);

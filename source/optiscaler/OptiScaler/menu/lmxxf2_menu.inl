@@ -459,44 +459,51 @@ inline void ResolucaoTsr(Config* c)
         ImGui::TextColored(ImVec4(1.f, 0.6f, 0.f, 1.f), "Reabra o jogo para valer (este processo esta com %s).",
                            livre ? "a resolucao livre" : "os degraus");
 
-    const float spCfg = c->AmdLmxxfScreenPct.value_or_default();
-    bool automatica = !(spCfg > 0.f);
-    if (ImGui::Checkbox("Automatica", &automatica))
-        c->AmdLmxxfScreenPct = automatica ? 0.f : 50.f;
-    Dica("Automatica: o quadro x \"NR resolution\" (cartao Desempenho da rede), com teto de 1920x1080 como antes.\n"
-         "Desligada: o Screen Percentage da rede abaixo, o sistema de resolucao do TSR.");
-    static float edita = 50.f;
-    static bool editando = false;
-    if (!automatica)
+    // Screen Percentage da rede: pela vazao alvo do TSR, ou o NR resolution (o mesmo valor do cartao Desempenho), exato
+    Check("Screen Percentage pela vazao do TSR", c->TsrFeedAuto,
+          "Como o \"feed\" do TSR da UE5: vazao = pixels da rede x respostas por segundo. Ligado, o Screen Percentage e\n"
+          "o que da a vazao alvo com o FPS medido, entre o minimo e o maximo abaixo (revisto a cada 3 s; cada troca\n"
+          "recria a rede, um soluco). FPS baixo pede rede maior, que custa mais: o maximo segura.\n"
+          "Desligado: o Screen Percentage e o NR resolution, exato.");
+    if (c->TsrFeedAuto.value_or_default())
     {
-        if (!editando)
-            edita = std::clamp(spCfg, 25.f, 100.f);
-        ImGui::SliderFloat("Screen Percentage da rede", &edita, 25.f, 100.f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp);
-        editando = ImGui::IsItemActive();
-        // uma recriacao da rede ao soltar, nao uma por movimento do mouse
-        if (ImGui::IsItemDeactivatedAfterEdit())
-            c->AmdLmxxfScreenPct = std::round(edita);
-        Dica("Como o r.ScreenPercentage do TSR: a rede roda em (quadro x SP) em cada eixo, tamanho exato. Na saida 4K:\n"
-             "33% = 1280x720, 50% = 1920x1080, 67% = 2560x1440, 100% = 3840x2160. Com o TSR da rede e o jitter, a\n"
-             "edicao converge para a resolucao do quadro; a vazao (MP/s) mostra quao rapido. Mudar recria a rede (um\n"
-             "soluco). Custo da rede: 1440p ~1,7x e 4K ~3,6x o de 1080p (medido no lmxxf).");
-        if (!livre)
-            ImGui::TextColored(ImVec4(1.f, 0.6f, 0.f, 1.f), "So com a resolucao livre ligada (e o jogo reaberto).");
+        SliderF("Vazao alvo (MP/s)", c->TsrFeedMps, 30.f, 400.f,
+                "A referencia da Epic e 124,4 MP/s: 1080p a 60 Hz, ou 4K a 50% a 60 Hz. Mais: a edicao da rede converge\n"
+                "mais rapido para a resolucao do quadro, a rede fica maior.", "%.1f");
+        SliderF("Screen Percentage minimo", c->TsrFeedSpMin, 25.f, 150.f, "% de cada eixo do quadro.", "%.0f%%");
+        SliderF("Screen Percentage maximo", c->TsrFeedSpMax, 25.f, 150.f,
+                "% de cada eixo do quadro. Acima de 100%% a rede recebe uma copia ampliada (custa, nao ganha detalhe).",
+                "%.0f%%");
     }
+    else
+    {
+        static float edita = 100.f;
+        static bool editando = false;
+        if (!editando)
+            edita = c->AmdNrScale.value_or_default() * 100.f;
+        ImGui::SliderFloat("Screen Percentage da rede", &edita, 25.f, 150.f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp);
+        editando = ImGui::IsItemActive();
+        // uma recriacao da rede ao soltar, nao uma por movimento do mouse; passos de 5% como o NR resolution
+        if (ImGui::IsItemDeactivatedAfterEdit())
+            c->AmdNrScale = std::round(edita / 5.f) * 5.f / 100.f;
+        Dica("O mesmo valor do NR resolution (cartao Desempenho da rede), agora exato: cada eixo do quadro x SP. Na saida\n"
+             "4K: 50% = 1920x1080, 67% = 2560x1440, 100% = 3840x2160. Com \"Antes do upscale\" o quadro e o de render.");
+    }
+    if (!livre)
+        ImGui::TextColored(ImVec4(1.f, 0.6f, 0.f, 1.f),
+                           "Sem a resolucao livre neste processo: degraus 720/900/1080 e teto 1080p (NR resolution como antes).");
     if (st.frameW > 0 && st.frameH > 0)
     {
         const double frac = double(st.width) * st.height / (double(st.frameW) * st.frameH);
-        ImGui::TextDisabled("Rede agora: %ux%u sobre o quadro %ux%u (%.0f%% dos pixels)%s", st.width, st.height, st.frameW,
-                            st.frameH, frac * 100.0, livre ? ", tamanho exato" : ", degraus");
+        ImGui::TextDisabled("Rede agora: %ux%u = Screen Percentage %.0f%% do quadro %ux%u%s", st.width, st.height,
+                            100.0 * std::sqrt(frac), st.frameW, st.frameH, livre ? " (exato)" : " (degraus)");
         if (livre)
         {
             unsigned pw = 0, ph = 0;
-            Lmxxf::FreeNetworkSize(st.frameW, st.frameH, c->AmdNrScale.value_or_default(), automatica ? 0.f : edita, pw, ph);
-            const double fr = double(pw) * ph / (double(st.frameW) * st.frameH);
-            // a vazao do TSR: pixels do quadro x SP^2 x respostas por segundo (as de agora)
-            ImGui::TextDisabled("Com este ajuste: %ux%u (SP %.0f%%), ~%.1fx o custo da rede em 1080p; vazao %.0f MP/s a %.0f respostas/s",
-                                pw, ph, 100.0 * std::sqrt(fr), Lmxxf::FreeCostVs1080(pw, ph),
-                                double(pw) * ph * st.answersPerSec / 1e6, st.answersPerSec);
+            Lmxxf::FreeProcessing(st.width, st.height, pw, ph);
+            ImGui::TextDisabled("Processamento %ux%u, ~%.1fx o custo da rede em 1080p; vazao %.1f MP/s a %.1f respostas/s%s",
+                                pw, ph, Lmxxf::FreeCostVs1080(st.width, st.height), double(st.width) * st.height * st.answersPerSec / 1e6,
+                                st.answersPerSec, st.feedAuto ? " (alvo acima)" : "");
         }
     }
 
@@ -511,6 +518,11 @@ inline void ResolucaoTsr(Config* c)
           "Rede menor que o quadro: cada alimentacao amostra o quadro deslocada de uma fracao de pixel (Halton 2,3), entao\n"
           "cada resposta cobre outras posicoes e a edicao converge para a resolucao do quadro com o tempo (o \"feed\" do\n"
           "TSR). O historico proprio da rede recebe a troca de jitter junto com os vetores. Desligue para comparar.");
+    Check("Ressurreicao de historico", c->TsrResurrection,
+          "O \"Resurrection\" do TSR: dois quadros persistentes (a cada 31 quadros) guardam a edicao e a cor crua; onde o\n"
+          "historico e descartado, a edicao volta do quadro persistente se a vizinhanca da cor crua bate (objeto que passou\n"
+          "na frente e saiu). O TSR da Epic reprojeta esses quadros pelas matrizes da camera, que o jogo nao entrega ao\n"
+          "upscaler: aqui vale no mesmo lugar da tela, entao ajuda com a camera parada; andando, nao bate e nada volta.");
     if (st.tsrActive && st.frameW > 0 && st.width > 0)
     {
         const double frac = double(st.width) * st.height / (double(st.frameW) * st.frameH);

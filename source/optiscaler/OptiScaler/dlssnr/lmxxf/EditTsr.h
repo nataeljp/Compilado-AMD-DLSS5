@@ -38,8 +38,10 @@ cbuffer C : register(b0)
     float jitX; float jitY; float mvX; float mvY;
     float gridDx; float gridDy; float maxSamples; float clipGamma;
     float parallaxSens; float flickerStrength; float flickerMaxVel; float frameRatio;
-    float residualCap; uint flags; float kernelK; float pad0;
+    float residualCap; uint flags; float kernelK; uint persist;
+    float resurrect; float pad0; float pad1; float pad2;
 };
+// persist: bit 0/1 = o quadro persistente 0/1 ja foi gravado; resurrect: 1 = ressurreicao ligada
 // flags: 1 profundidade invertida, 2 recomeca (historico vazio), 4 sem profundidade (autocorrecao), 8 sem vetores
 SamplerState sLin : register(s0);
 SamplerState sPt  : register(s1);
@@ -136,6 +138,10 @@ Texture2D<float4> colorTex  : register(t3); // quadro cru N, unidades do jogo
 Texture2D<float4> mvTex     : register(t4); // vetores na resolucao do quadro
 Texture2D<float>  depthTex  : register(t5); // profundidade do jogo na resolucao do quadro
 Texture2D<float>  expoTex   : register(t6); // exposicao da rede (1x1)
+Texture2D<float4> perEdit0  : register(t7); // quadros persistentes (ressurreicao): edicao e peso
+Texture2D<float4> perRaw0   : register(t8); // e a cor crua do quadro em que foram gravados
+Texture2D<float4> perEdit1  : register(t9);
+Texture2D<float4> perRaw1   : register(t10);
 RWTexture2D<float4> histOut  : register(u0);
 RWTexture2D<float4> metaOut  : register(u1);
 RWTexture2D<float>  depthOut : register(u2);
@@ -153,6 +159,28 @@ float LumT(float3 c, float e)
 {
     float l = max(Luma(max(c, 0.0)) * e, 0.0);
     return l / (1.0 + l);
+}
+
+// cor no espaco comprimido c / (1 + max), na exposicao da rede
+float3 Tm3(float3 c, float e)
+{
+    c = max(c, 0.0) * e;
+    return c / (1.0 + max(c.r, max(c.g, c.b)));
+}
+// diferenca media da vizinhanca 3x3 da cor crua de agora contra a gravada num quadro persistente
+float PatchDiff(Texture2D<float4> snap, int2 p, int2 last, float e)
+{
+    float d = 0.0;
+    [unroll] for (int y = -1; y <= 1; y++)
+    [unroll] for (int x = -1; x <= 1; x++)
+    {
+        int2 q = clamp(p + int2(x, y), int2(0, 0), last);
+        float3 s = snap.Load(int3(q, 0)).rgb;
+        if (!all(isfinite(s))) return 1e9;
+        float3 v = abs(Tm3(Raw(q, last), e) - Tm3(s, e));
+        d += max(v.r, max(v.g, v.b));
+    }
+    return d / 9.0;
 }
 
 float4 HistCatmull(float2 uv)
@@ -295,8 +323,27 @@ float3 FitResidual(float3 b, float3 r)
     float3 edit = H.rgb * fica; // rejeitado = sem edicao (sem rastro); a proxima resposta preenche
     float peso = H.a * fica;
 
+    // 5. ressurreicao (o "Resurrection" do TSR, sem as matrizes de camera, que o jogo nao entrega ao upscaler): onde o
+    //    historico foi descartado, um quadro persistente (gravado a cada 31 quadros, dois guardados) devolve a edicao
+    //    do mesmo lugar da tela se a vizinhanca 3x3 da cor crua de agora bate com a gravada: objeto que passou na
+    //    frente e saiu, coisa que voltou a aparecer com a camera parada. Camera andando: nao bate e nada volta.
+    bool volta = false;
+    if (resurrect > 0.5 && !recomeca && persist != 0u && rej > 0.3)
+    {
+        const float tolR = 0.004 + 1.5 * ruido;
+        float d0 = (persist & 1u) != 0u ? PatchDiff(perRaw0, p, last, e) : 1e9;
+        float d1 = (persist & 2u) != 0u ? PatchDiff(perRaw1, p, last, e) : 1e9;
+        float4 snap = d0 <= d1 ? perEdit0.Load(int3(p, 0)) : perEdit1.Load(int3(p, 0));
+        if (min(d0, d1) < tolR && all(isfinite(snap)) && snap.a >= 1.0)
+        {
+            edit = snap.rgb;
+            peso = max(peso, 0.5 * min(snap.a, maxSamples)); // volta com metade da confianca que tinha
+            volta = true;
+        }
+    }
+
     float ruidoNovo = (fora || rejP > 0.5) ? 0.01 : lerp(ruido, min(abs(dif), 0.2), 1.0 - pow(0.85, frameRatio));
-    float lumNova = rej > 0.5 ? lumC : lerp(meta.x, lumC, 1.0 - pow(0.65, frameRatio));
+    float lumNova = (rej > 0.5 || volta) ? lumC : lerp(meta.x, lumC, 1.0 - pow(0.65, frameRatio));
     metaOut[p] = float4(lumNova, placar, sinal != 0.0 ? sinal : (fora ? 0.0 : meta.z), ruidoNovo);
     histOut[p] = float4(edit, peso);
     float dAqui = depthTex.Load(int3(p, 0));
@@ -324,9 +371,11 @@ class EditTsr
         float residualCap = 0.f;
         UINT flags = 0;
         float kernelK = 3.f;
-        float pad0 = 0.f;
+        UINT persist = 0;      // preenchido pela classe: os quadros persistentes ja gravados
+        float resurrect = 0.f; // 1 = ressurreicao ligada
+        float pad0 = 0.f, pad1 = 0.f, pad2 = 0.f;
     };
-    static_assert(sizeof(Params) == 20 * 4, "as constantes do shader sao 20 dwords");
+    static_assert(sizeof(Params) == 24 * 4, "as constantes do shader sao 24 dwords");
     enum : UINT { kInvertida = 1u, kRecomeca = 2u, kSemProfundidade = 4u, kSemVetores = 8u };
 
     explicit EditTsr(ID3D12Device* d) : device(d)
@@ -371,9 +420,10 @@ class EditTsr
         if (out && w == largura && h == altura)
             return false;
         // std::addressof: o operator& do ComPtr devolve um ComPtrRef, nao o endereco
-        ComPtr<ID3D12Resource>* todas[] = { std::addressof(hist[0]), std::addressof(hist[1]), std::addressof(meta[0]),
-                                            std::addressof(meta[1]), std::addressof(prof[0]), std::addressof(prof[1]),
-                                            std::addressof(histInt), std::addressof(out) };
+        ComPtr<ID3D12Resource>* todas[] = { std::addressof(hist[0]),    std::addressof(hist[1]),    std::addressof(meta[0]),
+                                            std::addressof(meta[1]),    std::addressof(prof[0]),    std::addressof(prof[1]),
+                                            std::addressof(histInt),    std::addressof(out),        std::addressof(perEdit[0]),
+                                            std::addressof(perEdit[1]), std::addressof(perRaw[0]),  std::addressof(perRaw[1]) };
         for (auto* t : todas)
             if (*t)
                 enterra(*t);
@@ -382,6 +432,8 @@ class EditTsr
             hist[i] = Texture(device.Get(), w, h, kFp16);
             meta[i] = Texture(device.Get(), w, h, kFp16);
             prof[i] = Texture(device.Get(), w, h, DXGI_FORMAT_R32_FLOAT);
+            perEdit[i] = Texture(device.Get(), w, h, kFp16);
+            perRaw[i] = Texture(device.Get(), w, h, kFp16);
         }
         histInt = Texture(device.Get(), w, h, kFp16);
         out = Texture(device.Get(), w, h, kFp16);
@@ -390,17 +442,18 @@ class EditTsr
         atual = 0;
         integrado = false;
         vazio = true;
+        persist = 0;
         return true;
     }
-    // memoria das texturas (MB), para o log
-    double Megabytes() const { return largura * altura * (2.0 * 8 + 2.0 * 8 + 2.0 * 4 + 8 + 8) / (1024.0 * 1024.0); }
+    // memoria das texturas (MB): 2 historicos, 2 metadados, 2 profundidades, o integrado, a saida e 2 x 2 persistentes
+    double Megabytes() const { return largura * altura * (2.0 * 8 + 2.0 * 8 + 2.0 * 4 + 8 + 8 + 4.0 * 8) / (1024.0 * 1024.0); }
 
     // a resposta chegou: junta a edicao dela (editNet, mw x mh, em kSrv) ao historico, no espaco do quadro N-1
     void Integra(ID3D12GraphicsCommandList* c, ID3D12Resource* editNet, Params k)
     {
         if (vazio)
             k.flags |= kRecomeca;
-        ID3D12Resource* srv[kSrvs] = { editNet, hist[atual].Get(), meta[atual].Get(), nullptr, nullptr, nullptr, nullptr };
+        ID3D12Resource* srv[kSrvs] = { editNet, hist[atual].Get(), meta[atual].Get() };
         const DXGI_FORMAT fmt[kSrvs] = { kFp16, kFp16, kFp16 };
         ID3D12Resource* uav[kUavs] = { histInt.Get() };
         const DXGI_FORMAT ufmt[kUavs] = { kFp16 };
@@ -417,10 +470,13 @@ class EditTsr
     {
         if (vazio)
             k.flags |= kRecomeca;
+        k.persist = persist;
         const UINT prox = 1u - atual;
         ID3D12Resource* srv[kSrvs] = { integrado ? histInt.Get() : hist[atual].Get(), meta[atual].Get(), prof[atual].Get(),
-                                       colour, motion, depth, expo };
-        const DXGI_FORMAT fmt[kSrvs] = { kFp16, kFp16, DXGI_FORMAT_R32_FLOAT, kFp16, motionFmt, depthFmt, DXGI_FORMAT_R32_FLOAT };
+                                       colour, motion, depth, expo, perEdit[0].Get(), perRaw[0].Get(), perEdit[1].Get(),
+                                       perRaw[1].Get() };
+        const DXGI_FORMAT fmt[kSrvs] = { kFp16, kFp16, DXGI_FORMAT_R32_FLOAT, kFp16, motionFmt, depthFmt, DXGI_FORMAT_R32_FLOAT,
+                                         kFp16, kFp16, kFp16, kFp16 };
         ID3D12Resource* uav[kUavs] = { hist[prox].Get(), meta[prox].Get(), prof[prox].Get(), out.Get() };
         const DXGI_FORMAT ufmt[kUavs] = { kFp16, kFp16, DXGI_FORMAT_R32_FLOAT, kFp16 };
         for (auto* r : uav)
@@ -433,18 +489,39 @@ class EditTsr
         vazio = false;
         return out.Get();
     }
-    // o historico recomeca no proximo quadro (reset do jogo, troca de modo, rede calada)
-    void Recomeca() { vazio = true; integrado = false; }
+    // ressurreicao: a cada kIntervalo quadros (o PersistentFrameInterval do TSR, 31), o historico que Reprojeta acabou
+    // de escrever e o quadro cru deste quadro (`colour`, em kSrv) vao para um dos dois quadros persistentes, alternando
+    void Grava(ID3D12GraphicsCommandList* c, ID3D12Resource* colour)
+    {
+        if (vazio || !out || (contador++ % kIntervalo) != 0u)
+            return;
+        const D3D12_RESOURCE_STATES kCopiaDe = D3D12_RESOURCE_STATE_COPY_SOURCE, kCopiaPara = D3D12_RESOURCE_STATE_COPY_DEST;
+        ID3D12Resource* const h = hist[atual].Get();
+        Barrier(c, h, kSrv, kCopiaDe);
+        Barrier(c, colour, kSrv, kCopiaDe);
+        Barrier(c, perEdit[slot].Get(), kSrv, kCopiaPara);
+        Barrier(c, perRaw[slot].Get(), kSrv, kCopiaPara);
+        c->CopyResource(perEdit[slot].Get(), h);
+        c->CopyResource(perRaw[slot].Get(), colour);
+        Barrier(c, perRaw[slot].Get(), kCopiaPara, kSrv);
+        Barrier(c, perEdit[slot].Get(), kCopiaPara, kSrv);
+        Barrier(c, colour, kCopiaDe, kSrv);
+        Barrier(c, h, kCopiaDe, kSrv);
+        persist |= 1u << slot;
+        slot ^= 1u;
+    }
+    // o historico recomeca no proximo quadro (reset do jogo, troca de modo, rede calada); os persistentes tambem
+    void Recomeca() { vazio = true; integrado = false; persist = 0; contador = 0; }
 
   private:
-    static constexpr UINT kSrvs = 7, kUavs = 4, kBloco = kSrvs + kUavs, kRegioes = 16, kConstants = 20;
+    static constexpr UINT kSrvs = 11, kUavs = 4, kBloco = kSrvs + kUavs, kRegioes = 16, kConstants = 24, kIntervalo = 31;
     ComPtr<ID3D12Device> device;
     ComPtr<ID3D12RootSignature> root;
     ComPtr<ID3D12PipelineState> psoIntegra, psoReprojeta;
     ComPtr<ID3D12DescriptorHeap> heap;
     UINT passo = 0, regiao = 0;
-    ComPtr<ID3D12Resource> hist[2], meta[2], prof[2], histInt, out;
-    UINT largura = 0, altura = 0, atual = 0;
+    ComPtr<ID3D12Resource> hist[2], meta[2], prof[2], histInt, out, perEdit[2], perRaw[2];
+    UINT largura = 0, altura = 0, atual = 0, persist = 0, slot = 0, contador = 0;
     bool integrado = false, vazio = true;
 
     ComPtr<ID3D12PipelineState> Compila(const char* define, const char* entrada)

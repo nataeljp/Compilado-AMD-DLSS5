@@ -59,9 +59,9 @@ inline bool FreeFits(unsigned w, unsigned h)
     FreeProcessing(w, h, pw, ph);
     return pw <= 8192u && ph <= 8192u && 1ull * pw * ph <= 3840ull * 2176ull;
 }
-// O tamanho exato da rede. Screen Percentage (25..100, o do TSR): cada eixo do quadro x SP. Automatica (0): o quadro x
-// NR resolution, encaixado em 1920x1080 como sempre (o custo padrao nao muda). Depois, o que nao couber na superficie
-// do runtime encolhe 1% por vez, mantendo a proporcao.
+// O tamanho exato da rede. Screen Percentage (25..200, o do TSR; acima de 100 a rede recebe uma copia ampliada): cada eixo
+// do quadro x SP. 0: o quadro x NR resolution encaixado em 1920x1080 (o teto dos degraus). Depois, o que nao couber na
+// superficie do runtime encolhe 1% por vez, mantendo a proporcao.
 inline void FreeNetworkSize(unsigned frameW, unsigned frameH, float nrScale, float screenPct, unsigned& mw, unsigned& mh)
 {
     frameW = (std::max)(frameW, 1u);
@@ -69,7 +69,7 @@ inline void FreeNetworkSize(unsigned frameW, unsigned frameH, float nrScale, flo
     double fw, fh;
     if (screenPct > 0.f)
     {
-        const double sp = std::clamp(double(screenPct), 25.0, 100.0) / 100.0;
+        const double sp = std::clamp(double(screenPct), 25.0, 200.0) / 100.0;
         fw = frameW * sp;
         fh = frameH * sp;
     }

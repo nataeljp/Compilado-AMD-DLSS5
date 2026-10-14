@@ -858,10 +858,6 @@ class Config
     // [lmxxf2] resolucao livre da rede: o runtime roda o tamanho exato pedido (DLSS5_NETWORK_FREE_RES=1), sem os degraus
     // 720/900/1080, ate a superficie 4K dele. O runtime le a flag uma vez por processo: vale ao reabrir o jogo.
     CustomOptional<bool> AmdLmxxfFreeRes { true };
-    // [lmxxf2] Screen Percentage da rede, como o do TSR: a rede roda em (quadro x SP) exato, 25..100 (% de cada eixo do
-    // quadro em que a edicao e composta; com "Depois do upscale", a saida). 0 = automatica (NR resolution % do cartao
-    // Desempenho, teto 1920x1080 como antes). So com a resolucao livre.
-    CustomOptional<float> AmdLmxxfScreenPct { 0.0f };
     CustomOptional<bool> LmxxfFullNetwork { false };
     CustomOptional<float> AmdLmxxfEditDetail { 1.0f };
     CustomOptional<float> AmdLmxxfEditSaturation { 1.0f };
@@ -923,6 +919,13 @@ class Config
     // [lmxxf2] TSR da rede (dlssnr/lmxxf/EditTsr.h): acumulo temporal da EDICAO da rede; o quadro do jogo fica intacto
     CustomOptional<bool> TsrRede { true };         // liga o TSR na edicao da rede
     CustomOptional<bool> TsrJitter { true };       // jitter subpixel na entrada da rede (a edicao converge para a saida)
+    CustomOptional<bool> TsrResurrection { true }; // ressurreicao de historico (2 quadros persistentes, a cada 31 quadros)
+    // Screen Percentage da rede pela vazao do TSR: (pixels da rede) x (respostas/s) = alvo em MP/s, com o SP entre o
+    // minimo e o maximo (% de cada eixo do quadro). Desligado: o SP e o NR resolution (cartao Desempenho), exato.
+    CustomOptional<bool> TsrFeedAuto { true };
+    CustomOptional<float> TsrFeedMps { 124.4f };   // a referencia da Epic: 1080p a 60 Hz (ou 4K a 50% a 60 Hz)
+    CustomOptional<float> TsrFeedSpMin { 50.0f };
+    CustomOptional<float> TsrFeedSpMax { 100.0f };
     CustomOptional<float> TsrMaxSamples { 16.0f }; // amostras acumuladas no maximo: menos = responde rapido, mais = estavel
     CustomOptional<float> TsrClipGamma { 1.0f };   // largura do recorte do historico pela resposta nova: menos = menos atraso
     CustomOptional<float> TsrParallax { 1.0f };    // sensibilidade a desoclusao pela profundidade
