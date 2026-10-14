@@ -85,8 +85,6 @@ std::string UpscalerDisplayName(Upscaler upscaler, API api)
     case Upscaler::FSR_RR:
         return "FSR";
 
-    case Upscaler::TSR:
-        return "TSR (lmxxf2)";
     }
 
     return "????";
@@ -128,8 +126,6 @@ std::string UpscalerShortName(Upscaler upscaler)
     case Upscaler::DLSSD:
         return "DLSSD";
 
-    case Upscaler::TSR:
-        return "TSR";
     }
 
     return "????";
@@ -166,8 +162,6 @@ std::string UpscalerToCode(Upscaler upscaler)
         return "fsr-rr";
     case Upscaler::FSR31: // DX11 only
         return "fsr31";
-    case Upscaler::TSR: // [lmxxf2]
-        return "tsr";
     default: // Upscaler::Reset and unknown
         return "";
     }
@@ -185,7 +179,7 @@ Upscaler CodeToUpscaler(const std::string& code)
         { "dlssd", Upscaler::DLSSD },       { "fsr31", Upscaler::FSR31 },
         { "fsr31_12", Upscaler::FFX_on12 }, // for compat reasons
         { "fsr-rr", Upscaler::FSR_RR },
-        { "tsr", Upscaler::TSR }, // [lmxxf2]
+        { "tsr", Upscaler::FFX }, // [lmxxf2] o TSR proprio saiu da lista de upscalers: um ini antigo volta ao FFX
     };
 
     auto it = mapping.find(code);

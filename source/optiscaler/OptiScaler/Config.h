@@ -855,6 +855,13 @@ class Config
     CustomOptional<bool> AmdLmxxfHistory { true };
     // [lmxxf2] rejeição estilo TSR no arrasto da edição (Edit accumulation também sem Model interleave)
     CustomOptional<bool> AmdLmxxfTsrCarry { true };
+    // [lmxxf2] resolucao livre da rede: o runtime roda o tamanho exato pedido (DLSS5_NETWORK_FREE_RES=1), sem os degraus
+    // 720/900/1080, ate a superficie 4K dele. O runtime le a flag uma vez por processo: vale ao reabrir o jogo.
+    CustomOptional<bool> AmdLmxxfFreeRes { true };
+    // [lmxxf2] Screen Percentage da rede, como o do TSR: a rede roda em (quadro x SP) exato, 25..100 (% de cada eixo do
+    // quadro em que a edicao e composta; com "Depois do upscale", a saida). 0 = automatica (NR resolution % do cartao
+    // Desempenho, teto 1920x1080 como antes). So com a resolucao livre.
+    CustomOptional<float> AmdLmxxfScreenPct { 0.0f };
     CustomOptional<bool> LmxxfFullNetwork { false };
     CustomOptional<float> AmdLmxxfEditDetail { 1.0f };
     CustomOptional<float> AmdLmxxfEditSaturation { 1.0f };
@@ -913,13 +920,14 @@ class Config
     CustomOptional<float> AmdRtgiFov { 60 };
     CustomOptional<float> AmdRtgiFarPlane { 600 };
     // [lmxxf2] Ray Regeneration do jogo (denoiser FFX 1.2 que o jogo cria): sem valor = o que o jogo pediu
-    // [lmxxf2] TSR proprio (upscalers/tsr)
-    CustomOptional<float> TsrMaxSamples { 16.0f }; // amostras acumuladas no maximo: menos = menos rastro, mais ruido
-    CustomOptional<float> TsrClipGamma { 1.0f };   // largura do recorte de cor do historico: menos = menos rastro
+    // [lmxxf2] TSR da rede (dlssnr/lmxxf/EditTsr.h): acumulo temporal da EDICAO da rede; o quadro do jogo fica intacto
+    CustomOptional<bool> TsrRede { true };         // liga o TSR na edicao da rede
+    CustomOptional<bool> TsrJitter { true };       // jitter subpixel na entrada da rede (a edicao converge para a saida)
+    CustomOptional<float> TsrMaxSamples { 16.0f }; // amostras acumuladas no maximo: menos = responde rapido, mais = estavel
+    CustomOptional<float> TsrClipGamma { 1.0f };   // largura do recorte do historico pela resposta nova: menos = menos atraso
     CustomOptional<float> TsrParallax { 1.0f };    // sensibilidade a desoclusao pela profundidade
-    CustomOptional<float> TsrSpatialAA { 0.5f };   // anti-aliasing espacial onde nao ha historico
     CustomOptional<float> TsrFlicker { 0.75f };    // rejeicao com deteccao de cintilacao (0 = desligada)
-    CustomOptional<float> TsrFlickerMaxVel { 4.0f }; // px de render: movimento acima disso nao e protegido
+    CustomOptional<float> TsrFlickerMaxVel { 4.0f }; // px do quadro: movimento acima disso nao e protegido
     CustomOptional<bool> RrJogoAjustar { false };
     CustomOptional<float, NoDefault> RrJogoCrossBlNormStr;
     CustomOptional<float, NoDefault> RrJogoStabilityBias;

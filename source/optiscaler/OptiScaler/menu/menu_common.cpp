@@ -906,8 +906,7 @@ void MenuCommon::AddDx11Backends(Upscaler upscaler)
 void MenuCommon::AddDx12Backends(Upscaler upscaler)
 {
     RenderUpscalerCombo(API::DX12, upscaler,
-                        { Upscaler::XeSS, Upscaler::FSR21, Upscaler::FSR22, Upscaler::FFX, Upscaler::DLSS,
-                          Upscaler::TSR }); // [lmxxf2] TSR proprio
+                        { Upscaler::XeSS, Upscaler::FSR21, Upscaler::FSR22, Upscaler::FFX, Upscaler::DLSS });
 }
 
 void MenuCommon::AddVulkanBackends(Upscaler upscaler)
@@ -8265,6 +8264,8 @@ const MenuCommon::MenuBox* MenuCommon::GetMenuBoxes(size_t& count)
         // [lmxxf2] aba DLSS5
         { "lmxxf2_rede", "DLSS5", "Rede DLSS5 (lmxxf 2)",
           [](RenderMenuContext& c) { RenderCard(c, [](RenderMenuContext& cc) { SectionTitle("Rede DLSS5 (lmxxf 2)"); Lmxxf2Menu::Rede(cc.config); }); } },
+        { "lmxxf2_tsr", "DLSS5", "Resolucao e TSR da rede",
+          [](RenderMenuContext& c) { RenderCard(c, [](RenderMenuContext& cc) { SectionTitle("Resolucao e TSR da rede"); Lmxxf2Menu::ResolucaoTsr(cc.config); }); } },
         { "lmxxf2_estilo_amdnr", "DLSS5", "Preset e estilos salvos (AMDNR)",
           [](RenderMenuContext& c) { RenderCard(c, [](RenderMenuContext& cc) { SectionTitle("Preset e estilos salvos"); DlssNr::NeuralUi::DrawPresetAndStyle(Lmxxf2Menu::CtxNeural(cc.config)); }); } },
         { "lmxxf2_desempenho_amdnr", "DLSS5", "Desempenho da rede",
@@ -8288,8 +8289,6 @@ const MenuCommon::MenuBox* MenuCommon::GetMenuBoxes(size_t& count)
           [](RenderMenuContext& c) { if (IsUpscalerActive(c.currentFeature)) RenderCard(c, RenderActiveUpscalerSettings); } },
         { "lmxxf2_rrjogo", "Upscaling", "Ray Regeneration do jogo (AMD)",
           [](RenderMenuContext& c) { RenderCard(c, [](RenderMenuContext& cc) { SectionTitle("Ray Regeneration do jogo (AMD)"); Lmxxf2Menu::RrJogo(cc.config); }); } },
-        { "lmxxf2_tsr", "Upscaling", "TSR (lmxxf2)",
-          [](RenderMenuContext& c) { RenderCard(c, [](RenderMenuContext& cc) { SectionTitle("TSR (lmxxf2)"); Lmxxf2Menu::Tsr(cc.config); }); } },
         { "sharpness", "Upscaling", "Sharpness",
           [](RenderMenuContext& c) { if (IsUpscalerActive(c.currentFeature)) RenderCard(c, RenderActiveImageSettings); } },
         { "upscale_ratio", "Upscaling", "Upscale Ratio Override",

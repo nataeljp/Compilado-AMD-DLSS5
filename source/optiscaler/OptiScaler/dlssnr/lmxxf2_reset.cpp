@@ -44,6 +44,17 @@ const Cartao kCartoes[] = {
             Zera(c->DlssNrSkinStructure);
             Zera(c->Lmxxf2Placement);
         } },
+        { "lmxxf2_tsr", 9, [](Config* c) {
+            Zera(c->AmdLmxxfFreeRes);
+            Zera(c->AmdLmxxfScreenPct);
+            Zera(c->TsrClipGamma);
+            Zera(c->TsrFlicker);
+            Zera(c->TsrFlickerMaxVel);
+            Zera(c->TsrJitter);
+            Zera(c->TsrMaxSamples);
+            Zera(c->TsrParallax);
+            Zera(c->TsrRede);
+        } },
         { "lmxxf2_desempenho_amdnr", 11, [](Config* c) {
             Zera(c->AmdDanielFastMode);
             Zera(c->AmdDynamicRes);
@@ -233,14 +244,6 @@ const Cartao kCartoes[] = {
             Zera(c->RrJogoMaxRadiance);
             Zera(c->RrJogoRadianceClip);
             Zera(c->RrJogoStabilityBias);
-        } },
-        { "lmxxf2_tsr", 6, [](Config* c) {
-            Zera(c->TsrClipGamma);
-            Zera(c->TsrFlicker);
-            Zera(c->TsrFlickerMaxVel);
-            Zera(c->TsrMaxSamples);
-            Zera(c->TsrParallax);
-            Zera(c->TsrSpatialAA);
         } },
         { "sharpness", 14, [](Config* c) {
             Zera(c->Contrast);

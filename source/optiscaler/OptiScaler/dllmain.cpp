@@ -1628,6 +1628,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         // [lmxxf2] modo seguro: a sessão anterior caiu cedo? desliga spoof / FG automático / rede, um nível por queda
         Lmxxf2Seguro::Inicia();
 
+        // [lmxxf2] resolução livre da rede: o runtime lmxxf lê DLSS5_NETWORK_FREE_RES no ambiente (a do ambiente vence os
+        // arquivos de configuração dele) e é carregado bem depois daqui; definida agora, antes de qualquer DLL do runtime
+        // existir no processo, a cópia do ambiente da CRT estática dele já nasce com ela. Vale o processo inteiro.
+        SetEnvironmentVariableA("DLSS5_NETWORK_FREE_RES", Config::Instance()->AmdLmxxfFreeRes.value_or_default() ? "1" : "0");
+
         // [lmxxf2] FG automático: com FGInput/FGOutput em auto no ini, escolhe pelo que o jogo trouxe (valores voláteis)
         Lmxxf2AutoFg::Aplica();
 

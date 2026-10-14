@@ -166,10 +166,10 @@ Texture2D<float> expo : register(t1);
 Texture2D<float4> edit : register(t2);
 RWTexture2D<OUT_T> dst : register(u0);
 SamplerState samp : register(s0);
-cbuffer P : register(b0) { uint w; uint h; uint mode; float k; float sx; float sy; float srcW; float srcH; }
+cbuffer P : register(b0) { uint w; uint h; uint mode; float k; float sx; float sy; float srcW; float srcH; float jx; float jy; }
 [numthreads(8,8,1)] void main(uint3 tid : SV_DispatchThreadID) {
  if (tid.x >= w || tid.y >= h) return;
- float2 uv = ((float2(tid.xy) + 0.5) * float2(sx, sy)) / float2(srcW, srcH);
+ float2 uv = ((float2(tid.xy) + 0.5 + float2(jx, jy)) * float2(sx, sy)) / float2(srcW, srcH);
  float4 v = src.SampleLevel(samp, uv, 0);
  if (!all(isfinite(v.rgb))) v.rgb = 0.0;
  if (!isfinite(v.a)) v.a = 1.0;
@@ -297,7 +297,7 @@ Texture2D<float4> src : register(t0);
 Texture2D<float2> hist : register(t1);
 RWTexture2D<float2> dst : register(u0);
 SamplerState samp : register(s0);
-cbuffer P : register(b0) { uint w; uint h; uint mode; float k; float sx; float sy; float srcW; float srcH; float scaleX; float scaleY; float renderW; float renderH; }
+cbuffer P : register(b0) { uint w; uint h; uint mode; float k; float sx; float sy; float srcW; float srcH; float scaleX; float scaleY; float renderW; float renderH; float jdx; float jdy; }
 [numthreads(8,8,1)] void main(uint3 tid : SV_DispatchThreadID) {
  if (tid.x >= w || tid.y >= h) return;
  float2 uv = ((float2(tid.xy) + 0.5) * float2(sx, sy)) / float2(srcW, srcH);
@@ -309,6 +309,7 @@ cbuffer P : register(b0) { uint w; uint h; uint mode; float k; float sx; float s
   float2 m1 = hist.SampleLevel(samp, pr / float2(renderW, renderH), 0);
   if (all(isfinite(m1))) total += m1;
  }
+ total += float2(jdx, jdy);
  dst[tid.xy] = total;
 }
 )";
@@ -420,6 +421,7 @@ bool GuardTarget(float3 a, float3 rs, out float3 g) {
 float3 editAt(int2 p, float e) {
  float2 uv = (float2(clamp(p, int2(0,0), int2(int(w)-1, int(h)-1))) + 0.5) / float2(float(w), float(h));
  float3 rw = raw.SampleLevel(samp, uv, 0).rgb;
+ if (mode == 2u) rw /= e; // [lmxxf2] modo 2: raw e o que a rede recebeu (fed = quadro x e), na resolucao dela
  float3 rs = rw * e;
  float wt = GuardWeight(rs);
  float3 g;
@@ -440,7 +442,7 @@ float3 editAt(int2 p, float e) {
 }
 [numthreads(8,8,1)] void main(uint3 tid : SV_DispatchThreadID) {
  if (tid.x >= w || tid.y >= h) return;
- if (mode != 0u) { dst[tid.xy] = float4(0.0, 0.0, 0.0, 0.0); return; }
+ if (mode == 1u) { dst[tid.xy] = float4(0.0, 0.0, 0.0, 0.0); return; }
  int2 p = int2(tid.xy);
  float e = expo.Load(int3(0,0,0)).r;
  if (!(isfinite(e) && e > 0.0)) e = 1.0;
@@ -456,12 +458,21 @@ float3 editAt(int2 p, float e) {
   r = lum + (r - lum) * saturation;
  }
  if (edgeGuard > 0.001) {
-  float dc = depth.Load(int3(p,0)).r;
+  // [lmxxf2] modo 2 roda na resolucao da rede: a profundidade (do tamanho do quadro) e lida no ponto correspondente
+  uint dw = w, dh = h;
+  if (mode == 2u) depth.GetDimensions(dw, dh);
+  float2 dk = float2(float(dw), float(dh)) / float2(float(w), float(h));
+  int2 q0 = mode == 2u ? int2((float2(p) + 0.5) * dk) : p;
+  int2 qn = mode == 2u ? int2((float2(clamp(p + int2(0,-1), int2(0,0), int2(int(w)-1,int(h)-1))) + 0.5) * dk) : clamp(p + int2(0,-1), int2(0,0), int2(int(w)-1,int(h)-1));
+  int2 qs = mode == 2u ? int2((float2(clamp(p + int2(0, 1), int2(0,0), int2(int(w)-1,int(h)-1))) + 0.5) * dk) : clamp(p + int2(0, 1), int2(0,0), int2(int(w)-1,int(h)-1));
+  int2 qw = mode == 2u ? int2((float2(clamp(p + int2(-1,0), int2(0,0), int2(int(w)-1,int(h)-1))) + 0.5) * dk) : clamp(p + int2(-1,0), int2(0,0), int2(int(w)-1,int(h)-1));
+  int2 qe = mode == 2u ? int2((float2(clamp(p + int2( 1,0), int2(0,0), int2(int(w)-1,int(h)-1))) + 0.5) * dk) : clamp(p + int2( 1,0), int2(0,0), int2(int(w)-1,int(h)-1));
+  float dc = depth.Load(int3(q0,0)).r;
   float g = 0.0;
-  g = max(g, abs(depth.Load(int3(clamp(p + int2(0,-1), int2(0,0), int2(int(w)-1,int(h)-1)),0)).r - dc));
-  g = max(g, abs(depth.Load(int3(clamp(p + int2(0, 1), int2(0,0), int2(int(w)-1,int(h)-1)),0)).r - dc));
-  g = max(g, abs(depth.Load(int3(clamp(p + int2(-1,0), int2(0,0), int2(int(w)-1,int(h)-1)),0)).r - dc));
-  g = max(g, abs(depth.Load(int3(clamp(p + int2( 1,0), int2(0,0), int2(int(w)-1,int(h)-1)),0)).r - dc));
+  g = max(g, abs(depth.Load(int3(qn,0)).r - dc));
+  g = max(g, abs(depth.Load(int3(qs,0)).r - dc));
+  g = max(g, abs(depth.Load(int3(qw,0)).r - dc));
+  g = max(g, abs(depth.Load(int3(qe,0)).r - dc));
   float rel = isfinite(g) && isfinite(dc) ? g / max(abs(dc), 1e-5) : 0.0;
   float edge = saturate((rel - 0.01) / 0.05);
   r *= 1.0 - edgeGuard * edge;
@@ -832,6 +843,21 @@ ComPtr<ID3D12Resource> Texture(ID3D12Device* d, UINT w, UINT h, DXGI_FORMAT fmt)
     rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     ComPtr<ID3D12Resource> r;
     Check(d->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, kSrv, nullptr, IID_PPV_ARGS(&r)), "texture");
+    return r;
+}
+
+#include "EditTsr.h" // [lmxxf2] TSR da rede
+
+// [lmxxf2] Halton (base 2 / 3), o jitter da alimentacao do TSR da rede
+float Halton(unsigned i, unsigned b)
+{
+    float f = 1.f, r = 0.f;
+    while (i > 0)
+    {
+        f /= float(b);
+        r += f * float(i % b);
+        i /= b;
+    }
     return r;
 }
 
@@ -1266,7 +1292,22 @@ struct Backend::Impl
     std::unique_ptr<AmdPreSr::Sharpen> sharpen;
     ComPtr<ID3D12Resource> full;      // this frame's colour, FP16, render size, game units: the temporal pass's current frame
     ComPtr<ID3D12Resource> fed;       // what the network is fed: the colour times the exposure, at the model's size
-    ComPtr<ID3D12Resource> freshEdit; // the model's edit of the frame it was last fed, render size, game units
+    ComPtr<ID3D12Resource> freshEdit;
+    // [lmxxf2] TSR da rede (EditTsr.h): a edicao da resposta na resolucao da rede, o passe, e o jitter da alimentacao:
+    // o desta alimentacao, o do trabalho em voo (preso no RecordInputs, usado quando a resposta chega) e o da anterior
+    // (o historico proprio da rede precisa da troca). Respostas por segundo para o menu (a vazao do TSR).
+    std::unique_ptr<EditTsr> editTsr;
+    ComPtr<ID3D12Resource> editNet;
+    bool tsrBroken = false;
+    int loggedTsr = -1;
+    unsigned tsrHalton = 0;
+    float jitFeedX = 0.f, jitFeedY = 0.f, jitJobX = 0.f, jitJobY = 0.f, jitLastX = 0.f, jitLastY = 0.f;
+    LONGLONG tsrQpc = 0;
+    unsigned answersWindow = 0;
+    ULONGLONG answersWindowStart = 0;
+    float statAnswersPerSec = 0.f;
+    bool statTsrOn = false, statTsrJitter = false, statFreeRes = false;
+    UINT loggedFreeW = 0, loggedFreeH = 0; // the model's edit of the frame it was last fed, render size, game units
     ComPtr<ID3D12Resource> expoJob;   // 1x1: the exposure the job in flight was fed with
     ComPtr<ID3D12Resource> autoExpo;  // 4x1: the auto-exposure loop's state (see AutoExposureShader)
     ComPtr<ID3D12Resource> motionScratch;
@@ -2211,7 +2252,7 @@ ID3D12Resource* Backend::Impl::Record(ID3D12GraphicsCommandList* cmd, const AmdP
         exposurePass = std::make_unique<Pass>(device.Get(), ExposureShader, sizeof(ExposureShader), "lmxxf exposure", 1u, nullptr);
         blitColour = std::make_unique<Pass>(device.Get(), BlitShader, sizeof(BlitShader), "lmxxf blit", 3u, m4);
         blitMotion = std::make_unique<Pass>(device.Get(), BlitShader, sizeof(BlitShader), "lmxxf motion blit", 3u, m2);
-        motionChain = std::make_unique<Pass>(device.Get(), MotionChainShader, sizeof(MotionChainShader), "lmxxf motion chain", 2u, nullptr);
+        motionChain = std::make_unique<Pass>(device.Get(), MotionChainShader, sizeof(MotionChainShader), "lmxxf motion chain", 2u, nullptr, 14u);
         residual = std::make_unique<Pass>(device.Get(), ResidualShader, sizeof(ResidualShader), "lmxxf residual", 4u, nullptr);
         blitDepth = std::make_unique<Pass>(device.Get(), DepthBlitShader, sizeof(DepthBlitShader), "lmxxf depth blit", 1u, nullptr);
         lumaDown = std::make_unique<Pass>(device.Get(), LumaDownShader, sizeof(LumaDownShader), "lmxxf luma down", 1u, nullptr);
@@ -2248,9 +2289,33 @@ ID3D12Resource* Backend::Impl::Record(ID3D12GraphicsCommandList* cmd, const AmdP
     // [DlssNr] AmdLmxxfTierCap=360 / 576) or a cap below 1080 the size is PlanLmxxfSize's. Neither (every desktop by
     // default): the 0.3.3.2 expression below, unchanged.
     DecideTierPolicy();
-    const bool tierPlanned = TierPlanned();
+    // [lmxxf2] resolucao livre: o tamanho exato (Lmxxf::FreeNetworkSize), sem degraus nem plano de degraus
+    const bool freeRes = cfg.lmxxfFreeRes;
+    statFreeRes = freeRes;
+    const bool tierPlanned = !freeRes && TierPlanned();
     Lmxxf::TierPlan tierPlan {};
-    if (!tierPlanned)
+    if (freeRes)
+    {
+        Lmxxf::FreeNetworkSize(f.width, f.height, cfg.modelScale, cfg.lmxxfScreenPct, wantW, wantH);
+        askedW = wantW;
+        askedH = wantH;
+        if (wantW != loggedFreeW || wantH != loggedFreeH)
+        {
+            loggedFreeW = wantW;
+            loggedFreeH = wantH;
+            unsigned pw = 0, ph = 0;
+            Lmxxf::FreeProcessing(wantW, wantH, pw, ph);
+            char buf[256];
+            std::snprintf(buf, sizeof buf,
+                          "lmxxf2: resolucao livre - rede %ux%u exata (%s %.0f%%; processamento %ux%u, ~%.2fx o custo do "
+                          "1080p) sobre o quadro %ux%u",
+                          wantW, wantH, cfg.lmxxfScreenPct > 0.f ? "Screen Percentage" : "automatica, NR resolution com teto 1080p:",
+                          cfg.lmxxfScreenPct > 0.f ? double(cfg.lmxxfScreenPct) : 100.0 * wantH / (std::max)(f.height, 1u), pw, ph,
+                          Lmxxf::FreeCostVs1080(wantW, wantH), f.width, f.height);
+            Log(buf);
+        }
+    }
+    else if (!tierPlanned)
     {
         ModelSize(f.width, f.height, cfg.modelScale, wantW, wantH);
         // (0.3.4, FPS-Q1) [DlssNr] AmdLmxxfTierSnap: the size moved to a network tier box (SnapToNetworkTier: lowered to
@@ -2277,7 +2342,7 @@ ID3D12Resource* Backend::Impl::Record(ID3D12GraphicsCommandList* cmd, const AmdP
     bool fastApplied = false;
     int fastState = 0;
     const UINT defaultW = wantW, defaultH = wantH;
-    if (FastModeOn())
+    if (!freeRes && FastModeOn())
     {
         const unsigned defaultTier = static_cast<unsigned>(Lmxxf::LmxxfNetworkTier(wantW, wantH, tierSmall));
         fastApplied = Lmxxf::PlanLmxxfFastSize(f.width, f.height, cfg.modelScale, defaultTier, tierSmall, cfg.lmxxfTierSnap, fastPlan);
@@ -2382,6 +2447,7 @@ ID3D12Resource* Backend::Impl::Record(ID3D12GraphicsCommandList* cmd, const AmdP
         Bury(composeDelta); // RenoDX mode's delta, at the model's size like fed; remade on its next use (never made in Classic)
         Bury(full);
         Bury(freshEdit);
+        Bury(editNet); // [lmxxf2] TSR da rede, refeita abaixo no tamanho novo da rede
         Bury(motionScratch);
         Bury(motionFed);
         Bury(lookOut); Bury(lightOut); // [lmxxf2-luz]
@@ -2395,6 +2461,9 @@ ID3D12Resource* Backend::Impl::Record(ID3D12GraphicsCommandList* cmd, const AmdP
         full = Texture(device.Get(), w, h, kFp16);
         fed = Texture(device.Get(), mw, mh, kFp16);
         freshEdit = Texture(device.Get(), w, h, kFp16);
+        editNet = Texture(device.Get(), mw, mh, kFp16); // [lmxxf2]
+        if (editTsr)
+            editTsr->Recomeca();
         lookOut = Texture(device.Get(), w, h, kFp16);
         lightOut = Texture(device.Get(), w, h, kFp16); // [lmxxf2-luz]
         motionFed = Texture(device.Get(), mw, mh, DXGI_FORMAT_R16G16_FLOAT);
@@ -2664,6 +2733,85 @@ ID3D12Resource* Backend::Impl::Record(ID3D12GraphicsCommandList* cmd, const AmdP
     bool fresh = false;
     // No-motion mode: the textures it carries with, allocated on demand and zeroed once.
     const bool noMotion = cfg.lmxxfNoMotion && lumaDown && blockMatch && editWarp;
+    // [lmxxf2] TSR da rede (EditTsr.h): com vetores de movimento (o modo sem movimento tem o arrasto proprio). Quando
+    // liga, desliga ou o passe nao pode ser feito, uma linha no log; um erro desliga so ele, a rede segue.
+    const bool tsrWant = cfg.tsrRede && !noMotion && !tsrBroken && editNet;
+    if (tsrWant && !editTsr)
+    {
+        try
+        {
+            editTsr = std::make_unique<EditTsr>(device.Get());
+        }
+        catch (const std::exception& e)
+        {
+            tsrBroken = true;
+            Log(std::string("lmxxf2: TSR da rede desligado nesta sessao (") + e.what() + "); a rede segue com o arrasto do AMDNR");
+        }
+    }
+    const bool tsrOn = tsrWant && editTsr != nullptr;
+    const bool tsrLifted = mw < w || mh < h;
+    if (tsrOn)
+        editTsr->Garante(w, h, [this](ComPtr<ID3D12Resource>& r) { Bury(r); });
+    {
+        const int estado = !tsrOn ? 0 : (tsrLifted && cfg.tsrJitter) ? 2 : 1;
+        if (estado != loggedTsr)
+        {
+            if (editTsr)
+                editTsr->Recomeca();
+            loggedTsr = estado;
+            char buf[320];
+            if (estado == 0)
+                std::snprintf(buf, sizeof buf, "lmxxf2: TSR da rede desligado (%s) - a edicao volta ao arrasto do AMDNR",
+                              !cfg.tsrRede ? "[TSR] Rede=false" : noMotion ? "modo sem vetores" : tsrBroken ? "falhou" : "sem textura");
+            else
+                std::snprintf(buf, sizeof buf,
+                              "lmxxf2: TSR da rede ligado - edicao medida a %ux%u contra o que a rede recebeu e acumulada a %ux%u "
+                              "(%s); o quadro do jogo nao e tocado",
+                              mw, mh, w, h, estado == 2 ? "jitter Halton 2,3 na entrada: a edicao converge para a saida" : "sem jitter: rede no tamanho do quadro ou jitter desligado");
+            Log(buf);
+        }
+    }
+    statTsrOn = tsrOn;
+    statTsrJitter = tsrOn && tsrLifted && cfg.tsrJitter;
+    // respostas da rede por segundo (a vazao: mw x mh x isto)
+    {
+        const ULONGLONG agora = GetTickCount64();
+        if (!answersWindowStart)
+            answersWindowStart = agora;
+        if (agora - answersWindowStart >= 1000)
+        {
+            statAnswersPerSec = answersWindow * 1000.f / float(agora - answersWindowStart);
+            answersWindow = 0;
+            answersWindowStart = agora;
+        }
+    }
+    // o tempo deste quadro (os fatores de cintilacao sao de 60 fps e convertidos por ele: VRR / FreeSync)
+    float tsrFrameRatio = 1.f;
+    {
+        LARGE_INTEGER qn {}, qf {};
+        QueryPerformanceCounter(&qn);
+        QueryPerformanceFrequency(&qf);
+        if (tsrQpc != 0 && qf.QuadPart > 0)
+            tsrFrameRatio = static_cast<float>(std::clamp(double(qn.QuadPart - tsrQpc) * 1000.0 / double(qf.QuadPart) / 16.667, 0.1, 6.0));
+        tsrQpc = qn.QuadPart;
+    }
+    auto tsrParams = [&](float jx, float jy) {
+        EditTsr::Params k {};
+        k.outW = w;
+        k.outH = h;
+        k.netW = mw;
+        k.netH = mh;
+        k.jitX = jx;
+        k.jitY = jy;
+        k.maxSamples = cfg.tsrMaxSamples;
+        k.clipGamma = cfg.tsrClipGamma;
+        k.parallax = cfg.tsrParallax;
+        k.flicker = cfg.tsrFlicker;
+        k.flickerMaxVel = cfg.tsrFlickerMaxVel;
+        k.frameRatio = tsrFrameRatio;
+        k.kernelK = 3.f;
+        return k;
+    };
     // EDIT ACCUMULATION (interleave preset 10; the temporal pass runs it as 11 - TemporalStability.h
     // has the full note): this frame's raw + the carried edit on every frame, validated raw against
     // raw, each answer spread over two frames, the stored edit never multiplied by `keep`. With
@@ -2892,6 +3040,32 @@ ID3D12Resource* Backend::Impl::Record(ID3D12GraphicsCommandList* cmd, const AmdP
                 if (!edgeDepthHist) Barrier(cmd, depth, kSrv, depthState);
                 whiteSource = AmdPreSr::kCompositionWhiteNone;
             }
+            // [lmxxf2] TSR da rede: a mesma edicao (mesmos controles), medida na resolucao da rede contra o que ela
+            // recebeu (fed / exposicao), entao o quadro 4K fica intacto; juntada ao historico do TSR no espaco do quadro
+            // N-1, com o jitter com que este trabalho foi alimentado. A resposta atrasada (graca) fica de fora.
+            if (tsrOn && !lateAnswer)
+            {
+                if (!edgeDepthHist) Barrier(cmd, depth, depthState, kSrv);
+                Barrier(cmd, editNet.Get(), kSrv, kUav);
+                if (jobCompose && composePass && residualDelta && composeDelta)
+                {
+                    ID3D12Resource* srvn[5] = { composeDelta.Get(), fed.Get(), expoJob.Get(), edgeDepth, netOut };
+                    const DXGI_FORMAT fmtsn[5] = { kFp16, kFp16, DXGI_FORMAT_R32_FLOAT, edgeDepthFmt, kFp16 };
+                    residualDelta->Run(cmd, srvn, fmtsn, editNet.Get(), kFp16, mw, mh, 2u, shapeIntensity, shapeDetail,
+                                       shapeSaturation, shapeEdgeGuard, true, residualFade, shapeChromaGuard ? 1.f : 0.f);
+                }
+                else
+                {
+                    ID3D12Resource* srvn[4] = { netOut, fed.Get(), expoJob.Get(), edgeDepth };
+                    const DXGI_FORMAT fmtsn[4] = { kFp16, kFp16, DXGI_FORMAT_R32_FLOAT, edgeDepthFmt };
+                    residual->Run(cmd, srvn, fmtsn, editNet.Get(), kFp16, mw, mh, 2u, shapeIntensity, shapeDetail,
+                                  shapeSaturation, shapeEdgeGuard, true, residualFade, shapeChromaGuard ? 1.f : 0.f);
+                }
+                Barrier(cmd, editNet.Get(), kUav, kSrv);
+                if (!edgeDepthHist) Barrier(cmd, depth, kSrv, depthState);
+                editTsr->Integra(cmd, editNet.Get(), tsrParams(jitJobX, jitJobY));
+            }
+            ++answersWindow;
             if (lateAnswer)
             {
                 // (0.3.4, P3) The late answer's edit, in the space of the frame it was fed, brought into the previous
@@ -2940,7 +3114,11 @@ ID3D12Resource* Backend::Impl::Record(ID3D12GraphicsCommandList* cmd, const AmdP
     // apart (the network runs at its own pace), so the limit is wider there.
     const UINT nmRest = cfg.interleave >= 2.f ? static_cast<UINT>(cfg.interleave) : 1u;
     if (!fresh && ++framesSinceFresh == (noMotion ? (std::max)(30u, 4u * nmRest + 16u) : 9u))
+    {
         Zero(cmd, noMotion ? carryHist.Get() : temporal->ResidualHistory());
+        if (editTsr)
+            editTsr->Recomeca(); // [lmxxf2] a ultima edicao envelheceu: o TSR da rede tambem a larga
+    }
     if (reset)
     {
         Zero(cmd, temporal->ResidualHistory());
@@ -3111,6 +3289,26 @@ ID3D12Resource* Backend::Impl::Record(ID3D12GraphicsCommandList* cmd, const AmdP
         residualCap,
         f.depthInverted ? 1.f : 0.f, /*heldGhostBound*/ 0.f, f.reactive, jitterDx, jitterDy, /*sharpGain*/ 0.f,
         staticRelax, (cfg.stabilityStaticDebug && !accumulate) ? 1.f : 0.f);
+    // [lmxxf2] TSR da rede: o historico da edicao reprojetado para este quadro (paralaxe, cor crua contra cor crua,
+    // cintilacao) e o quadro cru + edicao. O passe temporal acima continua rodando pelos historicos de movimento e
+    // profundidade que o resto usa (resposta atrasada, protecao de borda, historico da rede); a saida dele fica de lado.
+    if (tsrOn && out && !noMotion)
+    {
+        EditTsr::Params k = tsrParams(0.f, 0.f);
+        k.mvX = csx;
+        k.mvY = csy;
+        k.gridDx = jitterDx;
+        k.gridDy = jitterDy;
+        k.residualCap = residualCap;
+        k.flags = (f.depthInverted ? EditTsr::kInvertida : 0u) | (reset ? EditTsr::kRecomeca : 0u) |
+                  (depthMuted ? EditTsr::kSemProfundidade : 0u) | (motionMuted ? EditTsr::kSemVetores : 0u);
+        Barrier(cmd, motion, motionState, kSrv);
+        Barrier(cmd, depth, depthState, kSrv);
+        out = editTsr->Reprojeta(cmd, full.Get(), motion, MotionViewFormat(motion->GetDesc().Format), depth,
+                                 DepthViewFormat(depth->GetDesc().Format), expoJob.Get(), k);
+        Barrier(cmd, depth, kSrv, depthState);
+        Barrier(cmd, motion, kSrv, motionState);
+    }
     // Debug view 5 (lmxxf): the model's fresh edit added to this frame directly, no reprojection,
     // no carry. One frame late and unwarped, so it smears in motion - but it shows the edit
     // whatever the reprojection thinks. If this view shows an effect and the normal view does
@@ -3205,9 +3403,18 @@ ID3D12Resource* Backend::Impl::Record(ID3D12GraphicsCommandList* cmd, const AmdP
             // (the answer re-fed on the HIP stream), so nothing of ours goes into the copy.
             ID3D12Resource* srv2[3] = { full.Get(), expoJob.Get(), full.Get() };
             const DXGI_FORMAT fmts2[3] = { kFp16, DXGI_FORMAT_R32_FLOAT, kFp16 };
+            // [lmxxf2] TSR da rede: a entrada da rede amostrada com um jitter subpixel (Halton 2,3, em pixels da rede)
+            // quando ela e menor que o quadro; cada resposta cobre outras posicoes e o TSR acumula na saida
+            jitFeedX = jitFeedY = 0.f;
+            if (tsrOn && tsrLifted && cfg.tsrJitter)
+            {
+                const unsigned i = (tsrHalton++ % 16u) + 1u;
+                jitFeedX = Halton(i, 2u) - 0.5f;
+                jitFeedY = Halton(i, 3u) - 0.5f;
+            }
             Barrier(cmd, fed.Get(), kSrv, kUav);
             blitColour->Run(cmd, srv2, fmts2, fed.Get(), kFp16, mw, mh, 1u,
-                            float(w) / float(mw), float(h) / float(mh), float(w), float(h));
+                            float(w) / float(mw), float(h) / float(mh), float(w), float(h), true, 0.f, jitFeedX, jitFeedY);
             Barrier(cmd, fed.Get(), kUav, kSrv);
         }
         // The network's temporal history (upstream's path): the vectors at the model's size, raw
@@ -3228,9 +3435,16 @@ ID3D12Resource* Backend::Impl::Record(ID3D12GraphicsCommandList* cmd, const AmdP
             const DXGI_FORMAT fmts[2] = { MotionViewFormat(md.Format), DXGI_FORMAT_R16G16_FLOAT };
             Barrier(cmd, f.motion, f.motionState, kSrv);
             Barrier(cmd, motionFed.Get(), kSrv, kUav);
-            motionChain->Run(cmd, srv, fmts, motionFed.Get(), DXGI_FORMAT_R16G16_FLOAT, mw, mh, chainTwo ? 1u : 0u,
-                             float(mvW) / float(mw), float(mvH) / float(mh), float(md.Width), float(md.Height), true, 0.f,
-                             csx, csy, float(w), float(h));
+            // [lmxxf2] com o jitter do TSR da rede, a entrada da rede andou (jitter desta - jitter da anterior) pixels
+            // da rede entre as duas alimentacoes: somado aos vetores (pixels do quadro; o runtime multiplica por mw/w)
+            struct
+            {
+                UINT w, h, mode;
+                float k, sx, sy, srcW, srcH, scaleX, scaleY, renderW, renderH, jdx, jdy;
+            } mc { mw, mh, chainTwo ? 1u : 0u, 0.f, float(mvW) / float(mw), float(mvH) / float(mh), float(md.Width),
+                   float(md.Height), csx, csy, float(w), float(h), (jitFeedX - jitLastX) * float(w) / float(mw),
+                   (jitFeedY - jitLastY) * float(h) / float(mh) };
+            motionChain->RunConstants(cmd, srv, fmts, motionFed.Get(), DXGI_FORMAT_R16G16_FLOAT, mw, mh, &mc, 14u);
             Barrier(cmd, motionFed.Get(), kUav, kSrv);
             Barrier(cmd, f.motion, kSrv, f.motionState);
         }
@@ -3414,6 +3628,8 @@ ID3D12Resource* Backend::Impl::Record(ID3D12GraphicsCommandList* cmd, const AmdP
                 // The per-job latch: this job's answer is composed at consume only if it was fed at
                 // 1/1, whatever the setting says by then - a toggle never mixes the two modes.
                 jobCompose = composeFeed;
+                jitJobX = jitLastX = jitFeedX; // [lmxxf2] o jitter com que este trabalho foi alimentado
+                jitJobY = jitLastY = jitFeedY;
                 jobRecorded = true;
                 jobGraced = false; // (0.3.4, P3) a new job: no grace yet
                 SetPending(cmd);
@@ -4043,6 +4259,12 @@ AmdPreSr::Stats Backend::GetStats() const
     // fit on lmxxf, so detail kept stays -1 and no call is ever refused the danielblnc way).
     s.interleaving = p->statCadence > 1;
     s.accumulating = p->statAccumulating;
+    s.freeRes = p->statFreeRes; // [lmxxf2]
+    s.frameW = p->w;
+    s.frameH = p->h;
+    s.tsrActive = p->statTsrOn;
+    s.tsrJitter = p->statTsrJitter;
+    s.answersPerSec = p->statAnswersPerSec;
     if (p->statAccumulating && p->temporal)
     {
         s.carryTone = p->temporal->ChangeFraction();

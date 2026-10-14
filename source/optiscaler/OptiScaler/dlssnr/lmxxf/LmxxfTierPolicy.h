@@ -37,6 +37,76 @@ inline constexpr TierBox kLmxxfTierBoxes[5] = { { 640u, 360u }, { 1024u, 576u },
 inline constexpr unsigned kLmxxfSmallTierCount = 2;
 inline constexpr unsigned kLmxxfTierCount = 5;
 
+// [lmxxf2] Resolucao livre (DLSS5_NETWORK_FREE_RES=1 no runtime, native_network_geometry.h Free/FreeFits): a rede roda
+// o tamanho exato da entrada. O runtime arredonda cada eixo a 64 (no minimo 320), leva 1088 linhas a 1152 e, quando os
+// dois eixos sao multiplos de 256, da 64 a mais na largura; a superficie de processamento vai ate 3840x2176 (4K) e cada
+// eixo ate 8192. Fora disso ele volta aos degraus, entao o host nunca pede fora.
+inline void FreeProcessing(unsigned w, unsigned h, unsigned& pw, unsigned& ph)
+{
+    auto pad = [](unsigned v) { const unsigned p = (v + 63u) / 64u * 64u; return p < 320u ? 320u : p; };
+    pw = pad(w);
+    ph = pad(h);
+    if (ph == 1088u)
+        ph = 1152u;
+    if (pw % 256u == 0u && ph % 256u == 0u)
+        pw += 64u;
+}
+inline bool FreeFits(unsigned w, unsigned h)
+{
+    if (w < 320u || h < 320u || w > 8192u || h > 8192u)
+        return false;
+    unsigned pw = 0, ph = 0;
+    FreeProcessing(w, h, pw, ph);
+    return pw <= 8192u && ph <= 8192u && 1ull * pw * ph <= 3840ull * 2176ull;
+}
+// O tamanho exato da rede. Screen Percentage (25..100, o do TSR): cada eixo do quadro x SP. Automatica (0): o quadro x
+// NR resolution, encaixado em 1920x1080 como sempre (o custo padrao nao muda). Depois, o que nao couber na superficie
+// do runtime encolhe 1% por vez, mantendo a proporcao.
+inline void FreeNetworkSize(unsigned frameW, unsigned frameH, float nrScale, float screenPct, unsigned& mw, unsigned& mh)
+{
+    frameW = (std::max)(frameW, 1u);
+    frameH = (std::max)(frameH, 1u);
+    double fw, fh;
+    if (screenPct > 0.f)
+    {
+        const double sp = std::clamp(double(screenPct), 25.0, 100.0) / 100.0;
+        fw = frameW * sp;
+        fh = frameH * sp;
+    }
+    else
+    {
+        const double s = std::clamp(double(nrScale), 0.25, 2.0);
+        fw = frameW * s;
+        fh = frameH * s;
+        if (fw > 1920.0 || fh > 1080.0)
+        {
+            const double k = (std::min)(1920.0 / fw, 1080.0 / fh);
+            fw *= k;
+            fh *= k;
+        }
+    }
+    // o minimo do runtime (320 nos dois eixos), mantendo a proporcao enquanto der
+    if (fh < 320.0) { fw *= 320.0 / fh; fh = 320.0; }
+    if (fw < 320.0) { fh *= 320.0 / fw; fw = 320.0; }
+    mw = static_cast<unsigned>(std::lround(fw));
+    mh = static_cast<unsigned>(std::lround(fh));
+    for (int i = 0; i < 200 && !FreeFits(mw, mh) && mw > 320u && mh > 320u; ++i)
+    {
+        fw *= 0.99;
+        fh *= 0.99;
+        mw = (std::max)(320u, static_cast<unsigned>(std::lround(fw)));
+        mh = (std::max)(320u, static_cast<unsigned>(std::lround(fh)));
+    }
+}
+// custo relativo estimado: pixels de processamento contra os do degrau de 1080 (1920x1152). O CHANGELOG do lmxxf mede
+// 1440p ~1,7x e 4K ~3,6x, o que esta conta da com folga de poucos %.
+inline double FreeCostVs1080(unsigned w, unsigned h)
+{
+    unsigned pw = 0, ph = 0;
+    FreeProcessing(w, h, pw, ph);
+    return double(pw) * double(ph) / (1920.0 * 1152.0);
+}
+
 inline bool LmxxfTierSnapDefault(std::string_view gfxTarget)
 {
     return gfxTarget.size() >= 5 && gfxTarget.compare(0, 5, "gfx11") == 0;

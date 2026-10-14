@@ -1052,6 +1052,23 @@ static AmdPreSr::Settings BuildSettings(float sessionScale)
         s.interleaveModelHistory = cfg.AmdInterleaveModelHistory.value_or_default();
         s.lmxxfHistory = cfg.AmdLmxxfHistory.value_or_default();
     s.lmxxfTsrCarry = cfg.AmdLmxxfTsrCarry.value_or_default(); // [lmxxf2]
+    {
+        // [lmxxf2] a flag que o dllmain pos no ambiente (a que o runtime deste processo le), nao a do ini agora
+        static const bool freeResVivo = [] {
+            char v[4] {};
+            return GetEnvironmentVariableA("DLSS5_NETWORK_FREE_RES", v, sizeof v) == 1 && v[0] == '1';
+        }();
+        s.lmxxfFreeRes = freeResVivo;
+        const float sp = cfg.AmdLmxxfScreenPct.value_or_default();
+        s.lmxxfScreenPct = std::isfinite(sp) && sp > 0.f ? std::clamp(sp, 25.f, 100.f) : 0.f;
+        s.tsrRede = cfg.TsrRede.value_or_default();
+        s.tsrJitter = cfg.TsrJitter.value_or_default();
+        s.tsrMaxSamples = std::clamp(cfg.TsrMaxSamples.value_or_default(), 1.f, 64.f);
+        s.tsrClipGamma = std::clamp(cfg.TsrClipGamma.value_or_default(), 0.1f, 8.f);
+        s.tsrParallax = std::clamp(cfg.TsrParallax.value_or_default(), 0.f, 8.f);
+        s.tsrFlicker = std::clamp(cfg.TsrFlicker.value_or_default(), 0.f, 1.f);
+        s.tsrFlickerMaxVel = std::clamp(cfg.TsrFlickerMaxVel.value_or_default(), 0.5f, 64.f);
+    }
         s.lmxxfFullNetwork = cfg.LmxxfFullNetwork.value_or_default();
         s.lmxxfEditDetail = std::clamp(cfg.AmdLmxxfEditDetail.value_or_default(), 0.f, 2.f);
         s.lmxxfEditSaturation = std::clamp(cfg.AmdLmxxfEditSaturation.value_or_default(), 0.f, 2.f);

@@ -70,7 +70,6 @@ enum class Upscaler
 
     FSR_RR, // "fsr-rr", used for the FSR Ray Regeneration denoiser backend
 
-    TSR, // [lmxxf2] "tsr", upscaler temporal proprio no estilo do TSR da UE5 (upscalers/tsr), so D3D12
     Reset
 };
 

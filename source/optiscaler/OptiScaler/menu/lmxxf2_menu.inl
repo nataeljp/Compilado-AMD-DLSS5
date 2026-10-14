@@ -6,6 +6,8 @@
 #include "dlssnr/menu/NeuralUi.h"
 #include "dlssnr/lmxxf2_autofg.h"
 #include "dlssnr/lmxxf2_rrjogo.h"
+#include "dlssnr/lmxxf/LmxxfTierPolicy.h" // Lmxxf::FreeNetworkSize, a previa do tamanho
+#include <algorithm>
 
 namespace Lmxxf2Menu
 {
@@ -102,7 +104,8 @@ inline void Rede(Config* c)
           "onde a cor crua do quadro dela bate com a deste, com tolerancia ao ruido aprendida por pixel (como a\n"
           "rejeicao de sombreamento com deteccao de cintilacao do TSR): o que so pisca segura a edicao, o que mudou de\n"
           "verdade (folha mexendo sem vetor, desoclusao) perde a edicao em vez de deixar rastro. E o Edit accumulation\n"
-          "do AMDNR tambem sem Model interleave.");
+          "do AMDNR tambem sem Model interleave. Com o TSR da rede ligado (cartao Resolucao e TSR da rede) e ele que\n"
+          "cuida da edicao; isto vale com ele desligado.");
 
     if (ImGui::TreeNode("Exposicao que a rede recebe"))
     {
@@ -433,38 +436,110 @@ inline void RrJogo(Config* c)
     }
 }
 
-// TSR proprio (upscalers/tsr): os ajustes valem na hora; o upscaler e escolhido no seletor do cartao de upscaler
-inline void Tsr(Config* c)
+// [lmxxf2] Resolucao da rede (livre: o tamanho exato de 720p a 4K, sem os degraus 720/900/1080) e TSR da rede
+// (dlssnr/lmxxf/EditTsr.h: acumulo temporal da EDICAO da rede; o upscaler do jogo e o quadro dele nao mudam)
+inline bool FreeResVivo()
 {
-    auto* f = State::Instance().currentFeature;
-    const bool ativo = f != nullptr && f->GetUpscalerType() == Upscaler::TSR;
+    char v[4] {};
+    return GetEnvironmentVariableA("DLSS5_NETWORK_FREE_RES", v, sizeof v) == 1 && v[0] == '1';
+}
+
+inline void ResolucaoTsr(Config* c)
+{
+    const AmdPreSr::Stats st = DlssNr::AmdBridge::Stats();
+    const bool livre = FreeResVivo();
     ImGui::PushTextWrapPos(0.0f);
-    if (ativo)
-        ImGui::TextDisabled("Ativo: %ux%u -> %ux%u", f->RenderWidth(), f->RenderHeight(), f->TargetWidth(),
-                            f->TargetHeight());
+
+    ImGui::SeparatorText("Resolucao da rede");
+    Check("Resolucao livre (exata, ate 4K)", c->AmdLmxxfFreeRes,
+          "Ligado: a rede roda exatamente o tamanho pedido, de 320 px ate a superficie 4K do runtime (sem degraus).\n"
+          "Desligado: os 3 degraus antigos (720 / 900 / 1080) e o teto de 1920x1080.\n"
+          "O runtime le isto uma vez por processo: vale ao reabrir o jogo.");
+    if (c->AmdLmxxfFreeRes.value_or_default() != livre)
+        ImGui::TextColored(ImVec4(1.f, 0.6f, 0.f, 1.f), "Reabra o jogo para valer (este processo esta com %s).",
+                           livre ? "a resolucao livre" : "os degraus");
+
+    const float spCfg = c->AmdLmxxfScreenPct.value_or_default();
+    bool automatica = !(spCfg > 0.f);
+    if (ImGui::Checkbox("Automatica", &automatica))
+        c->AmdLmxxfScreenPct = automatica ? 0.f : 50.f;
+    Dica("Automatica: o quadro x \"NR resolution\" (cartao Desempenho da rede), com teto de 1920x1080 como antes.\n"
+         "Desligada: o Screen Percentage da rede abaixo, o sistema de resolucao do TSR.");
+    static float edita = 50.f;
+    static bool editando = false;
+    if (!automatica)
+    {
+        if (!editando)
+            edita = std::clamp(spCfg, 25.f, 100.f);
+        ImGui::SliderFloat("Screen Percentage da rede", &edita, 25.f, 100.f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp);
+        editando = ImGui::IsItemActive();
+        // uma recriacao da rede ao soltar, nao uma por movimento do mouse
+        if (ImGui::IsItemDeactivatedAfterEdit())
+            c->AmdLmxxfScreenPct = std::round(edita);
+        Dica("Como o r.ScreenPercentage do TSR: a rede roda em (quadro x SP) em cada eixo, tamanho exato. Na saida 4K:\n"
+             "33% = 1280x720, 50% = 1920x1080, 67% = 2560x1440, 100% = 3840x2160. Com o TSR da rede e o jitter, a\n"
+             "edicao converge para a resolucao do quadro; a vazao (MP/s) mostra quao rapido. Mudar recria a rede (um\n"
+             "soluco). Custo da rede: 1440p ~1,7x e 4K ~3,6x o de 1080p (medido no lmxxf).");
+        if (!livre)
+            ImGui::TextColored(ImVec4(1.f, 0.6f, 0.f, 1.f), "So com a resolucao livre ligada (e o jogo reaberto).");
+    }
+    if (st.frameW > 0 && st.frameH > 0)
+    {
+        const double frac = double(st.width) * st.height / (double(st.frameW) * st.frameH);
+        ImGui::TextDisabled("Rede agora: %ux%u sobre o quadro %ux%u (%.0f%% dos pixels)%s", st.width, st.height, st.frameW,
+                            st.frameH, frac * 100.0, livre ? ", tamanho exato" : ", degraus");
+        if (livre)
+        {
+            unsigned pw = 0, ph = 0;
+            Lmxxf::FreeNetworkSize(st.frameW, st.frameH, c->AmdNrScale.value_or_default(), automatica ? 0.f : edita, pw, ph);
+            const double fr = double(pw) * ph / (double(st.frameW) * st.frameH);
+            // a vazao do TSR: pixels do quadro x SP^2 x respostas por segundo (as de agora)
+            ImGui::TextDisabled("Com este ajuste: %ux%u (SP %.0f%%), ~%.1fx o custo da rede em 1080p; vazao %.0f MP/s a %.0f respostas/s",
+                                pw, ph, 100.0 * std::sqrt(fr), Lmxxf::FreeCostVs1080(pw, ph),
+                                double(pw) * ph * st.answersPerSec / 1e6, st.answersPerSec);
+        }
+    }
+
+    ImGui::SeparatorText("TSR da rede");
+    Check("TSR na edicao da rede", c->TsrRede,
+          "O acumulo temporal do TSR (UE5) aplicado na EDICAO da rede DLSS5, nao no quadro do jogo: o upscaler (FSR4)\n"
+          "continua o mesmo e o quadro dele fica intacto. A edicao e medida na resolucao da rede contra o que ela recebeu\n"
+          "(antes a resposta esticada substituia o quadro: era o borrado) e acumulada na resolucao do quadro, com\n"
+          "paralaxe pela profundidade, cor crua contra cor crua (folha sem vetor perde a edicao em vez de deixar rastro)\n"
+          "e deteccao de cintilacao. Desligado: o arrasto do AMDNR (Edit accumulation).");
+    Check("Jitter na entrada da rede", c->TsrJitter,
+          "Rede menor que o quadro: cada alimentacao amostra o quadro deslocada de uma fracao de pixel (Halton 2,3), entao\n"
+          "cada resposta cobre outras posicoes e a edicao converge para a resolucao do quadro com o tempo (o \"feed\" do\n"
+          "TSR). O historico proprio da rede recebe a troca de jitter junto com os vetores. Desligue para comparar.");
+    if (st.tsrActive && st.frameW > 0 && st.width > 0)
+    {
+        const double frac = double(st.width) * st.height / (double(st.frameW) * st.frameH);
+        const double mps = double(st.width) * st.height * st.answersPerSec / 1e6;
+        const double ms1 = frac * st.answersPerSec > 0.0 ? 1000.0 / (frac * st.answersPerSec) : 0.0;
+        const float amostras = c->TsrMaxSamples.value_or_default();
+        ImGui::TextDisabled("Ativo: rede %ux%u -> quadro %ux%u, %s", st.width, st.height, st.frameW, st.frameH,
+                            st.tsrJitter ? "com jitter" : "sem jitter (rede do tamanho do quadro ou jitter desligado)");
+        ImGui::TextDisabled("Vazao: %.1f MP/s (%.1f respostas/s) - 1 amostra por pixel a cada %.0f ms, %.0f amostras em %.2f s",
+                            mps, st.answersPerSec, ms1, amostras, ms1 * amostras / 1000.0);
+    }
     else
-        ImGui::TextDisabled("Escolha \"TSR (lmxxf2)\" na lista de upscalers do cartao acima (troca na hora).");
-    ImGui::TextDisabled("Upscaler temporal proprio no estilo do TSR da UE5: paralaxe pela profundidade, recorte de cor "
-                        "do historico (corta rastro de folhagem sem vetor), anti-aliasing espacial onde nao ha "
-                        "historico. Nitidez: cartao Sharpness (RCAS).");
-    ImGui::PopTextWrapPos();
-    SliderF("Amostras acumuladas", c->TsrMaxSamples, 2.f, 64.f,
-            "Quantos quadros o historico soma no maximo. Menos: responde rapido, menos rastro, mais serrilhado/ruido.\n"
-            "Mais: imagem mais estavel e lisa, mais rastro em coisa que se mexe sem vetor.", "%.0f");
+        ImGui::TextDisabled("Inativo (desligado, modo sem vetores de movimento ou rede parada).");
+    SliderF("Amostras no historico", c->TsrMaxSamples, 2.f, 32.f,
+            "Quantas amostras (em pixels de saida) o historico da edicao soma no maximo. Menos: responde rapido a mudanca\n"
+            "da rede. Mais: edicao mais estavel e mais fina. A conversao em tempo esta na linha Vazao acima.", "%.0f");
     SliderF("Rigidez do recorte", c->TsrClipGamma, 0.25f, 3.f,
-            "Largura da caixa de cor que o historico pode ter. Menos: corta mais rastro (folhagem), pode tremer.\n"
-            "Mais: mais estavel, deixa mais rastro.");
-    SliderF("Sensibilidade a desoclusao", c->TsrParallax, 0.1f, 4.f,
-            "Quanto a diferenca de profundidade entre quadros descarta o historico (objeto saindo da frente).");
-    SliderF("Anti-aliasing espacial", c->TsrSpatialAA, 0.f, 1.f,
-            "Suaviza bordas onde o historico foi descartado (o pixel novo nao tem quadros anteriores).");
+            "Quanto o historico da edicao pode se afastar do que a resposta nova diz em volta do pixel. Menos: menos atraso\n"
+            "quando a rede muda de ideia, pode tremer. Mais: mais estavel.");
+    SliderF("Sensibilidade a desoclusao", c->TsrParallax, 0.f, 4.f,
+            "Quanto a diferenca de profundidade entre quadros descarta a edicao (objeto saindo da frente). 0 = desligada.");
     SliderF("Protecao contra cintilacao", c->TsrFlicker, 0.f, 1.f,
-            "Rejeicao com deteccao de cintilacao: pixel cuja luz oscila quadro a quadro (brilho especular, ruido, a\n"
-            "edicao da rede DLSS5 tremendo) segura o historico em vez de piscar; mudanca de verdade continua cortando.\n"
-            "0 = desligada.");
+            "Pixel cuja luz oscila quadro a quadro (brilho especular, ruido, a resposta da rede tremendo) segura a edicao\n"
+            "em vez de piscar; mudanca de verdade continua cortando. Conta em tempo (60 fps de referencia): igual com\n"
+            "FreeSync / VRR. 0 = desligada.");
     SliderF("Movimento maximo protegido", c->TsrFlickerMaxVel, 0.5f, 32.f,
-            "Acima deste movimento (pixels por quadro) a protecao some: estabilizar algo que anda deixaria rastro.",
-            "%.1f");
+            "Acima deste movimento (pixels do quadro por quadro) a protecao contra cintilacao some: segurar o que anda\n"
+            "deixaria rastro.", "%.1f");
+    ImGui::PopTextWrapPos();
 }
 
 // Créditos do compilado (Help / Status). O aviso do AMDNR pede o crédito visível no menu e a versão marcada como

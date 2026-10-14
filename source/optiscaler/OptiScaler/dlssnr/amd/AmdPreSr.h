@@ -183,6 +183,12 @@ struct Settings
     // carregada onde a cor crua do quadro dela e a deste batem, com a tolerância ao ruído aprendida por pixel (o que
     // pisca segura, o que mudou de verdade - folha sem vetor - perde a edição). Ver TemporalStability.h, preset 11.
     bool lmxxfTsrCarry = true;
+    // [lmxxf2] resolucao livre: o que o runtime DESTE processo recebeu (a flag so vale na carga) e o Screen Percentage da
+    // rede (0 = automatica). TSR da rede (lmxxf/EditTsr.h): liga, jitter na entrada e os ajustes.
+    bool lmxxfFreeRes = false;
+    float lmxxfScreenPct = 0.f;
+    bool tsrRede = true, tsrJitter = true;
+    float tsrMaxSamples = 16.f, tsrClipGamma = 1.f, tsrParallax = 1.f, tsrFlicker = 0.75f, tsrFlickerMaxVel = 4.f;
     // lmxxf only, "Full network" ([DlssNr] LmxxfFullNetwork): run all 71 blocks instead of the
     // runtime's production schedule (blocks 42, 43, 46 skipped; about 1 ms at 1080p). A change
     // rebuilds the runtime's network at the next model frame (LMXXF_NR_FRAME_FLAG_FULL_NETWORK).
@@ -343,6 +349,12 @@ struct Stats
     // -1 = not measured (no readout).
     bool modelFrameSeen = false;
     float nrGpuMs = -1.f;
+    // [lmxxf2] resolucao livre e TSR da rede, para o cartao do menu: o quadro onde a edicao e composta, se o runtime roda
+    // o tamanho exato, se o TSR da rede esta ativo (e com jitter) e as respostas da rede por segundo (a vazao).
+    bool freeRes = false;
+    UINT frameW = 0, frameH = 0;
+    bool tsrActive = false, tsrJitter = false;
+    float answersPerSec = 0.f;
 };
 // Stats::compositionWhiteSource. None: not composing (Classic, refused, or no model frame yet).
 // Title: W = 1/e from the title's exposure texture (danielblnc). Estimate: W = 1/e from NrCompose's

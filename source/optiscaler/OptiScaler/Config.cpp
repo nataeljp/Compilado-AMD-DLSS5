@@ -1108,6 +1108,8 @@ bool Config::Reload(std::filesystem::path iniPath)
             AmdInterleaveModelHistory.set_from_config(readBool("DlssNr", "AmdInterleaveModelHistory"));
             AmdLmxxfHistory.set_from_config(readBool("DlssNr", "AmdLmxxfHistory"));
             AmdLmxxfTsrCarry.set_from_config(readBool("DlssNr", "AmdLmxxfTsrCarry")); // [lmxxf2]
+            AmdLmxxfFreeRes.set_from_config(readBool("DlssNr", "AmdLmxxfFreeRes"));
+            AmdLmxxfScreenPct.set_from_config(readFloat("DlssNr", "AmdLmxxfScreenPct"));
             LmxxfFullNetwork.set_from_config(readBool("DlssNr", "LmxxfFullNetwork"));
             AmdLmxxfEditDetail.set_from_config(readFloat("DlssNr", "AmdLmxxfEditDetail"));
             AmdLmxxfEditSaturation.set_from_config(readFloat("DlssNr", "AmdLmxxfEditSaturation"));
@@ -1172,10 +1174,11 @@ bool Config::Reload(std::filesystem::path iniPath)
             AmdRtgiFade.set_from_config(readFloat("AmdRtgi", "Fade"));
             AmdRtgiFov.set_from_config(readFloat("AmdRtgi", "Fov"));
             AmdRtgiFarPlane.set_from_config(readFloat("AmdRtgi", "FarPlane"));
-            TsrMaxSamples.set_from_config(readFloat("TSR", "MaxSamples")); // [lmxxf2]
+            TsrRede.set_from_config(readBool("TSR", "Rede")); // [lmxxf2]
+            TsrJitter.set_from_config(readBool("TSR", "Jitter"));
+            TsrMaxSamples.set_from_config(readFloat("TSR", "MaxSamples"));
             TsrClipGamma.set_from_config(readFloat("TSR", "ClipGamma"));
             TsrParallax.set_from_config(readFloat("TSR", "Parallax"));
-            TsrSpatialAA.set_from_config(readFloat("TSR", "SpatialAA"));
             TsrFlicker.set_from_config(readFloat("TSR", "Flicker"));
             TsrFlickerMaxVel.set_from_config(readFloat("TSR", "FlickerMaxVelocity"));
             RrJogoAjustar.set_from_config(readBool("RayRegenJogo", "Ajustar"));
@@ -2306,6 +2309,8 @@ bool Config::SaveIni()
     ini.SetValue("DlssNr", "AmdInterleaveModelHistory", GetBoolValue(Instance()->AmdInterleaveModelHistory.value_for_config()).c_str());
     ini.SetValue("DlssNr", "AmdLmxxfHistory", GetBoolValue(Instance()->AmdLmxxfHistory.value_for_config()).c_str());
     ini.SetValue("DlssNr", "AmdLmxxfTsrCarry", GetBoolValue(Instance()->AmdLmxxfTsrCarry.value_for_config()).c_str()); // [lmxxf2]
+    ini.SetValue("DlssNr", "AmdLmxxfFreeRes", GetBoolValue(Instance()->AmdLmxxfFreeRes.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "AmdLmxxfScreenPct", GetFloatValue(Instance()->AmdLmxxfScreenPct.value_for_config()).c_str());
     ini.SetValue("DlssNr", "LmxxfFullNetwork", GetBoolValue(Instance()->LmxxfFullNetwork.value_for_config()).c_str());
     ini.SetValue("DlssNr", "AmdLmxxfEditDetail", GetFloatValue(Instance()->AmdLmxxfEditDetail.value_for_config()).c_str());
     ini.SetValue("DlssNr", "AmdLmxxfEditSaturation", GetFloatValue(Instance()->AmdLmxxfEditSaturation.value_for_config()).c_str());
@@ -2364,10 +2369,11 @@ bool Config::SaveIni()
     ini.SetValue("AmdRtgi", "Fade", GetFloatValue(Instance()->AmdRtgiFade.value_for_config()).c_str());
     ini.SetValue("AmdRtgi", "Fov", GetFloatValue(Instance()->AmdRtgiFov.value_for_config()).c_str());
     ini.SetValue("AmdRtgi", "FarPlane", GetFloatValue(Instance()->AmdRtgiFarPlane.value_for_config()).c_str());
-    ini.SetValue("TSR", "MaxSamples", GetFloatValue(Instance()->TsrMaxSamples.value_for_config()).c_str()); // [lmxxf2]
+    ini.SetValue("TSR", "Rede", GetBoolValue(Instance()->TsrRede.value_for_config()).c_str()); // [lmxxf2]
+    ini.SetValue("TSR", "Jitter", GetBoolValue(Instance()->TsrJitter.value_for_config()).c_str());
+    ini.SetValue("TSR", "MaxSamples", GetFloatValue(Instance()->TsrMaxSamples.value_for_config()).c_str());
     ini.SetValue("TSR", "ClipGamma", GetFloatValue(Instance()->TsrClipGamma.value_for_config()).c_str());
     ini.SetValue("TSR", "Parallax", GetFloatValue(Instance()->TsrParallax.value_for_config()).c_str());
-    ini.SetValue("TSR", "SpatialAA", GetFloatValue(Instance()->TsrSpatialAA.value_for_config()).c_str());
     ini.SetValue("TSR", "Flicker", GetFloatValue(Instance()->TsrFlicker.value_for_config()).c_str());
     ini.SetValue("TSR", "FlickerMaxVelocity", GetFloatValue(Instance()->TsrFlickerMaxVel.value_for_config()).c_str());
     ini.SetValue("RayRegenJogo", "Ajustar", GetBoolValue(Instance()->RrJogoAjustar.value_for_config()).c_str());
