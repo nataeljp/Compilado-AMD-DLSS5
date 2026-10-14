@@ -39,6 +39,11 @@ publicar é que mais gente consiga estudar, montar o próprio e fazer melhor.
     - detecção de cintilação que conta em tempo, não em quadros, e por isso funciona igual com FreeSync/VRR.
 
     Onde o histórico é rejeitado, a edição some em vez de deixar rastro.
+  - O Screen Percentage pode vir da **vazão alvo** (padrão 124,4 MP/s, a referência da Epic): pixels da rede =
+    alvo ÷ respostas por segundo, entre um mínimo e um máximo de SP.
+  - **Ressurreição de histórico**: grava dois quadros persistentes a cada 31 quadros. Onde o histórico é descartado,
+    a edição volta se a vizinhança da cor crua bate. O TSR da Epic reprojeta esses quadros pelas matrizes da câmera,
+    que o jogo não entrega ao upscaler; aqui a comparação é no mesmo lugar da tela, então ajuda com a câmera parada.
   - O histórico próprio da rede recebe a troca de jitter junto com os vetores.
 - **Rejeição estilo TSR no arrasto da edição** (com o TSR da rede desligado): a edição só é carregada onde a cor crua
   do quadro dela bate com a deste. É o "Edit accumulation" do AMDNR, também sem Model interleave.
