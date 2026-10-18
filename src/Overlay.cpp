@@ -64,21 +64,21 @@ void Overlay::Destroi()
     hwnd = nullptr;
 }
 
-void Overlay::CriaSwapchain(UINT w_, UINT h_)
+void Overlay::CriaSwapchain(UINT w_, UINT h_, DXGI_FORMAT f)
 {
     gpu->Espera();
     for (auto& b : buffers)
         b.Reset();
     if (sc)
     {
-        Ck(sc->ResizeBuffers(2, w_, h_, DXGI_FORMAT_R8G8B8A8_UNORM, 0), "ResizeBuffers");
+        Ck(sc->ResizeBuffers(2, w_, h_, f, 0), "ResizeBuffers");
     }
     else
     {
         DXGI_SWAP_CHAIN_DESC1 d{};
         d.Width = w_;
         d.Height = h_;
-        d.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        d.Format = f;
         d.SampleDesc.Count = 1;
         d.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
         d.BufferCount = 2;
@@ -92,18 +92,23 @@ void Overlay::CriaSwapchain(UINT w_, UINT h_)
         Ck(visual->SetContent(sc.Get()), "SetContent");
         Ck(dcomp->Commit(), "Commit");
     }
+    // HDR: scRGB linear (1,0 = 80 nits); SDR: sRGB
+    sc->SetColorSpace1(f == DXGI_FORMAT_R16G16B16A16_FLOAT ? DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709
+                                                           : DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
     for (UINT i = 0; i < 2; ++i)
         Ck(sc->GetBuffer(i, IID_PPV_ARGS(&buffers[i])), "GetBuffer");
     w = w_;
     h = h_;
-    Log("overlay", Fmt("swapchain %ux%u", w, h));
+    fmt = f;
+    Log("overlay", Fmt("swapchain %ux%u %s", w, h, f == DXGI_FORMAT_R16G16B16A16_FLOAT ? "HDR FP16" : "SDR"));
 }
 
-void Overlay::Posiciona(const RECT& r)
+void Overlay::Posiciona(const RECT& r, bool hdr)
 {
     const UINT nw = UINT(r.right - r.left), nh = UINT(r.bottom - r.top);
-    if (nw != w || nh != h || !sc)
-        CriaSwapchain(nw, nh);
+    const DXGI_FORMAT f = hdr ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R8G8B8A8_UNORM;
+    if (nw != w || nh != h || f != fmt || !sc)
+        CriaSwapchain(nw, nh, f);
     if (memcmp(&r, &ultimo, sizeof r) != 0)
     {
         SetWindowPos(hwnd, HWND_TOPMOST, r.left, r.top, int(nw), int(nh), SWP_NOACTIVATE | SWP_NOOWNERZORDER);

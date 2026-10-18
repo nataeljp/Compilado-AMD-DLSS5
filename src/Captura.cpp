@@ -67,9 +67,13 @@ bool Captura::RetanguloCliente(HWND h, RECT& r)
     return r.right > r.left && r.bottom > r.top;
 }
 
-bool Captura::Inicia(HWND h)
+bool Captura::Inicia(HWND h, bool hdr_)
 {
     Para();
+    hdr = hdr_;
+    comp11.Reset();
+    comp12.Reset();
+    cw = ch = 0;
     if (!wgc::GraphicsCaptureSession::IsSupported())
     {
         Log("captura", "Windows Graphics Capture nao suportado neste Windows");
@@ -83,7 +87,9 @@ bool Captura::Inicia(HWND h)
            "CreateForWindow");
         p->tamanhoPool = p->item.Size();
         p->pool = wgc::Direct3D11CaptureFramePool::CreateFreeThreaded(
-            p->dispositivo, wdx::DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, p->tamanhoPool);
+            p->dispositivo,
+            hdr ? wdx::DirectXPixelFormat::R16G16B16A16Float : wdx::DirectXPixelFormat::B8G8R8A8UIntNormalized, 2,
+            p->tamanhoPool);
         HANDLE ev = evento;
         p->token = p->pool.FrameArrived([ev](auto&&, auto&&) { SetEvent(ev); });
         p->sessao = p->pool.CreateCaptureSession(p->item);
@@ -120,8 +126,8 @@ bool Captura::Inicia(HWND h)
     alvo = h;
     wchar_t titulo[256] = {};
     GetWindowTextW(h, titulo, 256);
-    Log("captura", Fmt("capturando \"%s\" (%dx%d)", Utf8(titulo).c_str(), p->tamanhoPool.Width,
-                       p->tamanhoPool.Height));
+    Log("captura", Fmt("capturando \"%s\" (%dx%d, %s)", Utf8(titulo).c_str(), p->tamanhoPool.Width,
+                       p->tamanhoPool.Height, hdr ? "HDR FP16 scRGB" : "SDR 8 bits"));
     return true;
 }
 
@@ -165,7 +171,7 @@ bool Captura::RecriaCompartilhada(UINT w, UINT h)
     d.Height = h;
     d.MipLevels = 1;
     d.ArraySize = 1;
-    d.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    d.Format = FormatoDx();
     d.SampleDesc.Count = 1;
     d.Usage = D3D11_USAGE_DEFAULT;
     d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
@@ -200,7 +206,10 @@ bool Captura::Pega(Quadro& q)
         if (cont.Width != p->tamanhoPool.Width || cont.Height != p->tamanhoPool.Height)
         {
             p->tamanhoPool = cont;
-            p->pool.Recreate(p->dispositivo, wdx::DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, cont);
+            p->pool.Recreate(p->dispositivo,
+                             hdr ? wdx::DirectXPixelFormat::R16G16B16A16Float
+                                 : wdx::DirectXPixelFormat::B8G8R8A8UIntNormalized,
+                             2, cont);
         }
         // a imagem da janela comeca nos limites visuais dela (DWMWA_EXTENDED_FRAME_BOUNDS); recorta a area cliente
         RECT vis{}, cli{};
@@ -229,6 +238,7 @@ bool Captura::Pega(Quadro& q)
         Ck(ctx11->Signal(cerca11.Get(), ++valor), "Signal(D3D11)");
         ctx11->Flush();
         q.tex = comp12.Get();
+        q.fmt = FormatoDx();
         q.w = cw;
         q.h = ch;
         q.cercaValor = valor;

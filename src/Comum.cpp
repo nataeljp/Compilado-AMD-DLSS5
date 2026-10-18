@@ -116,6 +116,65 @@ void Gpu::EsperaValor(UINT64 v)
 
 void Gpu::Espera() { EsperaValor(Sinaliza()); }
 
+bool MonitorHdr(Gpu& g, HWND janela, float& escalaSdr)
+{
+    escalaSdr = 1.f;
+    HMONITOR mon = MonitorFromWindow(janela, MONITOR_DEFAULTTONEAREST);
+    bool hdr = false;
+    bool achou = false;
+    for (UINT a = 0; !achou; ++a)
+    {
+        ComPtr<IDXGIAdapter1> ad;
+        if (g.fabrica->EnumAdapters1(a, &ad) == DXGI_ERROR_NOT_FOUND)
+            break;
+        for (UINT o = 0;; ++o)
+        {
+            ComPtr<IDXGIOutput> out;
+            if (ad->EnumOutputs(o, &out) == DXGI_ERROR_NOT_FOUND)
+                break;
+            ComPtr<IDXGIOutput6> o6;
+            DXGI_OUTPUT_DESC1 d{};
+            if (FAILED(out.As(&o6)) || FAILED(o6->GetDesc1(&d)) || d.Monitor != mon)
+                continue;
+            hdr = d.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+            achou = true;
+            break;
+        }
+    }
+    if (!hdr)
+        return false;
+    // branco SDR: DisplayConfig do caminho cuja fonte e este monitor (SDRWhiteLevel em milesimos de 80 nits)
+    MONITORINFOEXW mi{};
+    mi.cbSize = sizeof mi;
+    GetMonitorInfoW(mon, &mi);
+    UINT32 np = 0, nm = 0;
+    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &np, &nm) != ERROR_SUCCESS)
+        return true;
+    std::vector<DISPLAYCONFIG_PATH_INFO> caminhos(np);
+    std::vector<DISPLAYCONFIG_MODE_INFO> modos(nm);
+    if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &np, caminhos.data(), &nm, modos.data(), nullptr) != ERROR_SUCCESS)
+        return true;
+    for (UINT32 i = 0; i < np; ++i)
+    {
+        DISPLAYCONFIG_SOURCE_DEVICE_NAME fonte{};
+        fonte.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+        fonte.header.size = sizeof fonte;
+        fonte.header.adapterId = caminhos[i].sourceInfo.adapterId;
+        fonte.header.id = caminhos[i].sourceInfo.id;
+        if (DisplayConfigGetDeviceInfo(&fonte.header) != ERROR_SUCCESS || wcscmp(fonte.viewGdiDeviceName, mi.szDevice))
+            continue;
+        DISPLAYCONFIG_SDR_WHITE_LEVEL br{};
+        br.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL;
+        br.header.size = sizeof br;
+        br.header.adapterId = caminhos[i].targetInfo.adapterId;
+        br.header.id = caminhos[i].targetInfo.id;
+        if (DisplayConfigGetDeviceInfo(&br.header) == ERROR_SUCCESS && br.SDRWhiteLevel > 0)
+            escalaSdr = float(br.SDRWhiteLevel) / 1000.f;
+        break;
+    }
+    return true;
+}
+
 // ---------------- Descritores ----------------
 void Descritores::Cria(ID3D12Device* d, UINT n)
 {

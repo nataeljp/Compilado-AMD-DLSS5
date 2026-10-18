@@ -77,6 +77,9 @@ struct Tex
 
 void Barreira(ID3D12GraphicsCommandList* c, ID3D12Resource* r, D3D12_RESOURCE_STATES a, D3D12_RESOURCE_STATES b);
 
+// o monitor da janela esta com HDR ligado? `escalaSdr` = branco SDR do Windows em unidades scRGB (1,0 = 80 nits)
+bool MonitorHdr(Gpu& g, HWND janela, float& escalaSdr);
+
 // passe compute: raiz = constantes (b0, ate 32 dwords) + tabela de SRVs (t0..) + tabela de UAVs (u0..) +
 // amostrador linear clamp (s0)
 struct Passe

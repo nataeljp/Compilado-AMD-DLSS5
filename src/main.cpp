@@ -96,9 +96,9 @@ struct App
                "list");
             cl[i]->Close();
         }
-        pInteiro.Cria(gpu.dev.Get(), hlsl::Prepara, "CSInteiro", 1, 1, 4, "inteiro");
-        pReduz.Cria(gpu.dev.Get(), hlsl::Prepara, "CSReduz", 1, 1, 4, "reduz");
-        pCompoe.Cria(gpu.dev.Get(), hlsl::Compoe, "CSCompoe", 4, 1, 8, "compoe");
+        pInteiro.Cria(gpu.dev.Get(), hlsl::Prepara, "CSInteiro", 1, 1, 8, "inteiro");
+        pReduz.Cria(gpu.dev.Get(), hlsl::Prepara, "CSReduz", 1, 1, 8, "reduz");
+        pCompoe.Cria(gpu.dev.Get(), hlsl::Compoe, "CSCompoe", 4, 1, 10, "compoe");
         fluxo.Cria(gpu.dev.Get());
         temporal.Cria(gpu.dev.Get());
         redeOk = rede.Inicia(gpu, pasta + L"\\runtime");
@@ -124,11 +124,17 @@ struct App
 
     void Liga(HWND h)
     {
-        if (!h || h == ov.Janela())
+        if (!h || h == ov.Janela() || h == painel.Janela())
             return;
-        if (cap.Inicia(h))
+        float esc = 1.f;
+        hdr = MonitorHdr(gpu, h, esc);
+        escalaSdr = esc;
+        Log("app", hdr ? Fmt("monitor em HDR: branco SDR = %.0f nits", esc * 80.f) : std::string("monitor em SDR"));
+        if (cap.Inicia(h, hdr))
             zeraHistorico = true;
     }
+    bool hdr = false;
+    float escalaSdr = 1.f;
 
     void Desliga()
     {
@@ -150,15 +156,16 @@ struct App
     {
         UINT dw, dh;
         TamanhoRede(fw, fh, dw, dh);
-        if (inteiro.w == fw && inteiro.h == fh && fed.w == dw && fed.h == dh)
+        const DXGI_FORMAT fmtSaida = hdr ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R8G8B8A8_UNORM;
+        if (inteiro.w == fw && inteiro.h == fh && fed.w == dw && fed.h == dh && saida.fmt == fmtSaida)
             return;
         gpu.Espera();
         inteiro.Cria(gpu.dev.Get(), fw, fh, DXGI_FORMAT_R16G16B16A16_FLOAT, L"inteiro");
         fed.Cria(gpu.dev.Get(), dw, dh, DXGI_FORMAT_R16G16B16A16_FLOAT, L"alimentado", true, true);
-        saida.Cria(gpu.dev.Get(), fw, fh, DXGI_FORMAT_R8G8B8A8_UNORM, L"saida");
+        saida.Cria(gpu.dev.Get(), fw, fh, fmtSaida, L"saida");
         fedAnt.Cria(gpu.dev.Get(), dw, dh, DXGI_FORMAT_R16G16B16A16_FLOAT, L"alimentado anterior", false);
         if (!dumpPasta.empty())
-            saidaAnt.Cria(gpu.dev.Get(), fw, fh, DXGI_FORMAT_R8G8B8A8_UNORM, L"saida anterior", false);
+            saidaAnt.Cria(gpu.dev.Get(), fw, fh, fmtSaida, L"saida anterior", false);
         fluxo.Garante(gpu.dev.Get(), dw, dh);
         fluxo.Reinicia();
         temporal.Garante(gpu.dev.Get(), dw, dh);
@@ -183,7 +190,7 @@ struct App
         // o overlay cobre a area cliente; se o tamanho ainda nao bate com o capturado, espera o proximo quadro
         r.right = r.left + LONG(q.w);
         r.bottom = r.top + LONG(q.h);
-        ov.Posiciona(r);
+        ov.Posiciona(r, hdr);
         desc.Reinicia();
 
         const D3D12_RESOURCE_STATES SRV =
@@ -195,8 +202,10 @@ struct App
         Ck(gpu.fila->Wait(cap.Cerca(), q.cercaValor), "Wait(captura)");
         Barreira(c, q.tex, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         inteiro.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        UINT k[4] = {inteiro.w, inteiro.h, fed.w, fed.h};
-        pInteiro.Roda(c, desc, gpu.dev.Get(), {{q.tex, DXGI_FORMAT_B8G8R8A8_UNORM}},
+        float escK = escalaSdr;
+        UINT k[8] = {inteiro.w, inteiro.h, fed.w, fed.h, hdr ? 1u : 0u, 0, 0, 0};
+        memcpy(&k[5], &escK, 4);
+        pInteiro.Roda(c, desc, gpu.dev.Get(), {{q.tex, q.fmt}},
                       {{inteiro.r.Get(), inteiro.fmt}}, k, (inteiro.w + 7) / 8, (inteiro.h + 7) / 8);
         inteiro.Para(c, SRV);
         fed.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -253,7 +262,10 @@ struct App
             UINT modo;
             float divisao;
             UINT usaEdicao;
-        } kc{inteiro.w, inteiro.h, fed.w, fed.h, edicao ? cfg.forca : 0.f, (UINT)cfg.modo, cfg.divisao, edicao ? 1u : 0u};
+            UINT hdr;
+            float escala;
+        } kc{inteiro.w,          inteiro.h,   fed.w,           fed.h,          edicao ? cfg.forca : 0.f,
+             (UINT)cfg.modo,     cfg.divisao, edicao ? 1u : 0u, hdr ? 1u : 0u, escalaSdr};
         pCompoe.Roda(c, desc, gpu.dev.Get(),
                      {{inteiro.r.Get(), inteiro.fmt},
                       {fed.r.Get(), fed.fmt},
@@ -327,7 +339,7 @@ struct App
     double somaMs = 0, maxMs = 0;
     bool ultimoTemMov = false;
 
-    void GravaSaida(const std::wstring& arq) { GravaTex(saida, arq, 4); }
+    void GravaSaida(const std::wstring& arq) { GravaTex(saida, arq, hdr ? 8 : 4); }
 
     void Painel_()
     {

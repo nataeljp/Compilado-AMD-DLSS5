@@ -14,7 +14,8 @@ class Captura
     ~Captura();
     // dispositivo D3D11 na mesma placa (LUID) do D3D12; cerca compartilhada com a fila D3D12
     void Cria(Gpu& g);
-    bool Inicia(HWND alvo);
+    // hdr: captura em FP16 scRGB (monitor com HDR ligado); senao B8G8R8A8 sRGB
+    bool Inicia(HWND alvo, bool hdr);
     void Para();
     bool Ativa() const;
     HWND Alvo() const { return alvo; }
@@ -22,7 +23,8 @@ class Captura
 
     struct Quadro
     {
-        ID3D12Resource* tex = nullptr; // B8G8R8A8, ja recortada (origem 0,0), w x h
+        ID3D12Resource* tex = nullptr; // ja recortada (origem 0,0), w x h
+        DXGI_FORMAT fmt = DXGI_FORMAT_B8G8R8A8_UNORM;
         UINT w = 0, h = 0;
         UINT64 cercaValor = 0; // a fila D3D12 espera este valor na cerca compartilhada antes de ler
         bool novoTamanho = false;
@@ -48,6 +50,8 @@ class Captura
     ComPtr<ID3D11Texture2D> comp11;
     ComPtr<ID3D12Resource> comp12;
     UINT cw = 0, ch = 0;
+    bool hdr = false;
+    DXGI_FORMAT FormatoDx() const { return hdr ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_B8G8R8A8_UNORM; }
     bool RecriaCompartilhada(UINT w, UINT h);
 };
 

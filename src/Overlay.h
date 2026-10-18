@@ -14,7 +14,8 @@ class Overlay
     void OcultaDeGravacoes(bool sim);
     void Destroi();
     // cobre o retangulo (pixels de tela); recria a swapchain quando o tamanho muda
-    void Posiciona(const RECT& r);
+    // hdr: swapchain FP16 scRGB (G10, P709); senao R8G8B8A8 sRGB
+    void Posiciona(const RECT& r, bool hdr);
     void Mostra(bool sim);
     bool Visivel() const { return visivel; }
     HWND Janela() const { return hwnd; }
@@ -26,7 +27,8 @@ class Overlay
     void Apresenta();
 
   private:
-    void CriaSwapchain(UINT w_, UINT h_);
+    void CriaSwapchain(UINT w_, UINT h_, DXGI_FORMAT f);
+    DXGI_FORMAT fmt = DXGI_FORMAT_UNKNOWN;
     Gpu* gpu = nullptr;
     HWND hwnd = nullptr;
     ComPtr<IDXGISwapChain3> sc;

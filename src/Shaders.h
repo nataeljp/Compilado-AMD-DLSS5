@@ -5,7 +5,7 @@ namespace ov::hlsl {
 
 // captura (B8G8R8A8 sRGB) -> quadro inteiro linear FP16; e quadro inteiro -> tamanho da rede (filtro de caixa)
 inline const char* Prepara = R"(
-cbuffer C : register(b0) { uint fw; uint fh; uint dw; uint dh; };
+cbuffer C : register(b0) { uint fw; uint fh; uint dw; uint dh; uint hdr; float escala; uint pad0; uint pad1; };
 Texture2D<float4> src : register(t0);
 RWTexture2D<float4> dst : register(u0);
 SamplerState s : register(s0);
@@ -15,7 +15,8 @@ float3 Linear(float3 c) { return (c <= 0.04045) ? c / 12.92 : pow((c + 0.055) / 
 {
     if (p.x >= fw || p.y >= fh) return;
     float4 c = src.Load(int3(p, 0));
-    dst[p] = float4(Linear(saturate(c.rgb)), 1.0);
+    // HDR: scRGB linear dividido pelo branco SDR do Windows (o branco de papel vira 1); SDR: sRGB -> linear
+    dst[p] = float4(hdr ? max(c.rgb, 0.0) / escala : Linear(saturate(c.rgb)), 1.0);
 }
 
 [numthreads(8, 8, 1)] void CSReduz(uint2 p : SV_DispatchThreadID)
@@ -38,7 +39,7 @@ float3 Linear(float3 c) { return (c <= 0.04045) ? c / 12.92 : pow((c + 0.055) / 
 // quadro inteiro + forca * (resposta - alimentado), ampliados por Catmull-Rom; saida sRGB 8 bits
 // modo: 0 rede, 1 original, 2 comparacao (esquerda original | direita rede), 3 so a edicao (x4, cinza = 0)
 inline const char* Compoe = R"(
-cbuffer C : register(b0) { uint fw; uint fh; uint dw; uint dh; float forca; uint modo; float divisao; uint usaEdicao; };
+cbuffer C : register(b0) { uint fw; uint fh; uint dw; uint dh; float forca; uint modo; float divisao; uint usaEdicao; uint hdr; float escala; };
 Texture2D<float4> inteiro : register(t0);
 Texture2D<float4> fed : register(t1);
 Texture2D<float4> resp : register(t2);
@@ -101,7 +102,10 @@ float3 CatmullRom(Texture2D<float4> t, float2 uv, float2 tam)
         c = lerp(float3(0.5, 0.5, 0.5), h, saturate(length(v) / 8.0));
     }
     if (modo == 2 && abs((float)p.x - divisao * fw) < 1.0) c = float3(1, 1, 0);
-    saida[p] = float4(modo >= 3 ? saturate(c) : Srgb(c), 1.0);
+    if (hdr)
+        saida[p] = float4((modo >= 3 ? saturate(c) : max(c, 0.0)) * escala, 1.0); // de volta a scRGB
+    else
+        saida[p] = float4(modo >= 3 ? saturate(c) : Srgb(c), 1.0);
 }
 )";
 
