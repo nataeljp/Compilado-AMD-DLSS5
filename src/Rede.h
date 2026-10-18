@@ -40,12 +40,16 @@ class Rede
     // depois que a GPU terminou a lista da saida
     void Aposenta();
 
+    // profundidade dinamica (runtime v3): blocos residuais pulados a partir do proximo quadro; false = recusado/ausente
+    bool DefineProfundidade(const std::vector<uint32_t>& blocos);
+    bool TemProfundidade() const { return setSkip != nullptr; }
     std::string Status();
     std::string UltimoErro();
 
   private:
     bool Erro(int32_t s, const char* onde);
     HMODULE mod = nullptr;
+    int32_t (*setSkip)(void*, const uint32_t*, uint32_t) = nullptr;
     LmxxfNrApi api{};
     void* ctx = nullptr;
     LmxxfNrJob job{};

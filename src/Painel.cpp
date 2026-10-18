@@ -330,29 +330,33 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         ImGui::EndDisabled();
 
         ImGui::SeparatorText("Ponte HDR -> rede");
-        const char* pontes[] = {"Automatica (SDR direta, HDR SoftKnee)", "Direta", "SoftKnee", "ACES (RRT+ODT, RenoDX)"};
+        const char* pontes[] = {"Automatica (SDR direta, HDR SoftKnee)", "Direta", "SoftKnee", "ACES (RRT+ODT, RenoDX)",
+                                "Curva do jogo (luz de cena, SDR)"};
         int ip = cfg.ponte + 1;
-        if (ImGui::Combo("Ponte", &ip, pontes, 4))
+        if (ImGui::Combo("Ponte", &ip, pontes, 5))
         {
             cfg.ponte = ip - 1;
             a.zeraHistorico = true;
         }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Como o quadro vira o proxy SDR que a rede ve. A composicao devolve os realces acima\n"
-                              "do branco que a ponte comprimiu.");
+                              "do branco que a ponte comprimiu.\nCurva do jogo: no jogo o DLSS 5 roda antes do tonemap;\n"
+                              "aqui a curva filmica e desfeita na entrada (a rede ve luz de cena) e refeita na saida.");
         ImGui::SliderFloat("Branco difuso (nits)", &cfg.brancoNits, 0.f, 400.f,
                            cfg.brancoNits > 0.f ? "%.0f nits" : "do Windows");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Branco de papel do jogo em HDR (0 = o branco SDR do Windows).");
 
         ImGui::SeparatorText("Execucao");
-        const int alturas[] = {720, 900, 1080, 1440, 2160};
-        const char* nomes[] = {"720p", "900p", "1080p", "1440p", "2160p"};
-        int ia = 2;
-        for (int i = 0; i < 5; ++i)
+        // custo medido da rede sozinha (RX 9070): 540p 4,8 ms | 720p 6,9 | 900p 10,8 | 1080p 15,4; no jogo soma ao quadro dele
+        const int alturas[] = {540, 600, 720, 900, 1080, 1440, 2160};
+        const char* nomes[] = {"540p (~4,8 ms)", "600p (~5,9 ms)", "720p (~6,9 ms)", "900p (~10,8 ms)", "1080p (~15,4 ms)",
+                               "1440p", "2160p"};
+        int ia = 4;
+        for (int i = 0; i < 7; ++i)
             if (alturas[i] == cfg.alturaRede)
                 ia = i;
-        if (ImGui::Combo("Tamanho da rede", &ia, nomes, 5))
+        if (ImGui::Combo("Tamanho da rede", &ia, nomes, 7))
             cfg.alturaRede = alturas[ia];
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Altura em que a rede roda (limitada pela janela). Menor = mais rapido; a edicao e\n"

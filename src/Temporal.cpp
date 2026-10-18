@@ -7,7 +7,7 @@ namespace ov {
 namespace {
 const char* kHlsl = R"(
 cbuffer C : register(b0) { uint w; uint h; uint temResp; uint temHist; float maxN; float rejeicao; float folga; uint temMov;
-                           uint comp; float sInt; float sCor; float sGuarda; uint temConf; uint pad0; uint pad1; uint pad2; };
+                           uint comp; float sInt; float sCor; float sGuarda; uint temConf; float exposicao; uint pad1; uint pad2; };
 Texture2D<float4> fed : register(t0);     // proxy que a rede viu
 Texture2D<float4> resp : register(t1);    // resposta da rede (no espaco do proxy)
 Texture2D<float4> mov : register(t2);     // movimento simulado (pixels ate o quadro anterior)
@@ -51,8 +51,9 @@ float3 Edicao(int2 q)
 {
     q = clamp(q, int2(0, 0), int2(w - 1, h - 1));
     float3 O = orig.Load(int3(q, 0)).rgb;
-    float3 P = fed.Load(int3(q, 0)).rgb;
-    float3 M = resp.Load(int3(q, 0)).rgb;
+    // proxy e resposta voltam as unidades do quadro (a rede viu o quadro x exposicao)
+    float3 P = fed.Load(int3(q, 0)).rgb / exposicao;
+    float3 M = resp.Load(int3(q, 0)).rgb / exposicao;
     if (comp == 1)
         return ComporReferencia(O, P, M, sInt, sCor, sGuarda) - O;
     return M - P;
@@ -111,7 +112,9 @@ struct K
     UINT temMov;
     UINT comp;
     float sInt, sCor, sGuarda;
-    UINT temConf, pad0, pad1, pad2;
+    UINT temConf;
+    float exposicao;
+    UINT pad1, pad2;
 };
 const D3D12_RESOURCE_STATES SRV =
     D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
@@ -157,7 +160,7 @@ Tex* Temporal::Roda(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Devic
         std::clamp(p.cor, 0.f, 1.f),
         std::clamp(p.guarda, 1.f, 16.f),
         confianca ? 1u : 0u,
-        0,
+        std::max(p.exposicao, 1e-3f),
         0,
         0};
     using Par = std::pair<ID3D12Resource*, DXGI_FORMAT>;

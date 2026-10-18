@@ -16,6 +16,7 @@
 #include "Rede.h"
 #include "Shaders.h"
 #include <shellapi.h>
+#include <wincodec.h>
 #include <winrt/base.h>
 #include <algorithm>
 #include <chrono>
@@ -73,6 +74,10 @@ struct App
     Tex inteiro, orig, fed, saida, fedAnt, saidaAnt; // orig: quadro no tamanho da rede; fed: o proxy dele
     std::wstring dumpPasta;
     std::wstring pastaRuntime; // --runtime: outra pasta do runtime (testes)
+    std::vector<uint32_t> pulaTeste; // --pula 1,2,3: blocos pulados fixos (medicao de custo por bloco)
+    bool temPulaTeste = false;
+    int alternaAltura = 0; // --alterna 720: modo imagem troca a altura da rede a cada 4 quadros e registra cada quadro
+    std::wstring configArq;    // --config: outro config.json (comparacoes); nao e regravado
     ComPtr<ID3D12CommandAllocator> al[2];
     ComPtr<ID3D12GraphicsCommandList> cl[2];
     std::wstring pasta;
@@ -87,7 +92,7 @@ struct App
     {
         pasta = PastaDoExe();
         LogAbre(pasta);
-        cfg.Carrega(pasta + L"\\config.json");
+        cfg.Carrega(configArq.empty() ? pasta + L"\\config.json" : configArq);
         gpu.Cria();
         desc.Cria(gpu.dev.Get(), 512);
         for (int i = 0; i < 2; ++i)
@@ -104,6 +109,14 @@ struct App
         pCompoe.Cria(gpu.dev.Get(), compoe.c_str(), "CSCompoe", 4, 1, 16, "compoe");
         fluxo.Cria(gpu.dev.Get());
         temporal.Cria(gpu.dev.Get());
+        if (cfg.temporalRede > 0)
+        {
+            // historico temporal da propria rede (o runtime le o ambiente que copiou ao carregar: tem de vir antes)
+            SetEnvironmentVariableW(L"DLSS5_TEMPORAL_MODE", std::to_wstring(std::clamp(cfg.temporalRede, 0, 3)).c_str());
+            SetEnvironmentVariableW(L"DLSS5_TEMPORAL_ENHANCE_STRENGTH",
+                                    std::to_wstring(std::clamp(cfg.realceTemporal, 0.f, 2.f)).c_str());
+            cfg.reusoVit = false; // incompativel com o historico
+        }
         if (cfg.reusoVit)
         {
             // reuso adaptativo do ViT (lmxxf): o runtime le uma vez, ao criar a rede
@@ -130,7 +143,8 @@ struct App
         cap.Para();
         painel.Destroi();
         ov.Destroi();
-        cfg.Salva(pasta + L"\\config.json");
+        if (configArq.empty())
+            cfg.Salva(pasta + L"\\config.json");
     }
 
     void Liga(HWND h)
@@ -145,6 +159,7 @@ struct App
             zeraHistorico = true;
     }
     bool hdr = false;
+    UINT pontePassada = 0;
     float escalaSdr = 1.f;
     float escalaUsada = 1.f;
 
@@ -187,23 +202,160 @@ struct App
         Log("app", Fmt("janela %ux%u, rede %ux%u", fw, fh, dw, dh));
     }
 
+    // ---- modo imagem (comparacao com as fotos da NVIDIA): um arquivo no lugar da captura, sem overlay ----
+    ComPtr<ID3D12Resource> imagem;
+    UINT imgW = 0, imgH = 0;
+    bool CarregaImagem(const std::wstring& arq)
+    {
+        ComPtr<IWICImagingFactory> f;
+        ComPtr<IWICBitmapDecoder> dec;
+        ComPtr<IWICBitmapFrameDecode> fr;
+        ComPtr<IWICFormatConverter> conv;
+        if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&f))) ||
+            FAILED(f->CreateDecoderFromFilename(arq.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &dec)) ||
+            FAILED(dec->GetFrame(0, &fr)) || FAILED(f->CreateFormatConverter(&conv)) ||
+            FAILED(conv->Initialize(fr.Get(), GUID_WICPixelFormat32bppRGBA, WICBitmapDitherTypeNone, nullptr, 0,
+                                    WICBitmapPaletteTypeCustom)) ||
+            FAILED(conv->GetSize(&imgW, &imgH)))
+        {
+            Log("imagem", "nao consegui ler " + Utf8(arq));
+            return false;
+        }
+        std::vector<unsigned char> px(size_t(imgW) * imgH * 4);
+        Ck(conv->CopyPixels(nullptr, imgW * 4, UINT(px.size()), px.data()), "CopyPixels");
+        D3D12_HEAP_PROPERTIES hp{};
+        hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+        D3D12_RESOURCE_DESC rd{};
+        rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        rd.Width = imgW;
+        rd.Height = imgH;
+        rd.DepthOrArraySize = 1;
+        rd.MipLevels = 1;
+        rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        rd.SampleDesc.Count = 1;
+        Ck(gpu.dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                            IID_PPV_ARGS(&imagem)),
+           "textura(imagem)");
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
+        UINT64 total = 0;
+        gpu.dev->GetCopyableFootprints(&rd, 0, 1, 0, &fp, nullptr, nullptr, &total);
+        hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+        D3D12_RESOURCE_DESC bd{};
+        bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        bd.Width = total;
+        bd.Height = 1;
+        bd.DepthOrArraySize = 1;
+        bd.MipLevels = 1;
+        bd.SampleDesc.Count = 1;
+        bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        ComPtr<ID3D12Resource> up;
+        Ck(gpu.dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                            IID_PPV_ARGS(&up)),
+           "upload(imagem)");
+        unsigned char* m = nullptr;
+        up->Map(0, nullptr, (void**)&m);
+        for (UINT y = 0; y < imgH; ++y)
+            memcpy(m + fp.Offset + size_t(y) * fp.Footprint.RowPitch, px.data() + size_t(y) * imgW * 4, size_t(imgW) * 4);
+        up->Unmap(0, nullptr);
+        Ck(al[0]->Reset(), "reset");
+        Ck(cl[0]->Reset(al[0].Get(), nullptr), "list");
+        D3D12_TEXTURE_COPY_LOCATION dst{imagem.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+        D3D12_TEXTURE_COPY_LOCATION src{up.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+        src.PlacedFootprint = fp;
+        cl[0]->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        Barreira(cl[0].Get(), imagem.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
+        cl[0]->Close();
+        ID3D12CommandList* l[] = {cl[0].Get()};
+        gpu.fila->ExecuteCommandLists(1, l);
+        gpu.Espera();
+        hdr = false;
+        escalaSdr = 1.f;
+        Log("imagem", Fmt("imagem %ux%u: %s", imgW, imgH, Utf8(arq).c_str()));
+        return true;
+    }
+
+    // ---- profundidade da rede: niveis de blocos residuais pulados (do mais barato de perder ao mais caro) ----
+    static std::vector<uint32_t> BlocosDoNivel(int n)
+    {
+        std::vector<uint32_t> v;
+        auto faixa = [&](uint32_t a, uint32_t b) { for (uint32_t i = a; i <= b; ++i) v.push_back(i); };
+        if (n >= 1 && n < 2)
+            v = {42, 43, 46};
+        if (n >= 2)
+            faixa(40, 47);
+        if (n >= 3)
+            faixa(23, 30);
+        if (n >= 4)
+            faixa(31, 38);
+        if (n >= 5)
+            faixa(1, 4), faixa(66, 69);
+        return v;
+    }
+    int nivelAtual = -1, nivelAlvo = 0, quadrosNoNivel = 0;
+    void AjustaProfundidade(bool temMov)
+    {
+        if (!rede.TemProfundidade())
+            return;
+        if (temPulaTeste)
+        {
+            if (nivelAtual < 0 && !rede.DefineProfundidade(pulaTeste))
+                Log("rede", "--pula recusado pelo runtime");
+            nivelAtual = 99;
+            return;
+        }
+        int alvo = std::clamp(cfg.profundidade, 0, 5);
+        if (cfg.profundidadeAuto && temMov && estat.valida)
+        {
+            // velocidade em pixels de uma rede de 1080 linhas
+            const float v = estat.velocidade * 1080.f / float(std::max(1u, fed.h));
+            const int pelaVelocidade = v < 3.f ? 0 : v < 8.f ? 1 : v < 16.f ? 2 : v < 32.f ? 3 : v < 64.f ? 4 : 5;
+            alvo = std::min(std::max(alvo, pelaVelocidade), std::clamp(cfg.profundidadeMax, 0, 5));
+        }
+        // histerese: fica mais raso na hora; volta a fundo so depois de 8 quadros no mesmo nivel pedido
+        if (alvo != nivelAlvo)
+        {
+            nivelAlvo = alvo;
+            quadrosNoNivel = 0;
+        }
+        else
+            ++quadrosNoNivel;
+        const bool muda = nivelAtual < 0 || nivelAlvo > nivelAtual || (nivelAlvo < nivelAtual && quadrosNoNivel >= 8);
+        if (!muda)
+            return;
+        if (rede.DefineProfundidade(BlocosDoNivel(nivelAlvo)))
+            nivelAtual = nivelAlvo;
+        else if (nivelAtual < 0)
+            Log("rede", Fmt("profundidade %d recusada pelo runtime", nivelAlvo));
+    }
+
     bool Quadro()
     {
         Captura::Quadro q;
-        if (!cap.Pega(q))
+        if (imagem)
+        {
+            q.tex = imagem.Get();
+            q.fmt = DXGI_FORMAT_R8G8B8A8_UNORM;
+            q.w = imgW;
+            q.h = imgH;
+            q.cercaValor = 0;
+        }
+        else if (!cap.Pega(q))
             return false;
         const auto t0 = std::chrono::steady_clock::now();
         RECT r{};
-        if (IsIconic(cap.Alvo()) || !Captura::RetanguloCliente(cap.Alvo(), r))
+        if (!imagem && (IsIconic(cap.Alvo()) || !Captura::RetanguloCliente(cap.Alvo(), r)))
         {
             ov.Mostra(false);
             return false;
         }
         Garante(q.w, q.h);
-        // o overlay cobre a area cliente; se o tamanho ainda nao bate com o capturado, espera o proximo quadro
-        r.right = r.left + LONG(q.w);
-        r.bottom = r.top + LONG(q.h);
-        ov.Posiciona(r, hdr);
+        if (!imagem)
+        {
+            // o overlay cobre a area cliente
+            r.right = r.left + LONG(q.w);
+            r.bottom = r.top + LONG(q.h);
+            ov.Posiciona(r, hdr);
+        }
         desc.Reinicia();
 
         const D3D12_RESOURCE_STATES SRV =
@@ -212,15 +364,21 @@ struct App
         Ck(al[0]->Reset(), "reset0");
         Ck(cl[0]->Reset(al[0].Get(), nullptr), "list0");
         auto* c = cl[0].Get();
-        Ck(gpu.fila->Wait(cap.Cerca(), q.cercaValor), "Wait(captura)");
+        if (q.cercaValor)
+            Ck(gpu.fila->Wait(cap.Cerca(), q.cercaValor), "Wait(captura)");
         Barreira(c, q.tex, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         inteiro.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         // branco de papel: o do usuario em nits ou o branco SDR do Windows (HDR); ponte: auto = SDR direto, HDR SoftKnee
         float escK = cfg.brancoNits > 0.f ? cfg.brancoNits / 80.f : escalaSdr;
         escalaUsada = escK;
-        const UINT ponte = cfg.ponte < 0 ? (hdr ? 1u : 0u) : (UINT)std::clamp(cfg.ponte, 0, 2);
+        UINT ponte = cfg.ponte < 0 ? (hdr ? 1u : 0u) : (UINT)std::clamp(cfg.ponte, 0, 3);
+        if (ponte == 3 && hdr)
+            ponte = 1; // a curva do jogo (sanduiche) so no SDR por enquanto
+        pontePassada = ponte;
         UINT k[8] = {inteiro.w, inteiro.h, fed.w, fed.h, hdr ? 1u : 0u, 0, ponte, 0};
         memcpy(&k[5], &escK, 4);
+        const float expK = std::max(cfg.temporal.exposicao, 1e-3f);
+        memcpy(&k[7], &expK, 4);
         pInteiro.Roda(c, desc, gpu.dev.Get(), {{q.tex, q.fmt}},
                       {{inteiro.r.Get(), inteiro.fmt}}, k, (inteiro.w + 7) / 8, (inteiro.h + 7) / 8);
         inteiro.Para(c, SRV);
@@ -247,6 +405,8 @@ struct App
                             estat.semConfianca > 0.06f || estat.mudancaLuz > 0.015f || estat.velocidade > 48.f;
         }
         const bool usaRede = redeOk && rede.Pronta() && cfg.modo != 1 && vezDaRede;
+        if (usaRede)
+            AjustaProfundidade(temMov);
         bool preparou = false;
         if (usaRede)
         {
@@ -307,9 +467,10 @@ struct App
             UINT usaEdicao;
             UINT hdr;
             float escala, kExp, kCon, kSat;
-            UINT grada, pad0, pad1;
+            UINT grada, filmica, pad1;
         } kc{inteiro.w,      inteiro.h,      fed.w, fed.h, edicao ? cfg.forca : 0.f, (UINT)cfg.modo, cfg.divisao,
-             edicao ? 1u : 0u, hdr ? 1u : 0u, escalaUsada, kExp, kCon, kSat, grada ? 1u : 0u, 0, 0};
+             edicao ? 1u : 0u, hdr ? 1u : 0u, escalaUsada, kExp, kCon, kSat, grada ? 1u : 0u,
+             pontePassada == 3 ? 1u : 0u, 0};
         pCompoe.Roda(c, desc, gpu.dev.Get(),
                      {{inteiro.r.Get(), inteiro.fmt},
                       {fed.r.Get(), fed.fmt},
@@ -325,7 +486,7 @@ struct App
             c->CopyResource(saidaAnt.r.Get(), saida.r.Get());
         }
         ID3D12Resource* bb = ov.Buffer();
-        const bool apresenta = bb && ov.Largura() == saida.w && ov.Altura() == saida.h;
+        const bool apresenta = !imagem && bb && ov.Largura() == saida.w && ov.Altura() == saida.h;
         if (apresenta)
         {
             Barreira(c, bb, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST);
@@ -496,7 +657,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
     App app;
-    std::wstring alvoTitulo;
+    std::wstring alvoTitulo, imagemArq;
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     for (int i = 1; i + 1 < argc; ++i)
@@ -511,12 +672,32 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             app.dumpPasta = argv[++i];
         else if (!wcscmp(argv[i], L"--runtime"))
             app.pastaRuntime = argv[++i];
+        else if (!wcscmp(argv[i], L"--alterna"))
+            app.alternaAltura = _wtoi(argv[++i]);
+        else if (!wcscmp(argv[i], L"--pula"))
+        {
+            app.temPulaTeste = true;
+            for (wchar_t* t = argv[++i]; *t;)
+            {
+                wchar_t* f = nullptr;
+                const unsigned long a = wcstoul(t, &f, 10), b = *f == L'-' ? wcstoul(f + 1, &f, 10) : a;
+                for (unsigned long k = a; k && k <= b; ++k)
+                    app.pulaTeste.push_back(uint32_t(k));
+                t = *f ? f + 1 : f;
+            }
+        }
+        else if (!wcscmp(argv[i], L"--imagem"))
+            imagemArq = argv[++i];
+        else if (!wcscmp(argv[i], L"--config"))
+            app.configArq = argv[++i];
     }
     for (int i = 1; i < argc; ++i)
     {
         if (!wcscmp(argv[i], L"--sem-painel"))
             app.comPainel = false;
     }
+    if (!imagemArq.empty())
+        app.comPainel = false;
     try
     {
         app.Inicia();
@@ -526,6 +707,59 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         Log("erro", e.what());
         MessageBoxA(nullptr, e.what(), "DLSS5 Overlay", MB_ICONERROR);
         return 1;
+    }
+    // modo imagem: N quadros da mesma foto pelo pipeline inteiro (o acumulo temporal assenta) e grava a saida
+    if (!imagemArq.empty())
+    {
+        int codigo = 0;
+        try
+        {
+            if (!app.CarregaImagem(imagemArq))
+                codigo = 2;
+            else
+            {
+                const int n = app.quadrosTeste > 0 ? app.quadrosTeste : 8;
+                double soma = 0;
+                int contados = 0;
+                for (int i = 0; i < n; ++i)
+                {
+                    const int alturaBase = app.cfg.alturaRede;
+                    if (app.alternaAltura && (i / 4) % 2)
+                        app.cfg.alturaRede = app.alternaAltura;
+                    const auto t = std::chrono::steady_clock::now();
+                    app.Quadro();
+                    app.gpu.Espera(); // tempo de GPU (rede inclusa), nao so o de envio
+                    if (app.alternaAltura)
+                    {
+                        Log("imagem", Fmt("quadro %d altura %d: %.2f ms", i, app.cfg.alturaRede,
+                                          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count()));
+                        app.cfg.alturaRede = alturaBase;
+                    }
+                    if (i >= 2)
+                        soma += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count(),
+                            ++contados;
+                }
+                Log("imagem", Fmt("tempo medio por quadro: %.2f ms (%d quadros, profundidade %d)",
+                                  contados ? soma / contados : 0.0, contados, app.nivelAtual));
+                if (!app.gravaArquivo.empty())
+                    app.GravaSaida(app.gravaArquivo);
+                if (!app.dumpPasta.empty())
+                {
+                    app.GravaTex(app.orig, app.dumpPasta + L"\\orig.f16", 8);
+                    app.GravaTex(app.fed, app.dumpPasta + L"\\proxy.f16", 8);
+                    if (app.ultimaEdicao)
+                        app.GravaTex(*app.ultimaEdicao, app.dumpPasta + L"\\edicao.f16", 8);
+                }
+                Log("imagem", app.rede.Status());
+            }
+        }
+        catch (const std::exception& e)
+        {
+            Log("erro", e.what());
+            codigo = 3;
+        }
+        app.Encerra();
+        return codigo;
     }
     RegisterHotKey(nullptr, 1, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'D');
     RegisterHotKey(nullptr, 2, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'N');

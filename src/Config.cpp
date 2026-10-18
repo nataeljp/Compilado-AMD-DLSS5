@@ -70,6 +70,7 @@ void Config::Carrega(const std::wstring& arquivo)
     I("composicao", temporal.composicao);
     F("corComposicao", temporal.cor);
     F("protecao", temporal.guarda);
+    F("exposicao", temporal.exposicao);
     I("passes", rede.passes);
     B("redeCompleta", rede.redeCompleta);
     I("alturaRede", alturaRede);
@@ -82,6 +83,11 @@ void Config::Carrega(const std::wstring& arquivo)
     I("ritmo", ritmo);
     I("ritmoMax", ritmoMax);
     B("reusoVit", reusoVit);
+    I("temporalRede", temporalRede);
+    I("profundidade", profundidade);
+    B("profundidadeAuto", profundidadeAuto);
+    I("profundidadeMax", profundidadeMax);
+    F("realceTemporal", realceTemporal);
     I("estabilidade", temporal.maxQuadros);
     F("rejeicao", temporal.rejeicao);
     F("divisao", divisao);
@@ -104,6 +110,7 @@ void Config::Salva(const std::wstring& arquivo) const
     f << "  \"composicao\": " << temporal.composicao << ",\n";
     f << "  \"corComposicao\": " << temporal.cor << ",\n";
     f << "  \"protecao\": " << temporal.guarda << ",\n";
+    f << "  \"exposicao\": " << temporal.exposicao << ",\n";
     f << "  \"passes\": " << rede.passes << ",\n";
     f << "  \"redeCompleta\": " << b(rede.redeCompleta) << ",\n";
     f << "  \"alturaRede\": " << alturaRede << ",\n";
@@ -116,6 +123,11 @@ void Config::Salva(const std::wstring& arquivo) const
     f << "  \"ritmo\": " << ritmo << ",\n";
     f << "  \"ritmoMax\": " << ritmoMax << ",\n";
     f << "  \"reusoVit\": " << b(reusoVit) << ",\n";
+    f << "  \"temporalRede\": " << temporalRede << ",\n";
+    f << "  \"profundidade\": " << profundidade << ",\n";
+    f << "  \"profundidadeAuto\": " << b(profundidadeAuto) << ",\n";
+    f << "  \"profundidadeMax\": " << profundidadeMax << ",\n";
+    f << "  \"realceTemporal\": " << realceTemporal << ",\n";
     f << "  \"estabilidade\": " << temporal.maxQuadros << ",\n";
     f << "  \"rejeicao\": " << temporal.rejeicao << ",\n";
     f << "  \"divisao\": " << divisao << ",\n";

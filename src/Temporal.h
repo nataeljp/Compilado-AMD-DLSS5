@@ -16,6 +16,7 @@ struct ParamsTemporal
     float intensidade = 1.f;  // DLSSNR.Intensity (vem dos parametros NGX)
     float cor = 1.f;          // mistura de cor da composicao (0 = cores do quadro na luz da rede, 1 = cores da rede)
     float guarda = 2.f;       // protecao bilateral: a luz muda no maximo esse fator
+    float exposicao = 1.f;    // ganho do quadro antes da rede (ponto de operacao); desfeito na composicao
 };
 
 class Temporal

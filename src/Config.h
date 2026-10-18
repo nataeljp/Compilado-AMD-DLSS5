@@ -32,6 +32,11 @@ struct Config
     bool usaConfianca = true; // descarta o historico onde o fluxo de ida e volta nao bate (oclusao)
     int ritmo = 1;          // a rede roda a cada N quadros (1 = todo quadro; a rede nunca deve sumir em movimento)
     int ritmoMax = 4;       // no automatico: no maximo tantos quadros sem rodar a rede
+    int profundidade = 0;   // camadas da rede: 0 = as 71; 1..5 = cada vez menos (blocos residuais pulados); mais rapido
+    bool profundidadeAuto = false; // a profundidade segue a velocidade (medido: corta no maximo ~4,7 ms e estraga a imagem)
+    int profundidadeMax = 3;      // no automatico, o nivel mais raso permitido
+    int temporalRede = 0;   // historico da propria rede (runtime lmxxf DLSS5_TEMPORAL_MODE): 0 desligado, 1 historico, 2 baixa freq., 3 realce
+    float realceTemporal = 1.f; // forca do modo 3 (0..2)
     bool reusoVit = true;   // reuso adaptativo do ViT do lmxxf (com perda pequena; vale ao reabrir o programa)
     float divisao = 0.5f;   // posicao da divisao no modo comparacao
     int fpsMax = 60;        // teto de quadros processados por segundo (0 = sem teto)

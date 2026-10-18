@@ -50,6 +50,8 @@ bool Rede::Inicia(Gpu& g, const std::wstring& pasta)
     if (api.QueryCapabilities && api.QueryCapabilities(&cap) == LMXXF_NR_OK)
         Log("rede", Fmt("runtime: entrada maxima %ux%u, hip_ready %u, gfx1201 %u", cap.max_input_width,
                         cap.max_input_height, cap.hip_ready, cap.gfx1201_target));
+    setSkip = reinterpret_cast<int32_t (*)(void*, const uint32_t*, uint32_t)>(GetProcAddress(mod, "LmxxfNrSetDynamicSkip"));
+    Log("rede", setSkip ? "profundidade dinamica disponivel (runtime v3)" : "runtime sem profundidade dinamica");
     assets = pasta + L"\\native-game-tiled-assets";
     LmxxfNrCreateInfo ci{};
     ci.struct_size = sizeof ci;
@@ -65,6 +67,13 @@ bool Rede::Inicia(Gpu& g, const std::wstring& pasta)
         return false;
     Log("rede", "runtime pronto: " + Utf8(assets));
     return true;
+}
+
+bool Rede::DefineProfundidade(const std::vector<uint32_t>& blocos)
+{
+    if (!setSkip || !ctx)
+        return false;
+    return setSkip(ctx, blocos.empty() ? nullptr : blocos.data(), (uint32_t)blocos.size()) == LMXXF_NR_OK;
 }
 
 void Rede::Encerra()

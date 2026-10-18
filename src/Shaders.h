@@ -62,11 +62,29 @@ float3 AcesFittedAP1(float3 color)
     return saturate(mul(SAIDA, a / b));
 }
 
-// ponte do quadro (linear, branco de papel = 1) para o proxy que a rede ve: 0 direto, 1 SoftKnee, 2 ACES
+// curva filmica do jogo (ACES de Narkowicz, perto do filmic do UE): cena -> tela linear, e a inversa exata.
+// No jogo o DLSS 5 roda ANTES do tonemap: a rede ve a luz de cena e a curva do jogo vem depois (pe que escurece o preto,
+// ombro que sobe o claro sem estourar). No overlay (quadro ja com tonemap) a ponte 3 desfaz a curva na entrada e a
+// refaz na saida.
+float3 Filmica(float3 x)
+{
+    x = max(x, 0.0);
+    return saturate((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14));
+}
+float3 FilmicaInv(float3 y)
+{
+    y = clamp(y, 0.0, 0.9999);
+    float3 a = 2.43 * y - 2.51, b = 0.59 * y - 0.03, c = 0.14 * y;
+    return (-b - sqrt(max(b * b - 4.0 * a * c, 0.0))) / (2.0 * a);
+}
+
+// ponte do quadro (linear, branco de papel = 1) para o proxy que a rede ve: 0 direto, 1 SoftKnee, 2 ACES,
+// 3 luz de cena sem corte (o codificador do runtime aplica o joelho e o sRGB da NVIDIA)
 float3 Proxy(float3 o, uint ponte)
 {
     if (ponte == 1) return SoftKnee(o);
     if (ponte == 2) return AcesFittedAP1(o);
+    if (ponte == 3) return max(o, 0.0);
     return saturate(o);
 }
 
@@ -105,7 +123,7 @@ float3 GradacaoModelo(float3 c, float kExp, float kCon, float kSat)
 
 // captura -> quadro inteiro linear (branco de papel = 1); quadro inteiro -> tamanho da rede: original e proxy
 inline const char* Prepara = R"(
-cbuffer C : register(b0) { uint fw; uint fh; uint dw; uint dh; uint hdr; float escala; uint ponte; uint pad1; };
+cbuffer C : register(b0) { uint fw; uint fh; uint dw; uint dh; uint hdr; float escala; uint ponte; float exposicao; };
 Texture2D<float4> src : register(t0);
 RWTexture2D<float4> dst : register(u0);
 RWTexture2D<float4> dstProxy : register(u1);
@@ -115,8 +133,10 @@ SamplerState s : register(s0);
 {
     if (p.x >= fw || p.y >= fh) return;
     float4 c = src.Load(int3(p, 0));
-    // HDR: scRGB dividido pelo branco de papel; SDR: sRGB -> linear
-    dst[p] = float4(hdr ? max(c.rgb, 0.0) / escala : Linear(saturate(c.rgb)), 1.0);
+    // HDR: scRGB dividido pelo branco de papel; SDR: sRGB -> linear (ponte 3: e desfaz a curva do jogo, luz de cena)
+    float3 l = hdr ? max(c.rgb, 0.0) / escala : Linear(saturate(c.rgb));
+    if (!hdr && ponte == 3) l = FilmicaInv(l);
+    dst[p] = float4(l, 1.0);
 }
 
 [numthreads(8, 8, 1)] void CSReduz(uint2 p : SV_DispatchThreadID)
@@ -134,7 +154,8 @@ SamplerState s : register(s0);
         }
     float3 o = a.rgb / (n * n);
     dst[p] = float4(o, 1.0);
-    dstProxy[p] = float4(Proxy(o, ponte), 1.0);
+    // exposicao: o ponto de operacao da rede (o proxy ve o quadro x exposicao; a composicao desfaz)
+    dstProxy[p] = float4(Proxy(o * exposicao, ponte), 1.0);
 }
 )";
 
@@ -142,7 +163,7 @@ SamplerState s : register(s0);
 // modo: 0 rede, 1 original, 2 comparacao (esquerda original | direita rede), 3 so a edicao (x4), 4 movimento
 inline const char* Compoe = R"(
 cbuffer C : register(b0) { uint fw; uint fh; uint dw; uint dh; float forca; uint modo; float divisao; uint usaEdicao;
-                           uint hdr; float escala; float kExp; float kCon; float kSat; uint grada; uint pad0; uint pad1; };
+                           uint hdr; float escala; float kExp; float kCon; float kSat; uint grada; uint filmica; uint pad1; };
 Texture2D<float4> inteiro : register(t0);
 Texture2D<float4> fed : register(t1);
 Texture2D<float4> edicao : register(t2);
@@ -182,7 +203,7 @@ float3 Tela(float3 lin, bool grade)
 {
     if (!hdr)
     {
-        float3 c = Srgb(lin);
+        float3 c = Srgb(filmica ? Filmica(lin) : lin);
         return grade ? GradacaoModelo(c, kExp, kCon, kSat) : c;
     }
     if (!grade) return max(lin, 0.0) * escala;
