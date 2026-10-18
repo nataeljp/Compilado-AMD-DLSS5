@@ -309,9 +309,23 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         }
         if (mc)
             a.zeraHistorico = true;
-        ImGui::SeparatorText("Decodificacao");
-        Deslizador("Detalhe", &cfg.rede.detalhe, 0.f, 1.f, "%.2f", "Forca de detalhe da decodificacao do runtime.");
-        Deslizador("Cor", &cfg.rede.cor, 0.f, 1.f, "%.2f", "Forca de cor da decodificacao do runtime.");
+        ImGui::SeparatorText("Composicao de cor");
+        const char* comps[] = {"Classica (decodificacao do runtime)", "RenoDX (luz e cor controladas)"};
+        ImGui::Combo("Composicao", &cfg.temporal.composicao, comps, 2);
+        if (cfg.temporal.composicao == 0)
+        {
+            Deslizador("Detalhe", &cfg.rede.detalhe, 0.f, 1.f, "%.2f", "Forca de detalhe da decodificacao do runtime.");
+            Deslizador("Cor", &cfg.rede.cor, 0.f, 1.f, "%.2f", "Forca de cor da decodificacao do runtime.");
+        }
+        else
+        {
+            Deslizador("Detalhe##rdx", &cfg.temporal.rdxDetalhe, 0.f, 2.f, "%.2f",
+                       "Quanto da mudanca de luz da rede entra (0 = luz original, 1 = da rede, 2 = o dobro).");
+            Deslizador("Cor##rdx", &cfg.temporal.rdxCor, 0.f, 2.f, "%.2f",
+                       "0 = cores do jogo na luz da rede, 1 = cores da rede, acima de 1 = mais saturado.");
+            Deslizador("Protecao de realce", &cfg.temporal.rdxGuarda, 1.f, 16.f, "%.1fx",
+                       "A luz de cada ponto muda no maximo esse fator (protege realces e sombras).");
+        }
     }
 
     // ---- entradas simuladas / tempo ----

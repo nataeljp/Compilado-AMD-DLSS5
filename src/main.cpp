@@ -220,9 +220,14 @@ struct App
         const bool usaRede = redeOk && rede.Pronta() && cfg.modo != 1 && vezDaRede;
         bool preparou = false;
         if (usaRede)
+        {
+            ParamsRede pr = cfg.rede;
+            if (cfg.temporal.composicao == 1)
+                pr.detalhe = pr.cor = 1.f; // RenoDX: a resposta inteira; a composicao e feita aqui
             preparou = rede.Prepara(c, fed.r.Get(), fed.estado, fed.w, fed.h,
                                     temMov ? fluxo.Movimento().r.Get() : nullptr, fluxo.Movimento().estado,
-                                    zeraHistorico || !temMov, cfg.rede);
+                                    zeraHistorico || !temMov, pr);
+        }
         Ck(c->Close(), "close0");
         ID3D12CommandList* l0[] = {c};
         gpu.fila->ExecuteCommandLists(1, l0);
@@ -561,8 +566,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     {
                         app.GravaTex(app.fed, app.dumpPasta + L"\\fed_atual.f16", 8);
                         app.GravaTex(app.fedAnt, app.dumpPasta + L"\\fed_anterior.f16", 8);
-                        app.GravaTex(app.saida, app.dumpPasta + L"\\saida_atual.rgba", 4);
-                        app.GravaTex(app.saidaAnt, app.dumpPasta + L"\\saida_anterior.rgba", 4);
+                        app.GravaTex(app.saida, app.dumpPasta + L"\\saida_atual.rgba", app.hdr ? 8 : 4);
+                        app.GravaTex(app.saidaAnt, app.dumpPasta + L"\\saida_anterior.rgba", app.hdr ? 8 : 4);
                         if (app.ultimoTemMov)
                             app.GravaTex(app.fluxo.Movimento(), app.dumpPasta + L"\\movimento.f16", 4);
                     }

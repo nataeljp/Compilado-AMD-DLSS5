@@ -67,6 +67,10 @@ void Config::Carrega(const std::wstring& arquivo)
     B("ocultaDeGravacoes", ocultaDeGravacoes);
     I("estabilidade", temporal.maxQuadros);
     F("rejeicao", temporal.rejeicao);
+    I("composicao", temporal.composicao);
+    F("rdxDetalhe", temporal.rdxDetalhe);
+    F("rdxCor", temporal.rdxCor);
+    F("rdxGuarda", temporal.rdxGuarda);
 }
 
 void Config::Salva(const std::wstring& arquivo) const
@@ -92,7 +96,11 @@ void Config::Salva(const std::wstring& arquivo) const
     f << "  \"ritmo\": " << ritmo << ",\n";
     f << "  \"ocultaDeGravacoes\": " << (ocultaDeGravacoes ? "true" : "false") << ",\n";
     f << "  \"estabilidade\": " << temporal.maxQuadros << ",\n";
-    f << "  \"rejeicao\": " << temporal.rejeicao << "\n";
+    f << "  \"rejeicao\": " << temporal.rejeicao << ",\n";
+    f << "  \"composicao\": " << temporal.composicao << ",\n";
+    f << "  \"rdxDetalhe\": " << temporal.rdxDetalhe << ",\n";
+    f << "  \"rdxCor\": " << temporal.rdxCor << ",\n";
+    f << "  \"rdxGuarda\": " << temporal.rdxGuarda << "\n";
     f << "}\n";
 }
 
