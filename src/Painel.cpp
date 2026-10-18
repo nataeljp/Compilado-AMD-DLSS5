@@ -70,8 +70,9 @@ bool Painel::Cria(Gpu& g, HINSTANCE inst, const std::wstring& pastaIni)
     RegisterClassExW(&wc);
     const UINT dpi = GetDpiForSystem();
     const int pw = MulDiv(460, dpi, 96), ph = MulDiv(760, dpi, 96);
-    hwnd = CreateWindowExW(0, wc.lpszClassName, L"DLSS5 Overlay", WS_OVERLAPPEDWINDOW, 80, 80, pw, ph, nullptr,
-                           nullptr, inst, nullptr);
+    // sempre no topo: o overlay cobre a janela do jogo e o painel tem de ficar acima dele
+    hwnd = CreateWindowExW(WS_EX_TOPMOST, wc.lpszClassName, L"DLSS5 Overlay  (Ctrl+Alt+P mostra/esconde)",
+                           WS_OVERLAPPEDWINDOW, 80, 80, pw, ph, nullptr, nullptr, inst, nullptr);
     if (!hwnd)
         return false;
     D3D12_DESCRIPTOR_HEAP_DESC hd{};
@@ -144,6 +145,20 @@ void Painel::Destroi()
     hwnd = nullptr;
 }
 
+void Painel::Alterna()
+{
+    if (!hwnd)
+        return;
+    if (IsWindowVisible(hwnd) && !IsIconic(hwnd))
+        ShowWindow(hwnd, SW_HIDE);
+    else
+    {
+        ShowWindow(hwnd, SW_RESTORE);
+        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        SetForegroundWindow(hwnd);
+    }
+}
+
 void Painel::Redimensiona(UINT nw, UINT nh)
 {
     gpu->Espera();
@@ -202,7 +217,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         a.sair = true;
         return a;
     }
-    if (IsIconic(hwnd))
+    if (IsIconic(hwnd) || !IsWindowVisible(hwnd))
         return a;
     if (g_pendW && g_pendH && (g_pendW != w || g_pendH != h))
         Redimensiona(g_pendW, g_pendH);
@@ -226,6 +241,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         ImGui::TextColored(ImVec4(0.4f, 1, 0.5f, 1), "Capturando: %s", Utf8(e.alvo).c_str());
         ImGui::Text("Janela %ux%u  |  rede %ux%u  |  %.1f ms  |  %.0f quadros/s", e.janelaW, e.janelaH, e.redeW,
                     e.redeH, e.msMedio, e.fps);
+        ImGui::Text("Rede rodou em %.0f%% dos quadros", 100.0 * e.fracaoRede);
     }
     if (!e.redeOk)
         ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "Rede indisponivel: so o quadro original (ver overlay.jsonl)");
@@ -268,9 +284,68 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             a.ocultaMudou = true;
     }
 
-    // ---- rede ----
-    if (ImGui::CollapsingHeader("Rede DLSS 5", ImGuiTreeNodeFlags_DefaultOpen))
+    // ---- DLSS 5: os parametros que a NVIDIA expoe (NGX DLSSNR.*), como no addon RenoDX DLSS ----
+    if (ImGui::CollapsingHeader("DLSS 5 (parametros da NVIDIA)", ImGuiTreeNodeFlags_DefaultOpen))
     {
+        const char* modelos[] = {"Model A (padrao)", "Model B (natural)", "Model C (cinematico)"};
+        if (ImGui::Combo("Modelo", &cfg.ngx.modelo, modelos, 3))
+            a.zeraHistorico = true;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("DLSSNR.Style: o controle de estilo da rede (0, 1/128, 2/128) e a gradacao final\n"
+                              "da NVIDIA (B: -0,1 EV, contraste -25%%, saturacao x0,90; C: saturacao x0,85).");
+        Deslizador("Intensidade geral", &cfg.ngx.intensidade, 0.f, 2.f, "%.2f",
+                   "DLSSNR.Intensity: quanto da resposta da rede entra (acima de 1 reforca a luz).");
+        bool mc = false;
+        mc |= Deslizador("Intensidade de tom", &cfg.ngx.tomLocal, 0.f, 1.f, "%.2f",
+                         "DLSSNR.LocalToneStrength: luz e cor em grande escala; tambem escala a gradacao do modelo.");
+        mc |= Deslizador("Intensidade de estrutura", &cfg.ngx.estruturaLocal, -1.f, 2.f, "%.2f",
+                         "DLSSNR.LocalStructureStrength: detalhe e forma locais.");
+        mc |= ImGui::Checkbox("Mascara de personagem", &cfg.ngx.mascara);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("DLSSNR.UseAutoMask: a rede separa personagem e cena. Desligada, pele e cena vao a -1.");
+        ImGui::BeginDisabled(!cfg.ngx.mascara);
+        mc |= Deslizador("Intensidade de personagem", &cfg.ngx.estruturaPele, -1.f, 2.f, "%.2f",
+                         "DLSSNR.SkinStructureStrength: estrutura de pele/personagem.");
+        ImGui::EndDisabled();
+        ImGui::Checkbox("Gradacao do modelo (B/C)", &cfg.ngx.gradacao);
+        if (ImGui::Button("Padrao NVIDIA"))
+        {
+            cfg.ngx = ParamsNgx{};
+            cfg.temporal.composicao = 1;
+            cfg.temporal.cor = 1.f;
+            cfg.temporal.guarda = 2.f;
+            mc = true;
+        }
+        if (mc)
+            a.zeraHistorico = true;
+
+        ImGui::SeparatorText("Composicao (referencia NVIDIA/RenoDX)");
+        const char* comps[] = {"Crua (resposta - proxy)", "Referencia NVIDIA/RenoDX"};
+        ImGui::Combo("Composicao", &cfg.temporal.composicao, comps, 2);
+        ImGui::BeginDisabled(cfg.temporal.composicao == 0);
+        Deslizador("Cor", &cfg.temporal.cor, 0.f, 1.f, "%.2f",
+                   "0 = cores do jogo na luz da rede, 1 = cores da rede (padrao).");
+        Deslizador("Protecao de luz", &cfg.temporal.guarda, 1.f, 8.f, "%.2fx",
+                   "A luz de cada ponto muda no maximo esse fator, para cima e para baixo (padrao 2,0).");
+        ImGui::EndDisabled();
+
+        ImGui::SeparatorText("Ponte HDR -> rede");
+        const char* pontes[] = {"Automatica (SDR direta, HDR SoftKnee)", "Direta", "SoftKnee", "ACES (RRT+ODT, RenoDX)"};
+        int ip = cfg.ponte + 1;
+        if (ImGui::Combo("Ponte", &ip, pontes, 4))
+        {
+            cfg.ponte = ip - 1;
+            a.zeraHistorico = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Como o quadro vira o proxy SDR que a rede ve. A composicao devolve os realces acima\n"
+                              "do branco que a ponte comprimiu.");
+        ImGui::SliderFloat("Branco difuso (nits)", &cfg.brancoNits, 0.f, 400.f,
+                           cfg.brancoNits > 0.f ? "%.0f nits" : "do Windows");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Branco de papel do jogo em HDR (0 = o branco SDR do Windows).");
+
+        ImGui::SeparatorText("Execucao");
         const int alturas[] = {720, 900, 1080, 1440, 2160};
         const char* nomes[] = {"720p", "900p", "1080p", "1440p", "2160p"};
         int ia = 2;
@@ -283,49 +358,13 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             ImGui::SetTooltip("Altura em que a rede roda (limitada pela janela). Menor = mais rapido; a edicao e\n"
                               "ampliada sobre o quadro nativo, que mantem o proprio detalhe.");
         ImGui::Checkbox("Rede completa (71 blocos)", &cfg.rede.redeCompleta);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("A rede tem 71 blocos (camadas) e roda 1 vez por quadro. Desligado pula 3 blocos\n"
+                              "(42, 43, 46): ~1 ms mais rapido.");
         ImGui::SliderInt("Passes", &cfg.rede.passes, 1, 3);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Cada passe roda a rede de novo sobre a propria resposta: estilo mais forte, custo linear.");
-        if (Deslizador("Estilo", &cfg.rede.estilo, 0.f, 4.f, "%.2f",
-                       "0 = padrao da NVIDIA, 1 = Stellar Blade, 2 = mais forte."))
-            a.zeraHistorico = true;
-        ImGui::SeparatorText("Controles do primeiro bloco");
-        bool mc = false;
-        mc |= Deslizador("Tom", &cfg.rede.tom, -1.f, 4.f, "%.2f", "Reiluminacao (0 = luz mais proxima da NVIDIA).");
-        mc |= Deslizador("Estrutura", &cfg.rede.estrutura, -1.f, 4.f, "%.2f", nullptr);
-        mc |= Deslizador("Pele", &cfg.rede.pele, -1.f, 4.f, "%.2f", nullptr);
-        mc |= Deslizador("Outro", &cfg.rede.outro, -1.f, 4.f, "%.2f", nullptr);
-        if (ImGui::Button("Controles padrao"))
-        {
-            cfg.rede.tom = cfg.rede.estrutura = cfg.rede.pele = cfg.rede.outro = 1.f;
-            mc = true;
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Tom 0 + estilo 2"))
-        {
-            cfg.rede.tom = 0.f;
-            cfg.rede.estilo = 2.f;
-            mc = true;
-        }
-        if (mc)
-            a.zeraHistorico = true;
-        ImGui::SeparatorText("Composicao de cor");
-        const char* comps[] = {"Classica (decodificacao do runtime)", "RenoDX (luz e cor controladas)"};
-        ImGui::Combo("Composicao", &cfg.temporal.composicao, comps, 2);
-        if (cfg.temporal.composicao == 0)
-        {
-            Deslizador("Detalhe", &cfg.rede.detalhe, 0.f, 1.f, "%.2f", "Forca de detalhe da decodificacao do runtime.");
-            Deslizador("Cor", &cfg.rede.cor, 0.f, 1.f, "%.2f", "Forca de cor da decodificacao do runtime.");
-        }
-        else
-        {
-            Deslizador("Detalhe##rdx", &cfg.temporal.rdxDetalhe, 0.f, 2.f, "%.2f",
-                       "Quanto da mudanca de luz da rede entra (0 = luz original, 1 = da rede, 2 = o dobro).");
-            Deslizador("Cor##rdx", &cfg.temporal.rdxCor, 0.f, 2.f, "%.2f",
-                       "0 = cores do jogo na luz da rede, 1 = cores da rede, acima de 1 = mais saturado.");
-            Deslizador("Protecao de realce", &cfg.temporal.rdxGuarda, 1.f, 16.f, "%.1fx",
-                       "A luz de cada ponto muda no maximo esse fator (protege realces e sombras).");
-        }
+            ImGui::SetTooltip("Quantas vezes a rede inteira roda por quadro (1 = normal). Mais passes = estilo mais\n"
+                              "forte e custo multiplicado.");
     }
 
     // ---- entradas simuladas / tempo ----
@@ -341,11 +380,24 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             ImGui::SetTooltip("Quantos quadros a edicao da rede acumula (menos cintilacao; 1 = sem acumulo).");
         Deslizador("Rejeicao", &cfg.temporal.rejeicao, 2.f, 40.f, "%.1f",
                    "Quao rapido uma mudanca de cor derruba o acumulo (mais alto = menos fantasma).");
-        ImGui::SliderInt("Ritmo da rede", &cfg.ritmo, 1, 4, cfg.ritmo == 1 ? "todo quadro" : "1 a cada %d");
+        ImGui::Checkbox("Descartar onde o movimento nao confere", &cfg.usaConfianca);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("A rede roda a cada N quadros; nos outros a ultima edicao segue o movimento.\n"
-                              "Libera a GPU para o jogo.");
+            ImGui::SetTooltip("Fluxo de ida e volta: onde o vetor nao volta ao mesmo ponto (oclusao, objeto entrando\n"
+                              "ou saindo) o acumulo daquele pixel e descartado. Evita rastros.");
+        ImGui::SeparatorText("Custo da rede pelo movimento");
+        ImGui::SliderInt("Ritmo da rede", &cfg.ritmo, 0, 4,
+                         cfg.ritmo == 0 ? "automatico" : (cfg.ritmo == 1 ? "todo quadro" : "1 a cada %d"));
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Automatico: a rede so roda quando a previsao pelo movimento deixa de valer (oclusao,\n"
+                              "mudanca de luz, movimento muito rapido); nos outros quadros a edicao anterior segue\n"
+                              "o movimento. N: a cada N quadros. Libera a GPU para o jogo.");
+        if (cfg.ritmo == 0)
+            ImGui::SliderInt("No maximo sem rodar", &cfg.ritmoMax, 1, 8, "%d quadros");
         ImGui::EndDisabled();
+        ImGui::Checkbox("Reuso adaptativo do ViT (ao reabrir)", &cfg.reusoVit);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Do runtime do lmxxf: quando o quadro muda pouco, os blocos ViT (31 a 38) reaproveitam o\n"
+                              "ultimo calculo. Desliga sozinho em movimento. Vale na proxima vez que o programa abrir.");
     }
     ImGui::Separator();
     if (ImGui::Button("Salvar configuracao"))

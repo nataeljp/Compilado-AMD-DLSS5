@@ -136,4 +136,67 @@ RWTexture2D<float2> mov : register(u0);
 }
 )";
 
+// confianca do movimento: o vetor de ida (atual -> anterior) somado ao de volta no ponto de chegada deve dar ~0.
+// Ate 0,5 px de erro: 1; a partir de 2 px: 0 (oclusao, entrada/saida de quadro, transparencia, casamento errado)
+inline const char* Confianca = R"(
+cbuffer C : register(b0) { uint lw; uint lh; uint gw; uint gh; int raio; uint temGrosso; float lambda; uint pad; };
+SamplerState s : register(s0);
+Texture2D<float2> ida : register(t0);
+Texture2D<float2> volta : register(t1);
+RWTexture2D<float> conf : register(u0);
+[numthreads(8, 8, 1)] void CSConfianca(uint2 p : SV_DispatchThreadID)
+{
+    if (p.x >= lw || p.y >= lh) return;
+    float2 v = ida.Load(int3(p, 0));
+    float2 q = float2(p) + 0.5 + v;
+    float2 tam = float2(lw, lh);
+    if (any(q < 0.0) || any(q > tam)) { conf[p] = 0.0; return; }
+    float2 b = volta.SampleLevel(s, q / tam, 0);
+    float erro = length(v + b);
+    // tolerancia cresce um pouco com a velocidade (o sub-pixel erra mais em movimento rapido)
+    float tol = 0.5 + 0.05 * length(v);
+    conf[p] = saturate(1.0 - (erro - tol) / 1.5);
+}
+)";
+
+// estatisticas do quadro para o ritmo automatico: somas (ponto fixo) de (1 - confianca), velocidade e mudanca de luz
+// depois de compensar o movimento. Grupo 16x16 soma em memoria compartilhada; um atomico por grupo.
+inline const char* Estatisticas = R"(
+cbuffer C : register(b0) { uint lw; uint lh; uint gw; uint gh; int raio; uint temGrosso; float lambda; uint pad; };
+SamplerState s : register(s0);
+Texture2D<float2> mov : register(t0);
+Texture2D<float> conf : register(t1);
+Texture2D<float4> fed : register(t2);
+Texture2D<float4> fedAnt : register(t3);
+RWByteAddressBuffer soma : register(u0); // [0] (1-conf)*1024, [1] |v|*4, [2] |dL|*1024, [3] pixels
+groupshared uint g0, g1, g2, g3;
+float LumaP(float3 c) { return pow(max(dot(c, float3(0.2126, 0.7152, 0.0722)), 0.0), 1.0 / 2.2); }
+[numthreads(16, 16, 1)] void CSEstatisticas(uint2 p : SV_DispatchThreadID, uint gi : SV_GroupIndex)
+{
+    if (gi == 0) { g0 = 0; g1 = 0; g2 = 0; g3 = 0; }
+    GroupMemoryBarrierWithGroupSync();
+    // amostra 1 de cada 2x2 (barato e suficiente para medias)
+    uint2 q = p * 2;
+    if (q.x < lw && q.y < lh)
+    {
+        float2 v = mov.Load(int3(q, 0));
+        float c = conf.Load(int3(q, 0));
+        float2 uv = (float2(q) + 0.5 + v) / float2(lw, lh);
+        float dl = abs(LumaP(fed.Load(int3(q, 0)).rgb) - LumaP(fedAnt.SampleLevel(s, uv, 0).rgb));
+        InterlockedAdd(g0, (uint)round(saturate(1.0 - c) * 1024.0));
+        InterlockedAdd(g1, (uint)round(min(length(v), 255.0) * 4.0));
+        InterlockedAdd(g2, (uint)round(saturate(dl) * 1024.0));
+        InterlockedAdd(g3, 1u);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (gi == 0)
+    {
+        soma.InterlockedAdd(0, g0);
+        soma.InterlockedAdd(4, g1);
+        soma.InterlockedAdd(8, g2);
+        soma.InterlockedAdd(12, g3);
+    }
+}
+)";
+
 } // namespace ov::hlsl

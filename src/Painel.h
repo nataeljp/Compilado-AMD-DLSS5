@@ -12,6 +12,7 @@ struct EstadoPainel
     bool redeOk = false;
     UINT janelaW = 0, janelaH = 0, redeW = 0, redeH = 0;
     double msMedio = 0, fps = 0;
+    double fracaoRede = 1; // fracao dos quadros em que a rede rodou
 };
 
 struct AcoesPainel
@@ -32,6 +33,7 @@ class Painel
     // desenha e apresenta; devolve o que o usuario pediu
     AcoesPainel Quadro(Config& cfg, const EstadoPainel& e);
     HWND Janela() const { return hwnd; }
+    void Alterna(); // mostra/esconde (Ctrl+Alt+P)
 
   private:
     void Redimensiona(UINT w, UINT h);

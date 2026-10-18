@@ -1,9 +1,22 @@
 #include "Config.h"
+#include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <sstream>
-#include <cctype>
 
 namespace ov {
+
+ParamsRede Config::Rede() const
+{
+    ParamsRede r = rede;
+    r.estilo = float(std::clamp(ngx.modelo, 0, 2)); // o controle de estilo da rede: Model A/B/C = 0, 1, 2 (x 1/128)
+    r.tom = std::clamp(ngx.tomLocal, 0.f, 1.f);
+    r.estrutura = ngx.estruturaLocal;
+    r.pele = ngx.mascara ? ngx.estruturaPele : -1.f;
+    r.outro = ngx.mascara ? ngx.estruturaLocal : -1.f;
+    r.detalhe = r.cor = 1.f; // a resposta inteira do runtime; a composicao e feita no overlay
+    return r;
+}
 
 // le "chave": valor de um objeto JSON plano (numeros e booleanos); o resto e ignorado
 static std::map<std::string, double> LePlano(const std::string& s)
@@ -47,60 +60,67 @@ void Config::Carrega(const std::wstring& arquivo)
     auto F = [&](const char* k, float& v) { if (auto it = m.find(k); it != m.end()) v = float(it->second); };
     auto I = [&](const char* k, int& v) { if (auto it = m.find(k); it != m.end()) v = int(it->second); };
     auto B = [&](const char* k, bool& v) { if (auto it = m.find(k); it != m.end()) v = it->second != 0; };
-    F("estilo", rede.estilo);
-    F("tom", rede.tom);
-    F("estrutura", rede.estrutura);
-    F("pele", rede.pele);
-    F("outro", rede.outro);
-    F("detalhe", rede.detalhe);
-    F("cor", rede.cor);
+    I("modelo", ngx.modelo);
+    F("intensidade", ngx.intensidade);
+    F("tomLocal", ngx.tomLocal);
+    F("estruturaLocal", ngx.estruturaLocal);
+    F("estruturaPele", ngx.estruturaPele);
+    B("mascara", ngx.mascara);
+    B("gradacao", ngx.gradacao);
+    I("composicao", temporal.composicao);
+    F("corComposicao", temporal.cor);
+    F("protecao", temporal.guarda);
     I("passes", rede.passes);
     B("redeCompleta", rede.redeCompleta);
-    F("suaviza", rede.suaviza);
     I("alturaRede", alturaRede);
     F("forca", forca);
+    I("ponte", ponte);
+    F("brancoNits", brancoNits);
     I("modo", modo);
-    F("divisao", divisao);
-    I("fpsMax", fpsMax);
     B("movimento", movimento);
+    B("usaConfianca", usaConfianca);
     I("ritmo", ritmo);
-    B("ocultaDeGravacoes", ocultaDeGravacoes);
+    I("ritmoMax", ritmoMax);
+    B("reusoVit", reusoVit);
     I("estabilidade", temporal.maxQuadros);
     F("rejeicao", temporal.rejeicao);
-    I("composicao", temporal.composicao);
-    F("rdxDetalhe", temporal.rdxDetalhe);
-    F("rdxCor", temporal.rdxCor);
-    F("rdxGuarda", temporal.rdxGuarda);
+    F("divisao", divisao);
+    I("fpsMax", fpsMax);
+    B("ocultaDeGravacoes", ocultaDeGravacoes);
 }
 
 void Config::Salva(const std::wstring& arquivo) const
 {
     std::ofstream f(arquivo);
+    auto b = [](bool v) { return v ? "true" : "false"; };
     f << "{\n";
-    f << "  \"estilo\": " << rede.estilo << ",\n";
-    f << "  \"tom\": " << rede.tom << ",\n";
-    f << "  \"estrutura\": " << rede.estrutura << ",\n";
-    f << "  \"pele\": " << rede.pele << ",\n";
-    f << "  \"outro\": " << rede.outro << ",\n";
-    f << "  \"detalhe\": " << rede.detalhe << ",\n";
-    f << "  \"cor\": " << rede.cor << ",\n";
+    f << "  \"modelo\": " << ngx.modelo << ",\n";
+    f << "  \"intensidade\": " << ngx.intensidade << ",\n";
+    f << "  \"tomLocal\": " << ngx.tomLocal << ",\n";
+    f << "  \"estruturaLocal\": " << ngx.estruturaLocal << ",\n";
+    f << "  \"estruturaPele\": " << ngx.estruturaPele << ",\n";
+    f << "  \"mascara\": " << b(ngx.mascara) << ",\n";
+    f << "  \"gradacao\": " << b(ngx.gradacao) << ",\n";
+    f << "  \"composicao\": " << temporal.composicao << ",\n";
+    f << "  \"corComposicao\": " << temporal.cor << ",\n";
+    f << "  \"protecao\": " << temporal.guarda << ",\n";
     f << "  \"passes\": " << rede.passes << ",\n";
-    f << "  \"redeCompleta\": " << (rede.redeCompleta ? "true" : "false") << ",\n";
-    f << "  \"suaviza\": " << rede.suaviza << ",\n";
+    f << "  \"redeCompleta\": " << b(rede.redeCompleta) << ",\n";
     f << "  \"alturaRede\": " << alturaRede << ",\n";
     f << "  \"forca\": " << forca << ",\n";
+    f << "  \"ponte\": " << ponte << ",\n";
+    f << "  \"brancoNits\": " << brancoNits << ",\n";
     f << "  \"modo\": " << modo << ",\n";
-    f << "  \"divisao\": " << divisao << ",\n";
-    f << "  \"fpsMax\": " << fpsMax << ",\n";
-    f << "  \"movimento\": " << (movimento ? "true" : "false") << ",\n";
+    f << "  \"movimento\": " << b(movimento) << ",\n";
+    f << "  \"usaConfianca\": " << b(usaConfianca) << ",\n";
     f << "  \"ritmo\": " << ritmo << ",\n";
-    f << "  \"ocultaDeGravacoes\": " << (ocultaDeGravacoes ? "true" : "false") << ",\n";
+    f << "  \"ritmoMax\": " << ritmoMax << ",\n";
+    f << "  \"reusoVit\": " << b(reusoVit) << ",\n";
     f << "  \"estabilidade\": " << temporal.maxQuadros << ",\n";
     f << "  \"rejeicao\": " << temporal.rejeicao << ",\n";
-    f << "  \"composicao\": " << temporal.composicao << ",\n";
-    f << "  \"rdxDetalhe\": " << temporal.rdxDetalhe << ",\n";
-    f << "  \"rdxCor\": " << temporal.rdxCor << ",\n";
-    f << "  \"rdxGuarda\": " << temporal.rdxGuarda << "\n";
+    f << "  \"divisao\": " << divisao << ",\n";
+    f << "  \"fpsMax\": " << fpsMax << ",\n";
+    f << "  \"ocultaDeGravacoes\": " << b(ocultaDeGravacoes) << "\n";
     f << "}\n";
 }
 

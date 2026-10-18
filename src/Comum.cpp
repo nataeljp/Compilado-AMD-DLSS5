@@ -335,8 +335,20 @@ void Passe::Roda(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* 
     for (UINT i = 0; i < nUav; ++i)
     {
         D3D12_UNORDERED_ACCESS_VIEW_DESC v{};
-        v.Format = uavs[i].second;
-        v.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        const auto rd = uavs[i].first->GetDesc();
+        if (rd.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+        {
+            // buffer cru (RWByteAddressBuffer)
+            v.Format = DXGI_FORMAT_R32_TYPELESS;
+            v.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+            v.Buffer.NumElements = UINT(rd.Width / 4);
+            v.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+        }
+        else
+        {
+            v.Format = uavs[i].second;
+            v.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        }
         d->CreateUnorderedAccessView(uavs[i].first, nullptr, &v, desc.Cpu(base + nSrv + i));
     }
     ID3D12DescriptorHeap* hs[] = {desc.heap.Get()};

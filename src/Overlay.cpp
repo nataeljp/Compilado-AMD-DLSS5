@@ -116,6 +116,15 @@ void Overlay::Posiciona(const RECT& r, bool hdr)
     }
 }
 
+void Overlay::Ordena(HWND acima)
+{
+    if (!visivel)
+        return;
+    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+    if (acima && IsWindowVisible(acima))
+        SetWindowPos(acima, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+}
+
 void Overlay::Mostra(bool sim)
 {
     if (sim == visivel)

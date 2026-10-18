@@ -218,6 +218,9 @@ bool Captura::Pega(Quadro& q)
             return false;
         LONG x0 = cli.left - vis.left, y0 = cli.top - vis.top;
         LONG w = cli.right - cli.left, h = cli.bottom - cli.top;
+        // o quadro ainda nao cobre a area cliente (minimizando, restaurando, redimensionando): espera o proximo
+        if (IsIconic(alvo) || cont.Width < x0 + w - 2 || cont.Height < y0 + h - 2)
+            return false;
         x0 = std::max<LONG>(0, std::min<LONG>(x0, cont.Width - 1));
         y0 = std::max<LONG>(0, std::min<LONG>(y0, cont.Height - 1));
         w = std::min<LONG>(w, cont.Width - x0);

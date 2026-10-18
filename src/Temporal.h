@@ -1,7 +1,7 @@
-// Estabilidade temporal da edicao da rede (no host): o runtime atual nao usa historico, entao a edicao
-// (resposta - alimentado) e acumulada aqui, reprojetada pelo movimento simulado (fluxo optico), com rejeicao
-// fotometrica e limite pela vizinhanca contra fantasma. Tambem cobre os quadros em que a rede nao roda (ritmo):
-// a ultima edicao segue o movimento.
+// Composicao da resposta da rede e estabilidade temporal da edicao (no host). A resposta volta ao quadro pela composicao
+// de referencia da NVIDIA/RenoDX (Shaders.h ComporReferencia); a edicao (composto - original) e acumulada no tempo,
+// reprojetada pelo movimento simulado, com rejeicao fotometrica e por confianca do fluxo e limite pela vizinhanca contra
+// fantasma. Nos quadros em que a rede nao roda (ritmo) a ultima edicao segue o movimento.
 #pragma once
 #include "Comum.h"
 
@@ -12,11 +12,10 @@ struct ParamsTemporal
     int maxQuadros = 8;       // quantos quadros a edicao acumula no maximo (1 = sem acumulo)
     float rejeicao = 12.f;    // quao rapido uma divergencia de cor entre os quadros derruba o historico
     float folga = 0.02f;      // folga do limite pela vizinhanca da edicao atual
-    // composicao de cor da resposta (antes da edicao): 0 classica (a resposta como veio), 1 estilo RenoDX
-    int composicao = 0;
-    float rdxDetalhe = 1.f;   // expoente da razao de luz resposta/original (0 = luz original, 1 = da rede)
-    float rdxCor = 1.f;       // 0 = matiz do original na luz da rede, 1 = cor da rede, >1 = mais croma (OkLab)
-    float rdxGuarda = 4.f;    // a razao de luz fica em [1/G, G] (protege realces e sombras)
+    int composicao = 1;       // 0 crua (resposta - proxy), 1 referencia NVIDIA/RenoDX
+    float intensidade = 1.f;  // DLSSNR.Intensity (vem dos parametros NGX)
+    float cor = 1.f;          // mistura de cor da composicao (0 = cores do quadro na luz da rede, 1 = cores da rede)
+    float guarda = 2.f;       // protecao bilateral: a luz muda no maximo esse fator
 };
 
 class Temporal
@@ -25,15 +24,18 @@ class Temporal
     void Cria(ID3D12Device* d);
     void Garante(ID3D12Device* d, UINT w, UINT h);
     void Reinicia() { valido = false; }
-    // grava o passe; resp == nullptr: quadro sem rede (so reprojeta). mov == nullptr: sem movimento (zera historico)
-    // devolve a edicao estabilizada (RGBA16F: rgb = edicao, a = quadros acumulados), estado SRV
-    Tex* Roda(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, Tex& fed, Tex& fedAnt,
-              ID3D12Resource* resp, DXGI_FORMAT fmtResp, Tex* mov, const ParamsTemporal& p);
+    // grava o passe. orig: quadro no tamanho da rede (linear); fed: o proxy que a rede viu; resp == nullptr: quadro sem
+    // rede (so reprojeta). mov == nullptr: sem movimento (zera historico). confianca: do fluxo (1 = confiavel), opcional.
+    // Devolve a edicao estabilizada (RGBA16F: rgb = edicao, a = quadros acumulados), estado SRV
+    Tex* Roda(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, Tex& orig, Tex& fed, Tex& fedAnt,
+              ID3D12Resource* resp, DXGI_FORMAT fmtResp, Tex* mov, Tex* confianca, const ParamsTemporal& p);
     bool Valido() const { return valido; }
+    Tex& Crua() { return crua; } // a edicao deste quadro antes do acumulo (diagnostico)
 
   private:
     Passe passe;
     Tex hist[2];
+    Tex crua;
     UINT atual = 0;
     bool valido = false;
 };

@@ -1,21 +1,121 @@
 // HLSL dos passes do overlay (compilados na inicializacao, cs_5_1)
+//
+// Referencia da imagem da NVIDIA (o que o DLSS 5 + RenoDX mostram), descrita em
+// zmodelerlover/dlss5-neural-amd (MIT), docs/nvidia-parity.md e docs/styles-model-abc.md:
+//  - a rede recebe um PROXY do quadro: SDR como esta; HDR por uma ponte (SoftKnee do quadro / branco de papel);
+//  - a resposta volta por uma razao de luz em dois ramos (proxy -> original), intensidade, piso 1/512, protecao
+//    bilateral (2,0) e mistura de cor;
+//  - Model B/C = controle de estilo da rede (estilo/128) + gradacao final do kernel cg2r_post_process da NVIDIA:
+//    exposicao, contraste por curva S e saturacao HSL, escaladas pelo LocalToneStrength.
+// ACES: o ajuste RRT+ODT de Stephen Hill que o RenoDX usa (clshortfuse/renodx, MIT, tonemap.hlsl ACESFittedAP1).
+// Implementacao propria; nenhum codigo GPL.
 #pragma once
 
 namespace ov::hlsl {
 
-// captura (B8G8R8A8 sRGB) -> quadro inteiro linear FP16; e quadro inteiro -> tamanho da rede (filtro de caixa)
+// funcoes comuns (prefixadas nos passes que as usam)
+inline const char* Comum = R"(
+static const float3 LUMA = float3(0.2126, 0.7152, 0.0722);
+float Lum(float3 c) { return dot(c, LUMA); }
+float Max3(float3 c) { return max(c.r, max(c.g, c.b)); }
+float Min3(float3 c) { return min(c.r, min(c.g, c.b)); }
+float3 Linear(float3 c) { return (c <= 0.04045) ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4); }
+float3 Srgb(float3 l) { l = saturate(l); return (l <= 0.0031308) ? l * 12.92 : 1.055 * pow(l, 1.0 / 2.4) - 0.055; }
+
+// joelho suave: identidade ate JOELHO, depois aproxima 1 de forma exponencial (C1, inversivel)
+static const float JOELHO = 0.75;
+float Joelho(float x)
+{
+    return x <= JOELHO ? x : JOELHO + (1.0 - JOELHO) * (1.0 - exp(-(x - JOELHO) / (1.0 - JOELHO)));
+}
+float JoelhoInv(float y)
+{
+    y = min(y, 0.99999);
+    return y <= JOELHO ? y : JOELHO - (1.0 - JOELHO) * log(1.0 - (y - JOELHO) / (1.0 - JOELHO));
+}
+// pelo canal maximo: o matiz fica e o resultado cabe em [0,1]
+float3 SoftKnee(float3 c)
+{
+    c = max(c, 0.0);
+    float m = Max3(c);
+    return m > JOELHO ? c * (Joelho(m) / m) : c;
+}
+float3 SoftKneeInv(float3 c)
+{
+    c = max(c, 0.0);
+    float m = Max3(c);
+    return m > JOELHO ? c * (JoelhoInv(m) / m) : c;
+}
+
+// ACES (RRT+ODT para SDR 100 nits), ajuste de Stephen Hill como no RenoDX (MIT)
+float3 AcesFittedAP1(float3 color)
+{
+    const float3x3 ENTRADA = { 0.59719, 0.35458, 0.04823,
+                               0.07600, 0.90834, 0.01566,
+                               0.02840, 0.13383, 0.83777 };
+    const float3x3 SAIDA = { 1.60475, -0.53108, -0.07367,
+                            -0.10208,  1.10813, -0.00605,
+                            -0.00327, -0.07276,  1.07602 };
+    color = mul(ENTRADA, max(color, 0.0));
+    float3 a = color * (color + 0.0245786) - 0.000090537;
+    float3 b = color * (0.983729 * color + 0.4329510) + 0.238081;
+    return saturate(mul(SAIDA, a / b));
+}
+
+// ponte do quadro (linear, branco de papel = 1) para o proxy que a rede ve: 0 direto, 1 SoftKnee, 2 ACES
+float3 Proxy(float3 o, uint ponte)
+{
+    if (ponte == 1) return SoftKnee(o);
+    if (ponte == 2) return AcesFittedAP1(o);
+    return saturate(o);
+}
+
+// composicao de referencia (NVIDIA / RenoDX): O original, P proxy, M resposta da rede (unidades lineares)
+float3 ComporReferencia(float3 O, float3 P, float3 M, float s, float cor, float guarda)
+{
+    O = max(O, 0.0); P = max(P, 0.0); M = max(M, 0.0);
+    float yo = Lum(O), yp = Lum(P), ym = Lum(M);
+    // do proxy de volta ao original: mais escuro que o proxy -> escala; mais claro -> soma a folga que o proxy
+    // nao carregou (realces comprimidos pela ponte) a luz da resposta
+    float razao = (yo <= yp) ? yo / max(yp, 1e-6) : (ym + (yo - yp)) / max(ym, 1e-6);
+    float3 up = lerp(O, M * razao, saturate(s));
+    const float piso = 1.0 / 512.0;
+    float rho0 = max(Lum(up), piso) / max(yo, piso);
+    float rho = s > 1.0 ? pow(rho0, s) : rho0;
+    float b = clamp(rho, 1.0 / guarda, guarda);
+    return lerp(O * b, up * (b / rho0), saturate(cor));
+}
+
+// gradacao do Model B/C (kernel cg2r_post_process da NVIDIA), em valores de tela [0,1]
+float3 GradacaoModelo(float3 c, float kExp, float kCon, float kSat)
+{
+    c = saturate(c * exp2(kExp));
+    c = saturate(c + kCon * (c * c * (3.0 - 2.0 * c) - c));
+    float mx = Max3(c), mn = Min3(c);
+    float L = 0.5 * (mx + mn), d = mx - mn;
+    if (d > 1e-6)
+    {
+        float S = L > 0.5 ? d / (2.0 - mx - mn) : d / (mx + mn);
+        float S2 = saturate(S * (1.0 + kSat));
+        c = L + (S2 / S) * (c - L);
+    }
+    return saturate(c);
+}
+)";
+
+// captura -> quadro inteiro linear (branco de papel = 1); quadro inteiro -> tamanho da rede: original e proxy
 inline const char* Prepara = R"(
-cbuffer C : register(b0) { uint fw; uint fh; uint dw; uint dh; uint hdr; float escala; uint pad0; uint pad1; };
+cbuffer C : register(b0) { uint fw; uint fh; uint dw; uint dh; uint hdr; float escala; uint ponte; uint pad1; };
 Texture2D<float4> src : register(t0);
 RWTexture2D<float4> dst : register(u0);
+RWTexture2D<float4> dstProxy : register(u1);
 SamplerState s : register(s0);
-float3 Linear(float3 c) { return (c <= 0.04045) ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4); }
 
 [numthreads(8, 8, 1)] void CSInteiro(uint2 p : SV_DispatchThreadID)
 {
     if (p.x >= fw || p.y >= fh) return;
     float4 c = src.Load(int3(p, 0));
-    // HDR: scRGB linear dividido pelo branco SDR do Windows (o branco de papel vira 1); SDR: sRGB -> linear
+    // HDR: scRGB dividido pelo branco de papel; SDR: sRGB -> linear
     dst[p] = float4(hdr ? max(c.rgb, 0.0) / escala : Linear(saturate(c.rgb)), 1.0);
 }
 
@@ -32,22 +132,23 @@ float3 Linear(float3 c) { return (c <= 0.04045) ? c / 12.92 : pow((c + 0.055) / 
             float2 q = base + (float2(i, j) + 0.5) * esc / n;
             a += src.SampleLevel(s, q / float2(fw, fh), 0);
         }
-    dst[p] = float4(a.rgb / (n * n), 1.0);
+    float3 o = a.rgb / (n * n);
+    dst[p] = float4(o, 1.0);
+    dstProxy[p] = float4(Proxy(o, ponte), 1.0);
 }
 )";
 
-// quadro inteiro + forca * (resposta - alimentado), ampliados por Catmull-Rom; saida sRGB 8 bits
-// modo: 0 rede, 1 original, 2 comparacao (esquerda original | direita rede), 3 so a edicao (x4, cinza = 0)
+// quadro inteiro + forca * edicao (ampliada por Catmull-Rom) -> gradacao do modelo -> tela
+// modo: 0 rede, 1 original, 2 comparacao (esquerda original | direita rede), 3 so a edicao (x4), 4 movimento
 inline const char* Compoe = R"(
-cbuffer C : register(b0) { uint fw; uint fh; uint dw; uint dh; float forca; uint modo; float divisao; uint usaEdicao; uint hdr; float escala; };
+cbuffer C : register(b0) { uint fw; uint fh; uint dw; uint dh; float forca; uint modo; float divisao; uint usaEdicao;
+                           uint hdr; float escala; float kExp; float kCon; float kSat; uint grada; uint pad0; uint pad1; };
 Texture2D<float4> inteiro : register(t0);
 Texture2D<float4> fed : register(t1);
-Texture2D<float4> resp : register(t2);
+Texture2D<float4> edicao : register(t2);
 Texture2D<float4> mov : register(t3);
 RWTexture2D<float4> saida : register(u0);
 SamplerState s : register(s0);
-
-float3 Srgb(float3 l) { l = saturate(l); return (l <= 0.0031308) ? l * 12.92 : 1.055 * pow(l, 1.0 / 2.4) - 0.055; }
 
 // Catmull-Rom em 9 amostras bilineares (MJP, dominio publico)
 float3 CatmullRom(Texture2D<float4> t, float2 uv, float2 tam)
@@ -75,37 +176,47 @@ float3 CatmullRom(Texture2D<float4> t, float2 uv, float2 tam)
     return r;
 }
 
+// valor de saida: SDR em sRGB (UNORM); HDR em scRGB. A gradacao do modelo roda em valores de tela [0,1]:
+// no HDR, no dominio da ponte (SoftKnee + sRGB) e volta
+float3 Tela(float3 lin, bool grade)
+{
+    if (!hdr)
+    {
+        float3 c = Srgb(lin);
+        return grade ? GradacaoModelo(c, kExp, kCon, kSat) : c;
+    }
+    if (!grade) return max(lin, 0.0) * escala;
+    float3 c = GradacaoModelo(Srgb(SoftKnee(lin)), kExp, kCon, kSat);
+    return SoftKneeInv(Linear(c)) * escala;
+}
+
 [numthreads(8, 8, 1)] void CSCompoe(uint2 p : SV_DispatchThreadID)
 {
     if (p.x >= fw || p.y >= fh) return;
     float3 o = inteiro.Load(int3(p, 0)).rgb;
-    float3 e;
-    // usaEdicao: `resp` ja e a edicao estabilizada (Temporal); senao, resposta - alimentado
-    if (dw == fw && dh == fh)
-        e = usaEdicao ? resp.Load(int3(p, 0)).rgb : resp.Load(int3(p, 0)).rgb - fed.Load(int3(p, 0)).rgb;
-    else
+    float3 e = 0;
+    if (usaEdicao)
     {
-        float2 uv = (float2(p) + 0.5) / float2(fw, fh);
-        float2 tam = float2(dw, dh);
-        e = usaEdicao ? CatmullRom(resp, uv, tam) : CatmullRom(resp, uv, tam) - CatmullRom(fed, uv, tam);
+        if (dw == fw && dh == fh)
+            e = edicao.Load(int3(p, 0)).rgb;
+        else
+            e = CatmullRom(edicao, (float2(p) + 0.5) / float2(fw, fh), float2(dw, dh));
     }
     float3 r = o + forca * e;
     bool orig = modo == 1 || (modo == 2 && (float)p.x < divisao * fw);
-    float3 c = orig ? o : r;
-    if (modo == 3) c = 0.5 + 4.0 * e;
+    float3 c = orig ? Tela(o, false) : Tela(r, grada != 0);
+    float hs = hdr ? escala : 1.0;
+    if (modo == 3) c = saturate(0.5 + 4.0 * e) * hs;
     if (modo == 4)
     {
         // movimento em cores: matiz = direcao, brilho = tamanho (8 px = cheio)
         float2 v = mov.SampleLevel(s, (float2(p) + 0.5) / float2(fw, fh), 0).xy;
         float a = atan2(v.y, v.x) / 6.2831853 + 0.5;
         float3 h = saturate(abs(frac(a + float3(0, 2.0 / 3, 1.0 / 3)) * 6 - 3) - 1);
-        c = lerp(float3(0.5, 0.5, 0.5), h, saturate(length(v) / 8.0));
+        c = lerp(float3(0.5, 0.5, 0.5), h, saturate(length(v) / 8.0)) * hs;
     }
-    if (modo == 2 && abs((float)p.x - divisao * fw) < 1.0) c = float3(1, 1, 0);
-    if (hdr)
-        saida[p] = float4((modo >= 3 ? saturate(c) : max(c, 0.0)) * escala, 1.0); // de volta a scRGB
-    else
-        saida[p] = float4(modo >= 3 ? saturate(c) : Srgb(c), 1.0);
+    if (modo == 2 && abs((float)p.x - divisao * fw) < 1.0) c = float3(1, 1, 0) * hs;
+    saida[p] = float4(c, 1.0);
 }
 )";
 

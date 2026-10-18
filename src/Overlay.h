@@ -17,6 +17,9 @@ class Overlay
     // hdr: swapchain FP16 scRGB (G10, P709); senao R8G8B8A8 sRGB
     void Posiciona(const RECT& r, bool hdr);
     void Mostra(bool sim);
+    // ordem das janelas: o overlay logo acima do jogo e abaixo de `acima` (o painel), os dois "sempre no topo".
+    // Jogos que se poem no topo ao ganhar foco passariam por cima do overlay; por isso e reafirmado de tempos em tempos.
+    void Ordena(HWND acima);
     bool Visivel() const { return visivel; }
     HWND Janela() const { return hwnd; }
 

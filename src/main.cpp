@@ -70,7 +70,7 @@ struct App
     UINT64 quadrosMarca = 0;
     Config cfg;
     Passe pInteiro, pReduz, pCompoe;
-    Tex inteiro, fed, saida, fedAnt, saidaAnt;
+    Tex inteiro, orig, fed, saida, fedAnt, saidaAnt; // orig: quadro no tamanho da rede; fed: o proxy dele
     std::wstring dumpPasta;
     std::wstring pastaRuntime; // --runtime: outra pasta do runtime (testes)
     ComPtr<ID3D12CommandAllocator> al[2];
@@ -97,11 +97,21 @@ struct App
                "list");
             cl[i]->Close();
         }
-        pInteiro.Cria(gpu.dev.Get(), hlsl::Prepara, "CSInteiro", 1, 1, 8, "inteiro");
-        pReduz.Cria(gpu.dev.Get(), hlsl::Prepara, "CSReduz", 1, 1, 8, "reduz");
-        pCompoe.Cria(gpu.dev.Get(), hlsl::Compoe, "CSCompoe", 4, 1, 10, "compoe");
+        const std::string prepara = std::string(hlsl::Comum) + hlsl::Prepara;
+        const std::string compoe = std::string(hlsl::Comum) + hlsl::Compoe;
+        pInteiro.Cria(gpu.dev.Get(), prepara.c_str(), "CSInteiro", 1, 1, 8, "inteiro");
+        pReduz.Cria(gpu.dev.Get(), prepara.c_str(), "CSReduz", 1, 2, 8, "reduz");
+        pCompoe.Cria(gpu.dev.Get(), compoe.c_str(), "CSCompoe", 4, 1, 16, "compoe");
         fluxo.Cria(gpu.dev.Get());
         temporal.Cria(gpu.dev.Get());
+        if (cfg.reusoVit)
+        {
+            // reuso adaptativo do ViT (lmxxf): o runtime le uma vez, ao criar a rede
+            SetEnvironmentVariableW(L"DLSS5_VIT_ADAPTIVE", L"1");
+            SetEnvironmentVariableW(L"DLSS5_VIT_REUSE_PERIOD", L"4");
+            SetEnvironmentVariableW(L"DLSS5_HIP_GRAPH", L"0");
+            SetEnvironmentVariableW(L"DLSS5_HIP_VIT_BYTE_STREAM", L"0");
+        }
         redeOk = rede.Inicia(gpu, pastaRuntime.empty() ? pasta + L"\\runtime" : pastaRuntime);
         if (!redeOk)
             Log("app", "a rede nao subiu: o overlay mostra o quadro original");
@@ -136,6 +146,7 @@ struct App
     }
     bool hdr = false;
     float escalaSdr = 1.f;
+    float escalaUsada = 1.f;
 
     void Desliga()
     {
@@ -162,7 +173,8 @@ struct App
             return;
         gpu.Espera();
         inteiro.Cria(gpu.dev.Get(), fw, fh, DXGI_FORMAT_R16G16B16A16_FLOAT, L"inteiro");
-        fed.Cria(gpu.dev.Get(), dw, dh, DXGI_FORMAT_R16G16B16A16_FLOAT, L"alimentado", true, true);
+        orig.Cria(gpu.dev.Get(), dw, dh, DXGI_FORMAT_R16G16B16A16_FLOAT, L"original no tamanho da rede");
+        fed.Cria(gpu.dev.Get(), dw, dh, DXGI_FORMAT_R16G16B16A16_FLOAT, L"proxy (alimentado)", true, true);
         saida.Cria(gpu.dev.Get(), fw, fh, fmtSaida, L"saida");
         fedAnt.Cria(gpu.dev.Get(), dw, dh, DXGI_FORMAT_R16G16B16A16_FLOAT, L"alimentado anterior", false);
         if (!dumpPasta.empty())
@@ -203,28 +215,42 @@ struct App
         Ck(gpu.fila->Wait(cap.Cerca(), q.cercaValor), "Wait(captura)");
         Barreira(c, q.tex, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         inteiro.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        float escK = escalaSdr;
-        UINT k[8] = {inteiro.w, inteiro.h, fed.w, fed.h, hdr ? 1u : 0u, 0, 0, 0};
+        // branco de papel: o do usuario em nits ou o branco SDR do Windows (HDR); ponte: auto = SDR direto, HDR SoftKnee
+        float escK = cfg.brancoNits > 0.f ? cfg.brancoNits / 80.f : escalaSdr;
+        escalaUsada = escK;
+        const UINT ponte = cfg.ponte < 0 ? (hdr ? 1u : 0u) : (UINT)std::clamp(cfg.ponte, 0, 2);
+        UINT k[8] = {inteiro.w, inteiro.h, fed.w, fed.h, hdr ? 1u : 0u, 0, ponte, 0};
         memcpy(&k[5], &escK, 4);
         pInteiro.Roda(c, desc, gpu.dev.Get(), {{q.tex, q.fmt}},
                       {{inteiro.r.Get(), inteiro.fmt}}, k, (inteiro.w + 7) / 8, (inteiro.h + 7) / 8);
         inteiro.Para(c, SRV);
+        orig.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         fed.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        pReduz.Roda(c, desc, gpu.dev.Get(), {{inteiro.r.Get(), inteiro.fmt}}, {{fed.r.Get(), fed.fmt}}, k,
-                    (fed.w + 7) / 8, (fed.h + 7) / 8);
+        pReduz.Roda(c, desc, gpu.dev.Get(), {{inteiro.r.Get(), inteiro.fmt}},
+                    {{orig.r.Get(), orig.fmt}, {fed.r.Get(), fed.fmt}}, k, (fed.w + 7) / 8, (fed.h + 7) / 8);
+        orig.Para(c, SRV);
         fed.Para(c, SRV);
         Barreira(c, q.tex, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
         // movimento simulado (fluxo optico contra o quadro anterior): alimenta o historico temporal da rede
         const bool temMov = cfg.movimento && fluxo.Calcula(c, desc, gpu.dev.Get(), fed.r.Get(), fed.fmt);
-        const int ritmo = std::clamp(cfg.ritmo, 1, 4);
-        const bool vezDaRede = !temporal.Valido() || !temMov || (quadros % (UINT64)ritmo) == 0;
+        if (temMov)
+            fluxo.Estatisticas(c, desc, gpu.dev.Get(), fed, fedAnt);
+        bool vezDaRede = !temporal.Valido() || !temMov || zeraHistorico;
+        if (!vezDaRede)
+        {
+            if (cfg.ritmo > 0)
+                vezDaRede = (quadros % (UINT64)std::clamp(cfg.ritmo, 1, 4)) == 0;
+            else
+                // automatico: a rede roda quando a previsao pelo movimento deixa de valer (oclusao/conteudo novo,
+                // mudanca de luz, movimento muito rapido) ou depois de ritmoMax quadros
+                vezDaRede = desdeRede + 1 >= (UINT)std::clamp(cfg.ritmoMax, 1, 8) || !estat.valida ||
+                            estat.semConfianca > 0.06f || estat.mudancaLuz > 0.015f || estat.velocidade > 48.f;
+        }
         const bool usaRede = redeOk && rede.Pronta() && cfg.modo != 1 && vezDaRede;
         bool preparou = false;
         if (usaRede)
         {
-            ParamsRede pr = cfg.rede;
-            if (cfg.temporal.composicao == 1)
-                pr.detalhe = pr.cor = 1.f; // RenoDX: a resposta inteira; a composicao e feita aqui
+            const ParamsRede pr = cfg.Rede(); // controles da rede a partir dos parametros NGX
             preparou = rede.Prepara(c, fed.r.Get(), fed.estado, fed.w, fed.h,
                                     temMov ? fluxo.Movimento().r.Get() : nullptr, fluxo.Movimento().estado,
                                     zeraHistorico || !temMov, pr);
@@ -256,10 +282,21 @@ struct App
             }
         }
         // edicao estabilizada no tempo (e reprojetada nos quadros sem rede)
-        Tex* edicao = (cfg.modo != 1 && redeOk)
-                          ? temporal.Roda(c, desc, gpu.dev.Get(), fed, fedAnt, resp, fmtResp,
-                                          temMov ? &fluxo.Movimento() : nullptr, cfg.temporal)
+        ParamsTemporal tp = cfg.temporal;
+        tp.intensidade = cfg.ngx.intensidade;
+        Tex* edicao = ultimaEdicao = (cfg.modo != 1 && redeOk)
+                          ? temporal.Roda(c, desc, gpu.dev.Get(), orig, fed, fedAnt, resp, fmtResp,
+                                          temMov ? &fluxo.Movimento() : nullptr,
+                                          (temMov && cfg.usaConfianca) ? &fluxo.Confianca() : nullptr, tp)
                           : nullptr;
+        // gradacao do Model B/C (constantes do kernel da NVIDIA), escalada pelo tom local
+        const float tg = std::clamp(cfg.ngx.tomLocal, 0.f, 1.f);
+        float kExp = 0, kCon = 0, kSat = 0;
+        if (cfg.ngx.modelo == 1)
+            kExp = -0.10f * tg, kCon = -0.25f * tg, kSat = -0.10f * tg;
+        else if (cfg.ngx.modelo == 2)
+            kSat = -0.15f * tg;
+        const bool grada = cfg.ngx.gradacao && cfg.ngx.modelo > 0;
         saida.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         struct
         {
@@ -269,9 +306,10 @@ struct App
             float divisao;
             UINT usaEdicao;
             UINT hdr;
-            float escala;
-        } kc{inteiro.w,          inteiro.h,   fed.w,           fed.h,          edicao ? cfg.forca : 0.f,
-             (UINT)cfg.modo,     cfg.divisao, edicao ? 1u : 0u, hdr ? 1u : 0u, escalaSdr};
+            float escala, kExp, kCon, kSat;
+            UINT grada, pad0, pad1;
+        } kc{inteiro.w,      inteiro.h,      fed.w, fed.h, edicao ? cfg.forca : 0.f, (UINT)cfg.modo, cfg.divisao,
+             edicao ? 1u : 0u, hdr ? 1u : 0u, escalaUsada, kExp, kCon, kSat, grada ? 1u : 0u, 0, 0};
         pCompoe.Roda(c, desc, gpu.dev.Get(),
                      {{inteiro.r.Get(), inteiro.fmt},
                       {fed.r.Get(), fed.fmt},
@@ -312,11 +350,16 @@ struct App
             ov.Mostra(true);
         }
         gpu.Espera();
+        estat = fluxo.LeEstatisticas();
         if (preparou)
         {
             rede.Aposenta();
             zeraHistorico = false;
+            desdeRede = 0;
+            ++quadrosComRede;
         }
+        else
+            ++desdeRede;
         if ((quadros == 3 || quadros % 300 == 0) && preparou)
             Log("rede", rede.Status());
         ++quadros;
@@ -336,14 +379,25 @@ struct App
         }
         if (quadros % 60 == 0)
         {
-            Log("tempo", Fmt("quadros %llu: media %.2f ms, pior %.2f ms (captura -> rede -> overlay)",
-                             (unsigned long long)quadros, somaMs / 60.0, maxMs));
+            Log("tempo", Fmt("quadros %llu: media %.2f ms, pior %.2f ms (captura -> rede -> overlay), rede em %.0f%% dos "
+                             "quadros | confianca %.3f, luz %.4f, vel %.1f px",
+                             (unsigned long long)quadros, somaMs / 60.0, maxMs,
+                             100.0 * double(quadrosComRede - comRedeMarca) / 60.0, 1.0 - estat.semConfianca,
+                             estat.mudancaLuz, estat.velocidade));
+            fracaoRede = double(quadrosComRede - comRedeMarca) / 60.0;
+            comRedeMarca = quadrosComRede;
             somaMs = maxMs = 0;
         }
         return true;
     }
     double somaMs = 0, maxMs = 0;
+    UINT64 comRedeMarca = 0;
+    double fracaoRede = 1;
     bool ultimoTemMov = false;
+    Fluxo::Estat estat;
+    UINT desdeRede = 0;
+    UINT64 quadrosComRede = 0;
+    Tex* ultimaEdicao = nullptr;
 
     void GravaSaida(const std::wstring& arq) { GravaTex(saida, arq, hdr ? 8 : 4); }
 
@@ -365,6 +419,7 @@ struct App
             e.redeH = fed.h;
             e.msMedio = msMedio;
             e.fps = fps;
+            e.fracaoRede = fracaoRede;
         }
         const AcoesPainel a = painel.Quadro(cfg, e);
         if (a.ligar)
@@ -476,6 +531,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
     RegisterHotKey(nullptr, 2, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'N');
     RegisterHotKey(nullptr, 3, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'S');
     RegisterHotKey(nullptr, 4, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'Q');
+    RegisterHotKey(nullptr, 5, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'P');
     if (!alvoTitulo.empty())
     {
         Busca b{alvoTitulo};
@@ -517,6 +573,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 case 4:
                     rodando = false;
                     break;
+                case 5:
+                    app.painel.Alterna();
+                    break;
                 }
             }
             TranslateMessage(&m);
@@ -525,6 +584,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         if (!rodando)
             break;
         {
+            static auto ultimaOrdem = clk::now();
+            if (app.cap.Ativa() && clk::now() - ultimaOrdem >= std::chrono::milliseconds(250))
+            {
+                ultimaOrdem = clk::now();
+                app.ov.Ordena(app.painel.Janela());
+            }
             static auto ultimoPainel = clk::now();
             if (clk::now() - ultimoPainel >= std::chrono::milliseconds(16))
             {
@@ -573,6 +638,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                         app.GravaTex(app.saidaAnt, app.dumpPasta + L"\\saida_anterior.rgba", app.hdr ? 8 : 4);
                         if (app.ultimoTemMov)
                             app.GravaTex(app.fluxo.Movimento(), app.dumpPasta + L"\\movimento.f16", 4);
+                        if (app.ultimoTemMov)
+                            app.GravaTex(app.fluxo.Confianca(), app.dumpPasta + L"\\confianca.f16", 2);
+                        if (app.ultimaEdicao)
+                        {
+                            app.GravaTex(*app.ultimaEdicao, app.dumpPasta + L"\\edicao_estavel.f16", 8);
+                            app.GravaTex(app.temporal.Crua(), app.dumpPasta + L"\\edicao_crua.f16", 8);
+                        }
                     }
                     break;
                 }
