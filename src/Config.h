@@ -1,6 +1,7 @@
 // config.json ao lado do exe: objeto plano de numeros/booleanos (lido na inicializacao e regravado ao sair)
 #pragma once
 #include "Rede.h"
+#include "Temporal.h"
 #include <map>
 
 namespace ov {
@@ -8,6 +9,8 @@ namespace ov {
 struct Config
 {
     ParamsRede rede;
+    ParamsTemporal temporal;
+    int ritmo = 1;         // a rede roda a cada `ritmo` quadros; nos outros a ultima edicao segue o movimento
     int alturaRede = 1080; // altura em que a rede roda (720..2160); a largura segue a proporcao da janela
     float forca = 1.f;     // quanto da edicao da rede entra no quadro (0..2)
     int modo = 0;          // 0 rede, 1 original, 2 comparacao, 3 so a edicao, 4 movimento

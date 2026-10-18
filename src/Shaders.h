@@ -38,7 +38,7 @@ float3 Linear(float3 c) { return (c <= 0.04045) ? c / 12.92 : pow((c + 0.055) / 
 // quadro inteiro + forca * (resposta - alimentado), ampliados por Catmull-Rom; saida sRGB 8 bits
 // modo: 0 rede, 1 original, 2 comparacao (esquerda original | direita rede), 3 so a edicao (x4, cinza = 0)
 inline const char* Compoe = R"(
-cbuffer C : register(b0) { uint fw; uint fh; uint dw; uint dh; float forca; uint modo; float divisao; uint pad; };
+cbuffer C : register(b0) { uint fw; uint fh; uint dw; uint dh; float forca; uint modo; float divisao; uint usaEdicao; };
 Texture2D<float4> inteiro : register(t0);
 Texture2D<float4> fed : register(t1);
 Texture2D<float4> resp : register(t2);
@@ -79,13 +79,14 @@ float3 CatmullRom(Texture2D<float4> t, float2 uv, float2 tam)
     if (p.x >= fw || p.y >= fh) return;
     float3 o = inteiro.Load(int3(p, 0)).rgb;
     float3 e;
+    // usaEdicao: `resp` ja e a edicao estabilizada (Temporal); senao, resposta - alimentado
     if (dw == fw && dh == fh)
-        e = resp.Load(int3(p, 0)).rgb - fed.Load(int3(p, 0)).rgb;
+        e = usaEdicao ? resp.Load(int3(p, 0)).rgb : resp.Load(int3(p, 0)).rgb - fed.Load(int3(p, 0)).rgb;
     else
     {
         float2 uv = (float2(p) + 0.5) / float2(fw, fh);
         float2 tam = float2(dw, dh);
-        e = CatmullRom(resp, uv, tam) - CatmullRom(fed, uv, tam);
+        e = usaEdicao ? CatmullRom(resp, uv, tam) : CatmullRom(resp, uv, tam) - CatmullRom(fed, uv, tam);
     }
     float3 r = o + forca * e;
     bool orig = modo == 1 || (modo == 2 && (float)p.x < divisao * fw);

@@ -10,6 +10,7 @@
 #include "Captura.h"
 #include "Config.h"
 #include "Fluxo.h"
+#include "Temporal.h"
 #include "Overlay.h"
 #include "Rede.h"
 #include "Shaders.h"
@@ -58,11 +59,12 @@ struct App
     Descritores desc;
     Rede rede;
     Fluxo fluxo;
+    Temporal temporal;
     Captura cap;
     Overlay ov;
     Config cfg;
     Passe pInteiro, pReduz, pCompoe;
-    Tex inteiro, fed, saida, fedAnt;
+    Tex inteiro, fed, saida, fedAnt, saidaAnt;
     std::wstring dumpPasta;
     ComPtr<ID3D12CommandAllocator> al[2];
     ComPtr<ID3D12GraphicsCommandList> cl[2];
@@ -92,6 +94,7 @@ struct App
         pReduz.Cria(gpu.dev.Get(), hlsl::Prepara, "CSReduz", 1, 1, 4, "reduz");
         pCompoe.Cria(gpu.dev.Get(), hlsl::Compoe, "CSCompoe", 4, 1, 8, "compoe");
         fluxo.Cria(gpu.dev.Get());
+        temporal.Cria(gpu.dev.Get());
         redeOk = rede.Inicia(gpu, pasta + L"\\runtime");
         if (!redeOk)
             Log("app", "a rede nao subiu: o overlay mostra o quadro original");
@@ -144,8 +147,12 @@ struct App
         fed.Cria(gpu.dev.Get(), dw, dh, DXGI_FORMAT_R16G16B16A16_FLOAT, L"alimentado", true, true);
         saida.Cria(gpu.dev.Get(), fw, fh, DXGI_FORMAT_R8G8B8A8_UNORM, L"saida");
         fedAnt.Cria(gpu.dev.Get(), dw, dh, DXGI_FORMAT_R16G16B16A16_FLOAT, L"alimentado anterior", false);
+        if (!dumpPasta.empty())
+            saidaAnt.Cria(gpu.dev.Get(), fw, fh, DXGI_FORMAT_R8G8B8A8_UNORM, L"saida anterior", false);
         fluxo.Garante(gpu.dev.Get(), dw, dh);
         fluxo.Reinicia();
+        temporal.Garante(gpu.dev.Get(), dw, dh);
+        temporal.Reinicia();
         zeraHistorico = true;
         Log("app", Fmt("janela %ux%u, rede %ux%u", fw, fh, dw, dh));
     }
@@ -189,7 +196,9 @@ struct App
         Barreira(c, q.tex, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
         // movimento simulado (fluxo optico contra o quadro anterior): alimenta o historico temporal da rede
         const bool temMov = cfg.movimento && fluxo.Calcula(c, desc, gpu.dev.Get(), fed.r.Get(), fed.fmt);
-        const bool usaRede = redeOk && rede.Pronta() && cfg.modo != 1;
+        const int ritmo = std::clamp(cfg.ritmo, 1, 4);
+        const bool vezDaRede = !temporal.Valido() || !temMov || (quadros % (UINT64)ritmo) == 0;
+        const bool usaRede = redeOk && rede.Pronta() && cfg.modo != 1 && vezDaRede;
         bool preparou = false;
         if (usaRede)
             preparou = rede.Prepara(c, fed.r.Get(), fed.estado, fed.w, fed.h,
@@ -221,6 +230,11 @@ struct App
                 resp = nullptr;
             }
         }
+        // edicao estabilizada no tempo (e reprojetada nos quadros sem rede)
+        Tex* edicao = (cfg.modo != 1 && redeOk)
+                          ? temporal.Roda(c, desc, gpu.dev.Get(), fed, fedAnt, resp, fmtResp,
+                                          temMov ? &fluxo.Movimento() : nullptr, cfg.temporal)
+                          : nullptr;
         saida.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         struct
         {
@@ -228,16 +242,22 @@ struct App
             float forca;
             UINT modo;
             float divisao;
-            UINT pad;
-        } kc{inteiro.w, inteiro.h, fed.w, fed.h, resp ? cfg.forca : 0.f, (UINT)cfg.modo, cfg.divisao, 0};
+            UINT usaEdicao;
+        } kc{inteiro.w, inteiro.h, fed.w, fed.h, edicao ? cfg.forca : 0.f, (UINT)cfg.modo, cfg.divisao, edicao ? 1u : 0u};
         pCompoe.Roda(c, desc, gpu.dev.Get(),
                      {{inteiro.r.Get(), inteiro.fmt},
                       {fed.r.Get(), fed.fmt},
-                      {resp ? resp : fed.r.Get(), fmtResp},
+                      edicao ? std::pair<ID3D12Resource*, DXGI_FORMAT>{edicao->r.Get(), edicao->fmt}
+                             : std::pair<ID3D12Resource*, DXGI_FORMAT>{fed.r.Get(), fed.fmt},
                       temMov ? std::pair<ID3D12Resource*, DXGI_FORMAT>{fluxo.Movimento().r.Get(), fluxo.Movimento().fmt}
                              : std::pair<ID3D12Resource*, DXGI_FORMAT>{fed.r.Get(), fed.fmt}},
                      {{saida.r.Get(), saida.fmt}}, &kc, (saida.w + 7) / 8, (saida.h + 7) / 8);
         saida.Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        if (!dumpPasta.empty() && !(quadrosTeste > 0 && quadros + 1 >= (UINT64)quadrosTeste))
+        {
+            saidaAnt.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
+            c->CopyResource(saidaAnt.r.Get(), saida.r.Get());
+        }
         ID3D12Resource* bb = ov.Buffer();
         const bool apresenta = bb && ov.Largura() == saida.w && ov.Altura() == saida.h;
         if (apresenta)
@@ -246,17 +266,14 @@ struct App
             c->CopyResource(bb, saida.r.Get());
             Barreira(c, bb, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
         }
-        if (!dumpPasta.empty())
+        if (!dumpPasta.empty() && quadrosTeste > 0 && quadros + 1 >= (UINT64)quadrosTeste)
+            ultimoTemMov = temMov; // o ultimo quadro do dump: fedAnt guarda o anterior
+        else
         {
-            if (quadrosTeste > 0 && quadros + 1 >= (UINT64)quadrosTeste)
-                ultimoTemMov = temMov; // o ultimo quadro: fedAnt guarda o anterior
-            else
-            {
-                fed.Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
-                fedAnt.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
-                c->CopyResource(fedAnt.r.Get(), fed.r.Get());
-                fed.Para(c, SRV);
-            }
+            fed.Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
+            fedAnt.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
+            c->CopyResource(fedAnt.r.Get(), fed.r.Get());
+            fed.Para(c, SRV);
         }
         Ck(c->Close(), "close1");
         ID3D12CommandList* l1[] = {c};
@@ -451,6 +468,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     {
                         app.GravaTex(app.fed, app.dumpPasta + L"\\fed_atual.f16", 8);
                         app.GravaTex(app.fedAnt, app.dumpPasta + L"\\fed_anterior.f16", 8);
+                        app.GravaTex(app.saida, app.dumpPasta + L"\\saida_atual.rgba", 4);
+                        app.GravaTex(app.saidaAnt, app.dumpPasta + L"\\saida_anterior.rgba", 4);
                         if (app.ultimoTemMov)
                             app.GravaTex(app.fluxo.Movimento(), app.dumpPasta + L"\\movimento.f16", 4);
                     }

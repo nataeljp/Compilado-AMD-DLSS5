@@ -63,6 +63,9 @@ void Config::Carrega(const std::wstring& arquivo)
     F("divisao", divisao);
     I("fpsMax", fpsMax);
     B("movimento", movimento);
+    I("ritmo", ritmo);
+    I("estabilidade", temporal.maxQuadros);
+    F("rejeicao", temporal.rejeicao);
 }
 
 void Config::Salva(const std::wstring& arquivo) const
@@ -84,7 +87,10 @@ void Config::Salva(const std::wstring& arquivo) const
     f << "  \"modo\": " << modo << ",\n";
     f << "  \"divisao\": " << divisao << ",\n";
     f << "  \"fpsMax\": " << fpsMax << ",\n";
-    f << "  \"movimento\": " << (movimento ? "true" : "false") << "\n";
+    f << "  \"movimento\": " << (movimento ? "true" : "false") << ",\n";
+    f << "  \"ritmo\": " << ritmo << ",\n";
+    f << "  \"estabilidade\": " << temporal.maxQuadros << ",\n";
+    f << "  \"rejeicao\": " << temporal.rejeicao << "\n";
     f << "}\n";
 }
 
