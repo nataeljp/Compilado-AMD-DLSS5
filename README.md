@@ -16,6 +16,7 @@ injetado no jogo** (sem OptiScaler, sem AMDNR, sem DLL no processo do jogo).
 | Ctrl+Alt+D | liga/desliga no jogo em primeiro plano |
 | Ctrl+Alt+N | modo: rede → original → comparação → só a edição → movimento |
 | Ctrl+Alt+S | estilo 0 → 1 → 2 |
+| Ctrl+Alt+P | mostra/esconde o painel |
 | Ctrl+Alt+Q | sai |
 
 Requisitos: placa AMD RDNA 4 (RX 9070 / 9060) e driver AMD com `amdhip64_7.dll` (os drivers atuais trazem), Windows 10
@@ -35,25 +36,29 @@ Requisitos: placa AMD RDNA 4 (RX 9070 / 9060) e driver AMD com `amdhip64_7.dll` 
 
 ## Parâmetros (config.json / painel)
 
-| Chave | Faixa | O que faz |
-|---|---|---|
-| `alturaRede` | 720..2160 | altura em que a rede roda (limitada pela janela) |
-| `redeCompleta` | true/false | os 71 blocos (false pula 42/43/46: ~1 ms mais rápido) |
-| `passes` | 1..3 | cada passe roda a rede de novo sobre a própria resposta |
-| `estilo` | 0..4 | 0 = padrão da NVIDIA, 1 = Stellar Blade, 2 = mais forte |
-| `tom`, `estrutura`, `pele`, `outro` | −1..4 | controles do primeiro bloco da rede (1 = como treinada) |
-| `detalhe`, `cor` | 0..1 | forças da decodificação do runtime (composição clássica) |
-| `composicao` | 0/1 | 0 clássica, 1 estilo RenoDX |
-| `rdxDetalhe`, `rdxCor`, `rdxGuarda` | 0..2, 0..2, 1..16 | RenoDX: quanto da luz da rede, quanto da cor, limite da mudança de luz |
-| `forca` | 0..2 | quanto da edição da rede entra no quadro |
-| `movimento` | true/false | movimento simulado por fluxo óptico |
-| `estabilidade` | 1..16 | quadros que a edição acumula |
-| `rejeicao` | 2..40 | quão rápido uma mudança de cor derruba o acúmulo |
-| `ritmo` | 1..4 | a rede roda a cada N quadros; nos outros a edição segue o movimento |
-| `fpsMax` | 0..240 | teto de quadros processados (0 = sem teto) |
-| `ocultaDeGravacoes` | true/false | esconde o overlay de prints/OBS |
+Os parâmetros do DLSS 5 seguem os nomes que a NVIDIA expõe no NGX (os mesmos do addon RenoDX DLSS):
 
-O tom 0 com estilo 2 é o ajuste que mais se aproximou das imagens de referência da NVIDIA nas comparações do projeto.
+| Chave | Faixa | NGX / o que faz |
+|---|---|---|
+| `modelo` | 0/1/2 | `DLSSNR.Style`: Model A (padrão), B (natural), C (cinemático) — controle de estilo da rede + gradação final da NVIDIA |
+| `intensidade` | 0..2 | `DLSSNR.Intensity`: quanto da resposta entra (acima de 1 reforça a luz) |
+| `tomLocal` | 0..1 | `DLSSNR.LocalToneStrength`: luz e cor em grande escala; também escala a gradação do modelo |
+| `estruturaLocal` | −1..2 | `DLSSNR.LocalStructureStrength` |
+| `estruturaPele` | −1..2 | `DLSSNR.SkinStructureStrength` (com a máscara ligada) |
+| `mascara` | true/false | `DLSSNR.UseAutoMask`: separa personagem e cena |
+| `gradacao` | true/false | aplica a gradação do Model B/C (exposição, contraste, saturação do kernel da NVIDIA) |
+| `composicao` | 0/1 | 0 crua (resposta − proxy), 1 referência NVIDIA/RenoDX (razão de luz em dois ramos, piso 1/512, proteção, cor) |
+| `corComposicao`, `protecao` | 0..1, 1..8 | mistura de cor e proteção bilateral de luz da composição (padrão 1 e 2,0) |
+| `ponte` | −1..2 | quadro → proxy da rede: −1 automática (SDR direta, HDR SoftKnee), 0 direta, 1 SoftKnee, 2 ACES (RRT+ODT, RenoDX) |
+| `brancoNits` | 0..400 | branco de papel do HDR (0 = o branco SDR do Windows) |
+| `alturaRede` | 720..2160 | altura em que a rede roda (limitada pela janela) |
+| `redeCompleta` | true/false | os 71 blocos (camadas) da rede; false pula 42/43/46 (~1 ms) |
+| `passes` | 1..3 | quantas vezes a rede inteira roda por quadro (1 = normal) |
+| `movimento`, `usaConfianca` | true/false | movimento simulado por fluxo óptico; descartar o acúmulo onde ida e volta não conferem |
+| `estabilidade`, `rejeicao` | 1..16, 2..40 | quadros que a edição acumula; quão rápido mudança de cor derruba o acúmulo |
+| `ritmo`, `ritmoMax` | 0..4, 1..8 | 0 automático: a rede roda quando a previsão pelo movimento deixa de valer (no máximo `ritmoMax` quadros sem rodar); N = a cada N quadros |
+| `reusoVit` | true/false | reuso adaptativo do ViT do runtime lmxxf (vale ao reabrir) |
+| `forca`, `modo`, `fpsMax`, `ocultaDeGravacoes` | | força da edição final, modo de exibição, teto de FPS, esconder de prints/OBS |
 
 ## Online e anti-cheat
 
@@ -71,6 +76,7 @@ bit a bit); `empacota.ps1` gera o zip de distribuição.
 - Rede e runtime HIP: **lmxxf** (MIT) — `licencas/LICENSE.lmxxf`. Pesos da rede: NVIDIA (DLSS 5), convertidos do
   `nvngx_dlssnr.dll`.
 - Interface: **Dear ImGui** (MIT) — `licencas/LICENSE.imgui.txt`.
-- Composição de cor inspirada no **RenoDX** de clshortfuse (MIT): UpgradeToneMap e correção de matiz (implementação
-  própria). OkLab: constantes de Björn Ottosson.
+- Composição de referência e gradação dos Models B/C conforme a análise publicada em
+  **zmodelerlover/dlss5-neural-amd** (MIT, `docs/nvidia-parity.md`, `docs/styles-model-abc.md`); ACES de Stephen Hill como
+  no **RenoDX** de clshortfuse (MIT). Implementação própria.
 - Fluxo óptico inspirado no **iMMERSE Launchpad** (MartysMods): mesma ideia, nenhum código dele.

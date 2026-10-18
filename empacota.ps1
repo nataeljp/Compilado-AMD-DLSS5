@@ -1,5 +1,5 @@
 # Gera o zip de distribuicao (para a aba Releases): DLSS5Overlay.exe, runtime (pesos FP16), config padrao, licencas, README.
-param([string]$Versao = '0.1')
+param([string]$Versao = '0.2')
 $ErrorActionPreference = 'Stop'
 $raiz = $PSScriptRoot
 $saida = Join-Path (Split-Path $raiz) 'DLSS5-Overlay-release'
@@ -10,33 +10,37 @@ Copy-Item "$raiz\bin\DLSS5Overlay.exe" $pasta
 Copy-Item "$raiz\README.md" $pasta
 Copy-Item "$raiz\licencas" "$pasta\licencas" -Recurse
 # runtime sem logs
-robocopy "$raiz\bin\runtime" "$pasta\runtime" /E /XF *.log /NFL /NDL /NJH /NJS /NP | Out-Null
+robocopy "$raiz\bin\runtime" "$pasta\runtime" /E /XF *.log /XD nr_variantes /NFL /NDL /NJH /NJS /NP | Out-Null
 # configuracao padrao (a do usuario nao vai no pacote)
 Set-Content -Path "$pasta\config.json" -Encoding ascii -Value @'
 {
-  "estilo": 1,
-  "tom": 1,
-  "estrutura": 1,
-  "pele": 1,
-  "outro": 1,
-  "detalhe": 1,
-  "cor": 1,
+  "modelo": 0,
+  "intensidade": 1,
+  "tomLocal": 1,
+  "estruturaLocal": 1,
+  "estruturaPele": 1,
+  "mascara": true,
+  "gradacao": true,
+  "composicao": 1,
+  "corComposicao": 1,
+  "protecao": 2,
   "passes": 1,
   "redeCompleta": true,
   "alturaRede": 1080,
   "forca": 1,
+  "ponte": -1,
+  "brancoNits": 0,
   "modo": 0,
-  "divisao": 0.5,
-  "fpsMax": 60,
   "movimento": true,
-  "ritmo": 1,
-  "ocultaDeGravacoes": false,
+  "usaConfianca": true,
+  "ritmo": 0,
+  "ritmoMax": 4,
+  "reusoVit": true,
   "estabilidade": 8,
   "rejeicao": 12,
-  "composicao": 0,
-  "rdxDetalhe": 1,
-  "rdxCor": 1,
-  "rdxGuarda": 4
+  "divisao": 0.5,
+  "fpsMax": 60,
+  "ocultaDeGravacoes": false
 }
 '@
 $zip = Join-Path $saida "DLSS5-Overlay-v$Versao.zip"
