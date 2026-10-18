@@ -10,6 +10,8 @@ class Overlay
 {
   public:
     bool Cria(Gpu& g, HINSTANCE inst);
+    // fora de capturas de tela/gravacoes (OBS, prints); por padrao aparece nelas
+    void OcultaDeGravacoes(bool sim);
     void Destroi();
     // cobre o retangulo (pixels de tela); recria a swapchain quando o tamanho muda
     void Posiciona(const RECT& r);
@@ -17,7 +19,7 @@ class Overlay
     bool Visivel() const { return visivel; }
     HWND Janela() const { return hwnd; }
 
-    // buffer atual da swapchain (B8G8R8A8, estado PRESENT) e apresentacao
+    // buffer atual da swapchain (R8G8B8A8, estado PRESENT) e apresentacao
     ID3D12Resource* Buffer();
     UINT Largura() const { return w; }
     UINT Altura() const { return h; }

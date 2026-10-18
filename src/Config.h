@@ -17,6 +17,7 @@ struct Config
     bool movimento = true; // movimento simulado por fluxo optico (historico temporal da rede)
     float divisao = 0.5f;  // posicao da divisao no modo comparacao
     int fpsMax = 60;       // teto de quadros processados por segundo (0 = sem teto)
+    bool ocultaDeGravacoes = false; // o overlay fora de prints/OBS
 
     void Carrega(const std::wstring& arquivo);
     void Salva(const std::wstring& arquivo) const;

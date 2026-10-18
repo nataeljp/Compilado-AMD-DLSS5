@@ -64,6 +64,7 @@ void Config::Carrega(const std::wstring& arquivo)
     I("fpsMax", fpsMax);
     B("movimento", movimento);
     I("ritmo", ritmo);
+    B("ocultaDeGravacoes", ocultaDeGravacoes);
     I("estabilidade", temporal.maxQuadros);
     F("rejeicao", temporal.rejeicao);
 }
@@ -89,6 +90,7 @@ void Config::Salva(const std::wstring& arquivo) const
     f << "  \"fpsMax\": " << fpsMax << ",\n";
     f << "  \"movimento\": " << (movimento ? "true" : "false") << ",\n";
     f << "  \"ritmo\": " << ritmo << ",\n";
+    f << "  \"ocultaDeGravacoes\": " << (ocultaDeGravacoes ? "true" : "false") << ",\n";
     f << "  \"estabilidade\": " << temporal.maxQuadros << ",\n";
     f << "  \"rejeicao\": " << temporal.rejeicao << "\n";
     f << "}\n";

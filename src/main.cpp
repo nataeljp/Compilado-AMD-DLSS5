@@ -12,6 +12,7 @@
 #include "Fluxo.h"
 #include "Temporal.h"
 #include "Overlay.h"
+#include "Painel.h"
 #include "Rede.h"
 #include "Shaders.h"
 #include <shellapi.h>
@@ -62,6 +63,11 @@ struct App
     Temporal temporal;
     Captura cap;
     Overlay ov;
+    Painel painel;
+    bool comPainel = true;
+    double fps = 0, msMedio = 0;
+    std::chrono::steady_clock::time_point marcaFps = std::chrono::steady_clock::now();
+    UINT64 quadrosMarca = 0;
     Config cfg;
     Passe pInteiro, pReduz, pCompoe;
     Tex inteiro, fed, saida, fedAnt, saidaAnt;
@@ -101,6 +107,9 @@ struct App
         cap.Cria(gpu);
         if (!ov.Cria(gpu, GetModuleHandleW(nullptr)))
             throw std::runtime_error("overlay nao foi criado");
+        ov.OcultaDeGravacoes(cfg.ocultaDeGravacoes);
+        if (comPainel && !painel.Cria(gpu, GetModuleHandleW(nullptr), pasta))
+            throw std::runtime_error("painel nao foi criado");
     }
 
     void Encerra()
@@ -108,6 +117,7 @@ struct App
         gpu.Espera();
         rede.Encerra();
         cap.Para();
+        painel.Destroi();
         ov.Destroi();
         cfg.Salva(pasta + L"\\config.json");
     }
@@ -295,6 +305,17 @@ struct App
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         somaMs += ms;
         maxMs = std::max(maxMs, ms);
+        {
+            const auto agora = std::chrono::steady_clock::now();
+            const double dt = std::chrono::duration<double>(agora - marcaFps).count();
+            if (dt >= 0.5)
+            {
+                fps = double(quadros - quadrosMarca) / dt;
+                marcaFps = agora;
+                quadrosMarca = quadros;
+            }
+            msMedio = msMedio * 0.95 + ms * 0.05;
+        }
         if (quadros % 60 == 0)
         {
             Log("tempo", Fmt("quadros %llu: media %.2f ms, pior %.2f ms (captura -> rede -> overlay)",
@@ -307,6 +328,46 @@ struct App
     bool ultimoTemMov = false;
 
     void GravaSaida(const std::wstring& arq) { GravaTex(saida, arq, 4); }
+
+    void Painel_()
+    {
+        if (!comPainel)
+            return;
+        EstadoPainel e;
+        e.placa = gpu.nome;
+        e.redeOk = redeOk && rede.Pronta();
+        if (cap.Ativa())
+        {
+            wchar_t t[256] = {};
+            GetWindowTextW(cap.Alvo(), t, 256);
+            e.alvo = t[0] ? t : L"(sem titulo)";
+            e.janelaW = inteiro.w;
+            e.janelaH = inteiro.h;
+            e.redeW = fed.w;
+            e.redeH = fed.h;
+            e.msMedio = msMedio;
+            e.fps = fps;
+        }
+        const AcoesPainel a = painel.Quadro(cfg, e);
+        if (a.ligar)
+            Liga(a.ligar);
+        if (a.desligar)
+            Desliga();
+        if (a.salvar)
+        {
+            cfg.Salva(pasta + L"\\config.json");
+            Log("app", "configuracao salva");
+        }
+        if (a.zeraHistorico)
+        {
+            zeraHistorico = true;
+            temporal.Reinicia();
+        }
+        if (a.ocultaMudou)
+            ov.OcultaDeGravacoes(cfg.ocultaDeGravacoes);
+        if (a.sair)
+            PostQuitMessage(0);
+    }
 
     // grava uma textura crua (bpp bytes por pixel) para conferencia
     void GravaTex(Tex& t, const std::wstring& arq, UINT bpp)
@@ -376,6 +437,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         else if (!wcscmp(argv[i], L"--dump"))
             app.dumpPasta = argv[++i];
     }
+    for (int i = 1; i < argc; ++i)
+    {
+        if (!wcscmp(argv[i], L"--sem-painel"))
+            app.comPainel = false;
+    }
     try
     {
         app.Inicia();
@@ -438,16 +504,31 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         }
         if (!rodando)
             break;
+        {
+            static auto ultimoPainel = clk::now();
+            if (clk::now() - ultimoPainel >= std::chrono::milliseconds(16))
+            {
+                ultimoPainel = clk::now();
+                try
+                {
+                    app.Painel_();
+                }
+                catch (const std::exception& e)
+                {
+                    Log("erro", std::string("painel: ") + e.what());
+                }
+            }
+        }
         if (!app.cap.Ativa())
         {
             app.ov.Mostra(false);
             if (app.quadrosTeste > 0 && !alvoTitulo.empty())
                 break; // teste sem alvo
-            MsgWaitForMultipleObjects(0, nullptr, FALSE, 50, QS_ALLINPUT);
+            MsgWaitForMultipleObjects(0, nullptr, FALSE, 16, QS_ALLINPUT);
             continue;
         }
         HANDLE ev = app.cap.EventoQuadro();
-        MsgWaitForMultipleObjects(1, &ev, FALSE, 100, QS_ALLINPUT);
+        MsgWaitForMultipleObjects(1, &ev, FALSE, 16, QS_ALLINPUT);
         if (app.cfg.fpsMax > 0)
         {
             const auto minimo = std::chrono::microseconds(1000000 / app.cfg.fpsMax);

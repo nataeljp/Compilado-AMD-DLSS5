@@ -36,13 +36,17 @@ bool Overlay::Cria(Gpu& g, HINSTANCE inst)
         return false;
     }
     SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
-    // o overlay nao entra em capturas (nem na nossa, se um dia capturarmos o monitor inteiro)
-    SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
     Ck(DCompositionCreateDevice(nullptr, IID_PPV_ARGS(&dcomp)), "DCompositionCreateDevice");
     Ck(dcomp->CreateTargetForHwnd(hwnd, TRUE, &alvo), "CreateTargetForHwnd");
     Ck(dcomp->CreateVisual(&visual), "CreateVisual");
     Ck(alvo->SetRoot(visual.Get()), "SetRoot");
     return true;
+}
+
+void Overlay::OcultaDeGravacoes(bool sim)
+{
+    if (hwnd)
+        SetWindowDisplayAffinity(hwnd, sim ? WDA_EXCLUDEFROMCAPTURE : WDA_NONE);
 }
 
 void Overlay::Destroi()
@@ -67,14 +71,14 @@ void Overlay::CriaSwapchain(UINT w_, UINT h_)
         b.Reset();
     if (sc)
     {
-        Ck(sc->ResizeBuffers(2, w_, h_, DXGI_FORMAT_B8G8R8A8_UNORM, 0), "ResizeBuffers");
+        Ck(sc->ResizeBuffers(2, w_, h_, DXGI_FORMAT_R8G8B8A8_UNORM, 0), "ResizeBuffers");
     }
     else
     {
         DXGI_SWAP_CHAIN_DESC1 d{};
         d.Width = w_;
         d.Height = h_;
-        d.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        d.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
         d.SampleDesc.Count = 1;
         d.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
         d.BufferCount = 2;
