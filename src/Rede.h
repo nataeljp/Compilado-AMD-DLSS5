@@ -1,7 +1,7 @@
 // Host da rede DLSS 5: LmxxfNrRuntime.dll (lmxxf, MIT; adaptador AMDNR/lmxxf2) pela API C publica.
 #pragma once
 #include "Comum.h"
-#include "LmxxfNrApi.h"
+#include "ApiRede.h"
 
 namespace ov {
 

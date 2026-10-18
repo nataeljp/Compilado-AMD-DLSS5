@@ -2,3 +2,4 @@ bin/
 obj/
 *.rgba
 *.f16
+*.raw

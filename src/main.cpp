@@ -72,6 +72,7 @@ struct App
     Passe pInteiro, pReduz, pCompoe;
     Tex inteiro, fed, saida, fedAnt, saidaAnt;
     std::wstring dumpPasta;
+    std::wstring pastaRuntime; // --runtime: outra pasta do runtime (testes)
     ComPtr<ID3D12CommandAllocator> al[2];
     ComPtr<ID3D12GraphicsCommandList> cl[2];
     std::wstring pasta;
@@ -101,7 +102,7 @@ struct App
         pCompoe.Cria(gpu.dev.Get(), hlsl::Compoe, "CSCompoe", 4, 1, 10, "compoe");
         fluxo.Cria(gpu.dev.Get());
         temporal.Cria(gpu.dev.Get());
-        redeOk = rede.Inicia(gpu, pasta + L"\\runtime");
+        redeOk = rede.Inicia(gpu, pastaRuntime.empty() ? pasta + L"\\runtime" : pastaRuntime);
         if (!redeOk)
             Log("app", "a rede nao subiu: o overlay mostra o quadro original");
         cap.Cria(gpu);
@@ -453,6 +454,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             app.gravaArquivo = argv[++i];
         else if (!wcscmp(argv[i], L"--dump"))
             app.dumpPasta = argv[++i];
+        else if (!wcscmp(argv[i], L"--runtime"))
+            app.pastaRuntime = argv[++i];
     }
     for (int i = 1; i < argc; ++i)
     {
