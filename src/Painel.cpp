@@ -385,14 +385,11 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             ImGui::SetTooltip("Fluxo de ida e volta: onde o vetor nao volta ao mesmo ponto (oclusao, objeto entrando\n"
                               "ou saindo) o acumulo daquele pixel e descartado. Evita rastros.");
         ImGui::SeparatorText("Custo da rede pelo movimento");
-        ImGui::SliderInt("Ritmo da rede", &cfg.ritmo, 0, 4,
-                         cfg.ritmo == 0 ? "automatico" : (cfg.ritmo == 1 ? "todo quadro" : "1 a cada %d"));
+        ImGui::SliderInt("Ritmo da rede", &cfg.ritmo, 1, 4, cfg.ritmo == 1 ? "todo quadro" : "1 a cada %d");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Automatico: a rede so roda quando a previsao pelo movimento deixa de valer (oclusao,\n"
                               "mudanca de luz, movimento muito rapido); nos outros quadros a edicao anterior segue\n"
                               "o movimento. N: a cada N quadros. Libera a GPU para o jogo.");
-        if (cfg.ritmo == 0)
-            ImGui::SliderInt("No maximo sem rodar", &cfg.ritmoMax, 1, 8, "%d quadros");
         ImGui::EndDisabled();
         ImGui::Checkbox("Reuso adaptativo do ViT (ao reabrir)", &cfg.reusoVit);
         if (ImGui::IsItemHovered())

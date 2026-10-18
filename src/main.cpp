@@ -238,7 +238,7 @@ struct App
         bool vezDaRede = !temporal.Valido() || !temMov || zeraHistorico;
         if (!vezDaRede)
         {
-            if (cfg.ritmo > 0)
+            if (true) // o dono: a rede nao desliga em movimento; o ritmo automatico (pular quadros) saiu
                 vezDaRede = (quadros % (UINT64)std::clamp(cfg.ritmo, 1, 4)) == 0;
             else
                 // automatico: a rede roda quando a previsao pelo movimento deixa de valer (oclusao/conteudo novo,

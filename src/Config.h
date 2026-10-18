@@ -30,7 +30,7 @@ struct Config
     int modo = 0;           // 0 rede, 1 original, 2 comparacao, 3 so a edicao, 4 movimento
     bool movimento = true;  // movimento simulado por fluxo optico
     bool usaConfianca = true; // descarta o historico onde o fluxo de ida e volta nao bate (oclusao)
-    int ritmo = 0;          // 0 automatico (pelo movimento); N: a rede roda a cada N quadros; nos outros a edicao segue o movimento
+    int ritmo = 1;          // a rede roda a cada N quadros (1 = todo quadro; a rede nunca deve sumir em movimento)
     int ritmoMax = 4;       // no automatico: no maximo tantos quadros sem rodar a rede
     bool reusoVit = true;   // reuso adaptativo do ViT do lmxxf (com perda pequena; vale ao reabrir o programa)
     float divisao = 0.5f;   // posicao da divisao no modo comparacao

@@ -33,7 +33,7 @@ Set-Content -Path "$pasta\config.json" -Encoding ascii -Value @'
   "modo": 0,
   "movimento": true,
   "usaConfianca": true,
-  "ritmo": 0,
+  "ritmo": 1,
   "ritmoMax": 4,
   "reusoVit": true,
   "estabilidade": 8,
