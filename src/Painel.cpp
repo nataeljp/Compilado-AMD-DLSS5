@@ -243,7 +243,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         ImGui::TextColored(ImVec4(0.4f, 1, 0.5f, 1), "Capturando: %s", Utf8(e.alvo).c_str());
         ImGui::Text("Janela %ux%u  |  rede %ux%u  |  %.1f ms  |  %.0f quadros/s", e.janelaW, e.janelaH, e.redeW,
                     e.redeH, e.msMedio, e.fps);
-        ImGui::Text("Rede rodou em %.0f%% dos quadros", 100.0 * e.fracaoRede);
+        ImGui::Text("Resposta nova da rede em %.0f%% dos quadros", 100.0 * e.fracaoRede);
     }
     if (!e.redeOk)
         ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "Rede indisponivel: so o quadro original (ver overlay.jsonl)");
@@ -451,11 +451,12 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             ImGui::SetTooltip("Fluxo de ida e volta: onde o vetor nao volta ao mesmo ponto (oclusao, objeto entrando\n"
                               "ou saindo) o acumulo daquele pixel e descartado. Evita rastros.");
         ImGui::SeparatorText("Custo da rede pelo movimento");
-        ImGui::SliderInt("Ritmo da rede", &cfg.ritmo, 1, 4, cfg.ritmo == 1 ? "todo quadro" : "1 a cada %d");
+        ImGui::SliderInt("Ritmo da rede", &cfg.ritmo, 1, 4, cfg.ritmo == 1 ? "sempre que livre" : "no maximo 1 a cada %d");
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Automatico: a rede so roda quando a previsao pelo movimento deixa de valer (oclusao,\n"
-                              "mudanca de luz, movimento muito rapido); nos outros quadros a edicao anterior segue\n"
-                              "o movimento. N: a cada N quadros. Libera a GPU para o jogo.");
+            ImGui::SetTooltip("A rede roda numa fila propria: todo quadro vai para a tela na hora, sem esperar a rede, e\n"
+                              "a resposta entra quando fica pronta, trazida pelo movimento ate o quadro atual.\n"
+                              "1: a rede recomeca assim que termina. N: no maximo uma vez a cada N quadros (libera a\n"
+                              "GPU para o jogo).");
         ImGui::EndDisabled();
         ImGui::Checkbox("Reuso adaptativo do ViT (ao reabrir)", &cfg.reusoVit);
         if (ImGui::IsItemHovered())

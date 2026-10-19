@@ -110,10 +110,27 @@ bool Rede::Inicia(Gpu& g, const std::wstring& pasta, bool pequena)
         assets = pasta + L"\\native-game-tiled-assets";
     }
     Log("rede", pequena ? "rede: pequena 310.9.16 (31 blocos)" : "rede: grande (71 blocos)");
+    dev = g.dev.Get();
+    if (!fila)
+    {
+        D3D12_COMMAND_QUEUE_DESC qd{};
+        qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+        Ck(dev->CreateCommandQueue(&qd, IID_PPV_ARGS(&fila)), "CreateCommandQueue(rede)");
+        fila->SetName(L"fila da rede");
+        Ck(dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&cerca)), "CreateFence(rede)");
+        evento = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        for (int i = 0; i < 2; ++i)
+        {
+            Ck(dev->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&al[i])), "allocator(rede)");
+            Ck(dev->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, al[i].Get(), nullptr, IID_PPV_ARGS(&cl[i])),
+               "list(rede)");
+            cl[i]->Close();
+        }
+    }
     LmxxfNrCreateInfo ci{};
     ci.struct_size = sizeof ci;
     ci.device = g.dev.Get();
-    ci.queue = g.fila.Get();
+    ci.queue = fila.Get();
     ci.assets_directory = assets.c_str();
     if (Erro(api.Create(&ci, &ctx), "Create"))
     {
@@ -135,10 +152,9 @@ bool Rede::DefineProfundidade(const std::vector<uint32_t>& blocos)
 
 void Rede::Encerra()
 {
+    Descarta();
     if (ctx)
     {
-        if (emVoo && api.AbandonJob)
-            api.AbandonJob(ctx, job.handle);
         api.Drain(ctx);
         api.Destroy(ctx);
         ctx = nullptr;
@@ -146,8 +162,92 @@ void Rede::Encerra()
     emVoo = false;
 }
 
-bool Rede::Prepara(ID3D12GraphicsCommandList* c, ID3D12Resource* cor, D3D12_RESOURCE_STATES estadoCor, UINT w, UINT h,
-                   ID3D12Resource* movimento, D3D12_RESOURCE_STATES estadoMov, bool zeraHistorico, const ParamsRede& p)
+void Rede::EsperaChegar()
+{
+    if (!emVoo || cerca->GetCompletedValue() >= valorJob)
+        return;
+    Ck(cerca->SetEventOnCompletion(valorJob, evento), "SetEventOnCompletion(rede)");
+    WaitForSingleObject(evento, INFINITE);
+}
+
+void Rede::Descarta()
+{
+    if (!emVoo)
+        return;
+    EsperaChegar();
+    Aposenta();
+}
+
+void Rede::CopiaEntrada(ID3D12GraphicsCommandList* c, Tex& fed)
+{
+    if (emVoo)
+        return;
+    if (entrada.w != fed.w || entrada.h != fed.h || entrada.fmt != fed.fmt)
+        entrada.Cria(dev, fed.w, fed.h, fed.fmt, L"entrada da rede", true, true);
+    const auto antes = fed.estado;
+    fed.Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    entrada.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
+    c->CopyResource(entrada.r.Get(), fed.r.Get());
+    entrada.Para(c, D3D12_RESOURCE_STATE_COMMON); // a fila da rede pega daqui
+    fed.Para(c, antes);
+}
+
+bool Rede::Envia(ID3D12Fence* cercaOverlay, UINT64 valorOverlay, const ParamsRede& p)
+{
+    if (!Pronta() || emVoo || !entrada.r)
+        return false;
+    const D3D12_RESOURCE_STATES SRV =
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    Ck(fila->Wait(cercaOverlay, valorOverlay), "Wait(overlay)");
+    // entrada
+    Ck(al[0]->Reset(), "reset(rede0)");
+    Ck(cl[0]->Reset(al[0].Get(), nullptr), "list(rede0)");
+    entrada.Para(cl[0].Get(), SRV);
+    if (!Prepara(cl[0].Get(), p))
+    {
+        cl[0]->Close();
+        entrada.estado = D3D12_RESOURCE_STATE_COMMON; // a lista nao vai rodar
+        return false;
+    }
+    entrada.Para(cl[0].Get(), D3D12_RESOURCE_STATE_COMMON);
+    Ck(cl[0]->Close(), "close(rede0)");
+    ID3D12CommandList* l0[] = {cl[0].Get()};
+    fila->ExecuteCommandLists(1, l0);
+    // HIP
+    if (Erro(api.EnqueueHip(ctx, job.handle, fila.Get()), "EnqueueHip"))
+    {
+        api.AbandonJob(ctx, job.handle);
+        emVoo = false;
+        return false;
+    }
+    // saida: a resposta do runtime vai para uma textura nossa (o runtime reaproveita a dele no trabalho seguinte)
+    Ck(al[1]->Reset(), "reset(rede1)");
+    Ck(cl[1]->Reset(al[1].Get(), nullptr), "list(rede1)");
+    if (Erro(api.RecordOutputs(ctx, job.handle, cl[1].Get()), "RecordOutputs"))
+    {
+        cl[1]->Close();
+        api.AbandonJob(ctx, job.handle);
+        emVoo = false;
+        return false;
+    }
+    auto* out = static_cast<ID3D12Resource*>(job.private_output);
+    const auto d = out->GetDesc();
+    if (resposta.w != d.Width || resposta.h != d.Height || resposta.fmt != d.Format)
+        resposta.Cria(dev, UINT(d.Width), d.Height, d.Format, L"resposta da rede", false);
+    Barreira(cl[1].Get(), out, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    resposta.Para(cl[1].Get(), D3D12_RESOURCE_STATE_COPY_DEST);
+    cl[1]->CopyResource(resposta.r.Get(), out);
+    resposta.Para(cl[1].Get(), D3D12_RESOURCE_STATE_COMMON);
+    Barreira(cl[1].Get(), out, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    Ck(cl[1]->Close(), "close(rede1)");
+    ID3D12CommandList* l1[] = {cl[1].Get()};
+    fila->ExecuteCommandLists(1, l1);
+    Ck(fila->Signal(cerca.Get(), ++valor), "Signal(rede)");
+    valorJob = valor;
+    return true;
+}
+
+bool Rede::Prepara(ID3D12GraphicsCommandList* c, const ParamsRede& p)
 {
     if (!Pronta() || emVoo)
         return false;
@@ -158,10 +258,10 @@ bool Rede::Prepara(ID3D12GraphicsCommandList* c, ID3D12Resource* cor, D3D12_RESO
     fi.frame_id = quadro;
     fi.list_generation = quadro;
     fi.command_list = c;
-    fi.color_width = w;
-    fi.color_height = h;
-    fi.color = cor;
-    fi.color_state = (uint32_t)estadoCor;
+    fi.color_width = entrada.w;
+    fi.color_height = entrada.h;
+    fi.color = entrada.r.Get();
+    fi.color_state = (uint32_t)entrada.estado;
     fi.model_scale = 1.f;
     fi.transfer_strength = std::clamp(p.detalhe, 0.f, 1.f);
     fi.color_strength = std::clamp(p.cor, 0.f, 1.f);
@@ -178,21 +278,9 @@ bool Rede::Prepara(ID3D12GraphicsCommandList* c, ID3D12Resource* cor, D3D12_RESO
     if (fi.control_tone != 1.f || fi.control_structure != 1.f || fi.control_skin != 1.f || fi.control_other != 1.f ||
         fi.control_style != 1.f)
         fi.flags |= LMXXF_NR_FRAME_FLAG_CONTROLS;
-    if (movimento)
-    {
-        // historico temporal da rede: a resposta anterior reprojetada pelo movimento simulado (fluxo optico)
-        fi.flags |= LMXXF_NR_FRAME_FLAG_TEMPORAL;
-        fi.motion = movimento;
-        fi.motion_state = (uint32_t)estadoMov;
-        fi.motion_width = w;
-        fi.motion_height = h;
-        fi.motion_scale_x = 1.f;
-        fi.motion_scale_y = 1.f;
-        fi.history_reset = zeraHistorico ? 1u : 0u;
-        fi.output_smooth = std::clamp(p.suaviza, 0.f, 0.8f);
-    }
-    else
-        fi.history_reset = 1;
+    // sem movimento para o runtime: o adaptador ignora FLAG_TEMPORAL/motion/history_reset (adaptador.cpp), e o
+    // historico do proprio runtime (DLSS5_TEMPORAL_MODE) e de movimento estatico. A estabilidade e a do host (Temporal).
+    fi.history_reset = 1;
     job = {};
     job.struct_size = sizeof job;
     if (Erro(api.PrepareFrame(ctx, &fi, &job), "PrepareFrame"))
@@ -206,37 +294,11 @@ bool Rede::Prepara(ID3D12GraphicsCommandList* c, ID3D12Resource* cor, D3D12_RESO
     return true;
 }
 
-bool Rede::Enfileira(ID3D12CommandQueue* fila)
-{
-    if (!emVoo)
-        return false;
-    if (Erro(api.EnqueueHip(ctx, job.handle, fila), "EnqueueHip"))
-    {
-        api.AbandonJob(ctx, job.handle);
-        emVoo = false;
-        return false;
-    }
-    return true;
-}
-
-ID3D12Resource* Rede::Saida(ID3D12GraphicsCommandList* c)
-{
-    if (!emVoo)
-        return nullptr;
-    if (Erro(api.RecordOutputs(ctx, job.handle, c), "RecordOutputs"))
-    {
-        api.AbandonJob(ctx, job.handle);
-        emVoo = false;
-        return nullptr;
-    }
-    return static_cast<ID3D12Resource*>(job.private_output);
-}
-
 void Rede::Aposenta()
 {
     if (!emVoo)
         return;
-    api.Retire(ctx, job.handle);
+    Erro(api.Retire(ctx, job.handle), "Retire");
     emVoo = false;
 }
 

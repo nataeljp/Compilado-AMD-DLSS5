@@ -209,6 +209,7 @@ struct App
         if (inteiro.w == fw && inteiro.h == fh && fed.w == dw && fed.h == dh && saida.fmt == fmtSaida)
             return;
         gpu.Espera();
+        rede.Descarta(); // a resposta em voo e do tamanho antigo
         inteiro.Cria(gpu.dev.Get(), fw, fh, DXGI_FORMAT_R16G16B16A16_FLOAT, L"inteiro");
         orig.Cria(gpu.dev.Get(), dw, dh, DXGI_FORMAT_R16G16B16A16_FLOAT, L"original no tamanho da rede");
         fed.Cria(gpu.dev.Get(), dw, dh, DXGI_FORMAT_R16G16B16A16_FLOAT, L"proxy (alimentado)", true, true);
@@ -536,66 +537,87 @@ struct App
         orig.Para(c, SRV);
         fed.Para(c, SRV);
         Barreira(c, q.tex, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
-        // movimento simulado (fluxo optico contra o quadro anterior): alimenta o historico temporal da rede
+        // movimento simulado (fluxo optico contra o quadro anterior): reprojeta a edicao e traz a resposta atrasada
         const bool temMov = cfg.movimento && fluxo.Calcula(c, desc, gpu.dev.Get(), fed.r.Get(), fed.fmt);
         if (temMov)
             fluxo.Estatisticas(c, desc, gpu.dev.Get(), fed, fedAnt);
-        bool vezDaRede = !temporal.Valido() || !temMov || zeraHistorico;
-        if (!vezDaRede)
+        // A rede roda na fila dela e responde com atraso: este quadro vai para a tela agora, com a ultima edicao; a
+        // resposta, quando chega, e do quadro t0 que a rede viu e entra pelo deslocamento acumulado desde t0.
+        // sincrono (imagem, reproducao sem --atraso): a rede ve este quadro e responde nele mesmo, como antes.
+        const bool sincrono = atraso == 0;
+        Tex* deslocamento = nullptr;
+        if (!sincrono && rede.EmVoo())
         {
-            if (true) // o dono: a rede nao desliga em movimento; o ritmo automatico (pular quadros) saiu
-                vezDaRede = (quadros % (UINT64)std::clamp(cfg.ritmo, 1, 4)) == 0;
-            else
-                // automatico: a rede roda quando a previsao pelo movimento deixa de valer (oclusao/conteudo novo,
-                // mudanca de luz, movimento muito rapido) ou depois de ritmoMax quadros
-                vezDaRede = desdeRede + 1 >= (UINT)std::clamp(cfg.ritmoMax, 1, 8) || !estat.valida ||
-                            estat.semConfianca > 0.06f || estat.mudancaLuz > 0.015f || estat.velocidade > 48.f;
+            deslocamento = temporal.Acumula(c, desc, gpu.dev.Get(), temMov ? &fluxo.Movimento() : nullptr,
+                                            temMov ? &fluxo.Confianca() : nullptr, deslZerado);
+            deslZerado = false;
         }
-        const bool usaRede = redeOk && rede.Pronta() && cfg.modo != 1 && vezDaRede;
-        if (usaRede)
-            AjustaProfundidade(temMov);
-        bool preparou = false;
-        if (usaRede)
+        temporal.AcumulaGrade(c, desc, gpu.dev.Get(), temMov ? &fluxo.Movimento() : nullptr,
+                              temMov ? &fluxo.Confianca() : nullptr);
+        const bool podeRede = redeOk && rede.Pronta() && cfg.modo != 1;
+        const bool vez = !temporal.Valido() || !temMov || zeraHistorico ||
+                         quadros >= quadroEnvio + (UINT64)std::clamp(cfg.ritmo, 1, 4);
+        bool envia = sincrono && podeRede && vez;
+        if (envia)
         {
-            const ParamsRede pr = cfg.Rede(); // controles da rede a partir dos parametros NGX
-            preparou = rede.Prepara(c, fed.r.Get(), fed.estado, fed.w, fed.h,
-                                    temMov ? fluxo.Movimento().r.Get() : nullptr, fluxo.Movimento().estado,
-                                    zeraHistorico || !temMov, pr);
+            AjustaProfundidade(temMov);
+            CopiaParaRede(c);
         }
         Ck(c->Close(), "close0");
         ID3D12CommandList* l0[] = {c};
         gpu.fila->ExecuteCommandLists(1, l0);
-        if (preparou)
-            rede.Enfileira(gpu.fila.Get());
+        bool chegou = false;
+        if (envia)
+        {
+            if (rede.Envia(gpu.cerca.Get(), gpu.Sinaliza(), cfg.Rede()))
+            {
+                MarcaEnvio();
+                rede.EsperaChegar();
+                chegou = true;
+            }
+            envia = false;
+        }
+        else if (rede.EmVoo())
+        {
+            // com --atraso N (teste) a resposta entra exatamente N quadros depois do envio; ao vivo, quando ficar pronta
+            chegou = atraso > 0 ? quadros >= quadroEnvio + (UINT64)atraso : rede.Chegou();
+            if (chegou)
+                rede.EsperaChegar();
+        }
+        if (chegou)
+            Chegada();
 
-        // ---- lista 2: saida, composicao, apresentacao ----
+        // ---- lista 2: edicao, composicao, apresentacao (e a entrada da proxima rede) ----
         Ck(al[1]->Reset(), "reset1");
         Ck(cl[1]->Reset(al[1].Get(), nullptr), "list1");
         c = cl[1].Get();
-        ID3D12Resource* resp = preparou ? rede.Saida(c) : nullptr;
-        DXGI_FORMAT fmtResp = fed.fmt;
-        if (resp)
-        {
-            const auto d = resp->GetDesc();
-            fmtResp = d.Format;
-            if (quadros == 0)
-                Log("rede", Fmt("resposta %llux%u formato %d dim %d", (unsigned long long)d.Width, d.Height,
-                                (int)d.Format, (int)d.Dimension));
-            if (d.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || d.Width != fed.w || d.Height != fed.h)
-            {
-                Log("rede", "resposta fora do formato esperado: desligando a rede");
-                redeOk = false;
-                resp = nullptr;
-            }
-        }
-        // edicao estabilizada no tempo (e reprojetada nos quadros sem rede)
+        // edicao estabilizada no tempo (e reprojetada nos quadros sem resposta)
         ParamsTemporal tp = cfg.temporal;
         tp.intensidade = cfg.ngx.intensidade;
+        const bool usa = chegou && cfg.modo != 1 && redeOk;
+        if (usa)
+        {
+            temporal.Edicao(c, desc, gpu.dev.Get(), origRede, rede.Entrada(), rede.Resposta(), tp);
+            temporal.Grade(c, desc, gpu.dev.Get(), origRede, semDeslocamento ? nullptr : deslocamento);
+        }
         Tex* edicao = ultimaEdicao = (cfg.modo != 1 && redeOk)
-                          ? temporal.Roda(c, desc, gpu.dev.Get(), orig, fed, fedAnt, resp, fmtResp,
+                          ? temporal.Roda(c, desc, gpu.dev.Get(), orig, fed, fedAnt, usa, usa ? &rede.Entrada() : nullptr,
+                                          usa && !semDeslocamento ? deslocamento : nullptr,
                                           temMov ? &fluxo.Movimento() : nullptr,
                                           (temMov && cfg.usaConfianca) ? &fluxo.Confianca() : nullptr, tp)
                           : nullptr;
+        if (usa)
+        {
+            // de volta ao estado em que a fila da rede pega
+            rede.Entrada().Para(c, D3D12_RESOURCE_STATE_COMMON);
+            rede.Resposta().Para(c, D3D12_RESOURCE_STATE_COMMON);
+        }
+        envia = !sincrono && podeRede && vez && !rede.EmVoo();
+        if (envia)
+        {
+            AjustaProfundidade(temMov);
+            CopiaParaRede(c);
+        }
         // gradacao do Model B/C (constantes do kernel da NVIDIA), escalada pelo tom local
         const float tg = std::clamp(cfg.ngx.tomLocal, 0.f, 1.f);
         float kExp = 0, kCon = 0, kSat = 0;
@@ -655,25 +677,26 @@ struct App
         Ck(c->Close(), "close1");
         ID3D12CommandList* l1[] = {c};
         gpu.fila->ExecuteCommandLists(1, l1);
+        const UINT64 fim = gpu.Sinaliza();
+        if (envia && rede.Envia(gpu.cerca.Get(), fim, cfg.Rede()))
+            MarcaEnvio();
         if (apresenta)
         {
             ov.Apresenta();
             ov.Mostra(true);
         }
-        gpu.Espera();
+        gpu.EsperaValor(fim);
         estat = fluxo.LeEstatisticas();
         if (gravando > 0)
-            GravaQuadro(preparou, temMov, edicao);
-        if (preparou)
+            GravaQuadro(usa, temMov, edicao);
+        if (usa)
         {
-            rede.Aposenta();
-            zeraHistorico = false;
             desdeRede = 0;
             ++quadrosComRede;
         }
         else
             ++desdeRede;
-        if ((quadros == 3 || quadros % 300 == 0) && preparou)
+        if ((quadrosComRede == 3 || quadros % 300 == 0) && usa)
             Log("rede", rede.Status());
         ++quadros;
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
@@ -692,16 +715,62 @@ struct App
         }
         if (quadros % 60 == 0)
         {
-            Log("tempo", Fmt("quadros %llu: media %.2f ms, pior %.2f ms (captura -> rede -> overlay), rede em %.0f%% dos "
-                             "quadros | confianca %.3f, luz %.4f, vel %.1f px",
+            Log("tempo", Fmt("quadros %llu: media %.2f ms, pior %.2f ms (captura -> overlay) | resposta da rede em %.0f%% "
+                             "dos quadros, %.1f quadros / %.1f ms depois do envio | confianca %.3f, luz %.4f, vel %.1f px",
                              (unsigned long long)quadros, somaMs / 60.0, maxMs,
-                             100.0 * double(quadrosComRede - comRedeMarca) / 60.0, 1.0 - estat.semConfianca,
-                             estat.mudancaLuz, estat.velocidade));
+                             100.0 * double(quadrosComRede - comRedeMarca) / 60.0,
+                             chegadas ? somaAtrasoQ / chegadas : 0.0, chegadas ? somaAtrasoMs / chegadas : 0.0,
+                             1.0 - estat.semConfianca, estat.mudancaLuz, estat.velocidade));
             fracaoRede = double(quadrosComRede - comRedeMarca) / 60.0;
             comRedeMarca = quadrosComRede;
             somaMs = maxMs = 0;
+            somaAtrasoQ = somaAtrasoMs = 0;
+            chegadas = 0;
         }
         return true;
+    }
+    // ---- rede na fila propria ----
+    int atraso = -1;         // -1 ao vivo (a resposta entra quando fica pronta); 0 sincrono; N > 0 exatamente N quadros
+    bool semDeslocamento = false; // --sem-deslocamento (teste): a resposta atrasada entra onde estava em t0
+    Tex origRede;            // o quadro que a rede esta vendo (t0), no tamanho da rede
+    UINT64 quadroEnvio = 0;  // t0
+    bool deslZerado = false; // o deslocamento acumulado recomeca em t0
+    std::chrono::steady_clock::time_point tEnvio;
+    double somaAtrasoQ = 0, somaAtrasoMs = 0;
+    int chegadas = 0;
+    void CopiaParaRede(ID3D12GraphicsCommandList* c)
+    {
+        rede.CopiaEntrada(c, fed);
+        if (origRede.w != orig.w || origRede.h != orig.h)
+            origRede.Cria(gpu.dev.Get(), orig.w, orig.h, orig.fmt, L"original que a rede viu", false);
+        const auto antes = orig.estado;
+        orig.Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        origRede.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
+        c->CopyResource(origRede.r.Get(), orig.r.Get());
+        orig.Para(c, antes);
+    }
+    void MarcaEnvio()
+    {
+        quadroEnvio = quadros;
+        deslZerado = true;
+        zeraHistorico = false;
+        tEnvio = std::chrono::steady_clock::now();
+    }
+    // a resposta chegou (GPU da rede terminou): confere e libera o trabalho no runtime (a resposta e copia nossa)
+    void Chegada()
+    {
+        somaAtrasoQ += double(quadros - quadroEnvio);
+        somaAtrasoMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tEnvio).count();
+        ++chegadas;
+        rede.Aposenta();
+        const Tex& r = rede.Resposta();
+        if (quadrosComRede == 0)
+            Log("rede", Fmt("resposta %ux%u formato %d", r.w, r.h, (int)r.fmt));
+        if (r.w != fed.w || r.h != fed.h)
+        {
+            Log("rede", "resposta fora do formato esperado: desligando a rede");
+            redeOk = false;
+        }
     }
     double somaMs = 0, maxMs = 0;
     UINT64 comRedeMarca = 0;
@@ -970,6 +1039,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
     App app;
     std::wstring alvoTitulo, imagemArq;
+    int atrasoArg = -2; // --atraso N: a resposta da rede entra N quadros depois do envio (teste do modo assincrono)
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     for (int i = 1; i + 1 < argc; ++i)
@@ -1008,14 +1078,20 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             app.pastaReproducao = argv[++i];
         else if (!wcscmp(argv[i], L"--config"))
             app.configArq = argv[++i];
+        else if (!wcscmp(argv[i], L"--atraso"))
+            atrasoArg = _wtoi(argv[++i]);
     }
     for (int i = 1; i < argc; ++i)
     {
         if (!wcscmp(argv[i], L"--sem-painel"))
             app.comPainel = false;
+        if (!wcscmp(argv[i], L"--sem-deslocamento"))
+            app.semDeslocamento = true;
     }
     if (!imagemArq.empty() || !app.pastaReproducao.empty())
         app.comPainel = false;
+    // imagem e reproducao: sincrono (deterministico) salvo --atraso; ao vivo a resposta entra quando fica pronta
+    app.atraso = atrasoArg >= -1 ? atrasoArg : (!imagemArq.empty() || !app.pastaReproducao.empty()) ? 0 : -1;
     try
     {
         app.Inicia();

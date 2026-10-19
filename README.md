@@ -20,6 +20,7 @@ Para rodar basta a pasta **`bin`**: `DLSS5Overlay.exe` e `runtime\` (runtime HIP
 | Ctrl+Alt+N | modo: rede → original → comparação → só a edição → movimento |
 | Ctrl+Alt+S | estilo 0 → 1 → 2 |
 | Ctrl+Alt+P | mostra/esconde o painel |
+| Ctrl+Alt+G | grava os próximos quadros em bruto (`bin\gravacoes\`), para análise |
 | Ctrl+Alt+Q | sai |
 
 Requisitos: placa AMD RDNA 4 (RX 9070 / 9060) e driver AMD com `amdhip64_7.dll` (os drivers atuais trazem), Windows 10
@@ -31,10 +32,14 @@ Requisitos: placa AMD RDNA 4 (RX 9070 / 9060) e driver AMD com `amdhip64_7.dll` 
 2. **Entradas simuladas sem buffer do jogo**: a rede recebe a cor; os vetores de movimento saem de um fluxo óptico
    próprio entre os quadros capturados (pirâmide de luminância, busca do grosso ao fino, sub-pixel, mediana vetorial),
    no espírito do iMMERSE Launchpad (MartysMods) — implementação própria.
-3. **Rede DLSS 5** (runtime HIP do lmxxf) no tamanho escolhido (720p a 2160p).
-4. **Composição**: a *edição* da rede (resposta − entrada) é acumulada no tempo, reprojetada pelo movimento simulado
-   (menos cintilação), e somada ao quadro nativo, que mantém o próprio detalhe. Composição de cor *Clássica* ou no
-   *estilo RenoDX* (luz e cor controladas separadamente).
+3. **Rede DLSS 5** (runtime HIP do lmxxf) no tamanho escolhido (720p a 2160p), numa **fila própria da GPU**: o quadro
+   capturado vai para a tela na hora, sem esperar a rede (sem atraso de entrada, no ritmo do jogo); a resposta entra
+   quando fica pronta, trazida pelo movimento acumulado desde o quadro que a rede viu.
+4. **Composição**: a *edição* da rede (resposta − entrada) é acumulada no tempo num espaço comprimido (x / (1 + luma),
+   como o TAA dos jogos, para o realce HDR não virar pontos), reprojetada pelo movimento simulado (menos cintilação) e
+   somada ao quadro nativo, que mantém o próprio detalhe. Onde a edição não pode ser trazida (conteúdo animado, oclusão,
+   borda nova da tela) ela sai de uma grade bilateral da última resposta (bloco × brilho). Composição de cor
+   *Clássica* ou no *estilo RenoDX* (luz e cor controladas separadamente).
 5. **Overlay** DirectComposition, transparente a cliques e sem foco: o jogo continua recebendo mouse e teclado.
 
 ## Parâmetros (config.json / painel)
@@ -59,7 +64,7 @@ Os parâmetros do DLSS 5 seguem os nomes que a NVIDIA expõe no NGX (os mesmos d
 | `passes` | 1..3 | quantas vezes a rede inteira roda por quadro (1 = normal) |
 | `movimento`, `usaConfianca` | true/false | movimento simulado por fluxo óptico; descartar o acúmulo onde ida e volta não conferem |
 | `estabilidade`, `rejeicao` | 1..16, 2..40 | quadros que a edição acumula; quão rápido mudança de cor derruba o acúmulo |
-| `ritmo`, `ritmoMax` | 0..4, 1..8 | 0 automático: a rede roda quando a previsão pelo movimento deixa de valer (no máximo `ritmoMax` quadros sem rodar); N = a cada N quadros |
+| `ritmo` | 1..4 | 1 = a rede recomeça assim que termina; N = no máximo uma vez a cada N quadros (libera GPU para o jogo) |
 | `reusoVit` | true/false | reuso adaptativo do ViT do runtime lmxxf (vale ao reabrir) |
 | `forca`, `modo`, `fpsMax`, `ocultaDeGravacoes` | | força da edição final, modo de exibição, teto de FPS, esconder de prints/OBS |
 
@@ -74,6 +79,9 @@ numa janela própria. Não há como garantir a política de cada jogo; quem deci
 `recursos\` ("NR" em fundo vermelho); `monta_runtime.ps1` monta `bin\runtime` com o runtime v3 (pesos exatos em FP16
 gravados como `.f16`: metade do tamanho, saída idêntica bit a bit; pesos do histórico extraídos do `nvngx_dlssnr` 310.8);
 `empacota.ps1` gera o zip de distribuição. `ferramentas\compara_ref.py` mede o overlay contra a saída real da NVIDIA.
+Gravações do jogo (Ctrl+Alt+G) podem ser reproduzidas com `--reproduz <pasta> [--atraso N]` (N = a resposta da rede
+entra N quadros depois, para medir o modo assíncrono); `ferramentas\compara_atraso.py` e `cintilacao.py` medem o custo
+do atraso e a cintilação.
 
 ## Créditos e licenças
 
