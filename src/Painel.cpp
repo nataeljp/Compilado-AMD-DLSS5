@@ -339,8 +339,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Model C, tom 0, ponte 'Curva do jogo' (SDR e HDR), luzes 0,5 antes da rede (limiar 0,4), forca 1.\n"
                               "Medido na Zorah (fotos alinhadas): luz da pele no sentido da NVIDIA (rosto +0,2 / maos +2,5 L*;\n"
-                              "NVIDIA +0,7 / +3,1) e o melhor placar do quadro inteiro. A pele fica mais perto com a rede em 2160p\n"
-                              "(textura de pele), mas custa ~4x.");
+                              "NVIDIA +0,7 / +3,1) e o melhor placar do quadro inteiro. A pele fica mais perto com a rede em 2160p.");
         if (mc)
             a.zeraHistorico = true;
 
@@ -388,10 +387,8 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             ImGui::SetTooltip("Branco de papel do jogo em HDR (0 = o branco SDR do Windows).");
 
         ImGui::SeparatorText("Execucao");
-        // custo medido da rede sozinha (RX 9070): 540p 4,8 ms | 720p 6,9 | 900p 10,8 | 1080p 15,4; no jogo soma ao quadro dele
         const int alturas[] = {540, 600, 720, 900, 1080, 1440, 2160};
-        const char* nomes[] = {"540p (~4,8 ms)", "600p (~5,9 ms)", "720p (~6,9 ms)", "900p (~10,8 ms)", "1080p (~15,4 ms)",
-                               "1440p", "2160p"};
+        const char* nomes[] = {"540p", "600p", "720p", "900p", "1080p", "1440p", "2160p"};
         int ia = 4;
         for (int i = 0; i < 7; ++i)
             if (alturas[i] == cfg.alturaRede)
