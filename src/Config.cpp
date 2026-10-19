@@ -80,6 +80,8 @@ void Config::Carrega(const std::wstring& arquivo)
     F("preLuz", preLuz);
     F("preSombra", preSombra);
     F("preLimiar", preLimiar);
+    F("preLimiarSombra", preLimiarSombra);
+    F("preCor", preCor);
     I("modo", modo);
     B("movimento", movimento);
     B("usaConfianca", usaConfianca);
@@ -123,6 +125,8 @@ void Config::Salva(const std::wstring& arquivo) const
     f << "  \"preLuz\": " << preLuz << ",\n";
     f << "  \"preSombra\": " << preSombra << ",\n";
     f << "  \"preLimiar\": " << preLimiar << ",\n";
+    f << "  \"preLimiarSombra\": " << preLimiarSombra << ",\n";
+    f << "  \"preCor\": " << preCor << ",\n";
     f << "  \"modo\": " << modo << ",\n";
     f << "  \"movimento\": " << b(movimento) << ",\n";
     f << "  \"usaConfianca\": " << b(usaConfianca) << ",\n";

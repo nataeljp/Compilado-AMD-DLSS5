@@ -88,6 +88,29 @@ float3 Proxy(float3 o, uint ponte)
     return saturate(o);
 }
 
+// luzes / sombras / cor antes da rede (a ideia do Shadow-Light-Scattering.fx, sem o corte): ganho pela luma de tela
+// acima/abaixo dos limiares e saturacao. Vai na entrada da rede e no resultado; o "original" fica intacto.
+float3 PreAjuste(float3 l, float3 tela, float luz, float sombra, float lim, float limS, float cor)
+{
+    if (luz != 0.0 || sombra != 0.0)
+    {
+        float L = dot(saturate(tela), float3(0.299, 0.587, 0.114));
+        float t = clamp(lim, 0.01, 0.99), ts = clamp(limS, 0.01, 0.99);
+        l *= (1.0 + luz * max(0.0, L - t)) * max(0.0, 1.0 - sombra * max(0.0, ts - L) / ts);
+    }
+    if (cor != 0.0)
+    {
+        float Y = Lum(l);
+        l = max(Y + (l - Y) * (1.0 + cor), 0.0);
+    }
+    return l;
+}
+// valor de exibicao (0..1) de um valor linear do overlay, para os limiares: a curva do jogo, o SoftKnee (HDR) ou direto
+float3 TelaDe(float3 l, bool hdrv, bool filmicav)
+{
+    return Srgb(filmicav ? Filmica(l) : (hdrv ? SoftKnee(l) : saturate(l)));
+}
+
 // composicao de referencia (NVIDIA / RenoDX): O original, P proxy, M resposta da rede (unidades lineares)
 float3 ComporReferencia(float3 O, float3 P, float3 M, float s, float cor, float guarda)
 {
@@ -124,7 +147,8 @@ float3 GradacaoModelo(float3 c, float kExp, float kCon, float kSat)
 // captura -> quadro inteiro linear (branco de papel = 1); quadro inteiro -> tamanho da rede: original e proxy
 inline const char* Prepara = R"(
 cbuffer C : register(b0) { uint fw; uint fh; uint dw; uint dh; uint hdr; float escala; uint ponte; float exposicao;
-                           float preLuz; float preSombra; float preLimiar; uint prePad; };
+                           float preLuz; float preSombra; float preLimiar; float preLimiarSombra; float preCor; uint prePad0;
+                           uint prePad1; uint prePad2; };
 Texture2D<float4> src : register(t0);
 RWTexture2D<float4> dst : register(u0);
 RWTexture2D<float4> dstProxy : register(u1);
@@ -136,17 +160,23 @@ SamplerState s : register(s0);
     float4 c = src.Load(int3(p, 0));
     // HDR: scRGB dividido pelo branco de papel; SDR: sRGB -> linear (ponte 3: e desfaz a curva do jogo, luz de cena)
     float3 l = hdr ? max(c.rgb, 0.0) / escala : Linear(saturate(c.rgb));
-    if (!hdr && ponte == 3) l = FilmicaInv(l);
-    // luzes e sombras antes da rede (a ideia do Shadow-Light-Scattering.fx: ganho pela luma de tela acima/abaixo do
-    // limiar), aplicado na luz e sem corte: com a ponte 3 o ombro da curva do jogo comprime o claro na saida
-    if (preLuz != 0.0 || preSombra != 0.0)
+    float folga = 1.0;
+    if (ponte == 3)
     {
-        float3 tela = hdr ? Srgb(SoftKnee(l)) : saturate(c.rgb);
-        float L = dot(tela, float3(0.299, 0.587, 0.114));
-        float t = clamp(preLimiar, 0.01, 0.99);
-        l *= (1.0 + preLuz * max(0.0, L - t)) * max(0.0, 1.0 - preSombra * max(0.0, t - L) / t);
+        if (hdr)
+        {
+            // HDR: o quadro vira uma tela SDR equivalente pelo SoftKnee (ombro ate o pico), e dela a luz de cena pela
+            // inversa da curva; a folga guarda o que passou do teto da inversa (realces acima de ~2,7x o branco),
+            // devolvida na saida para nao cortar o pico HDR
+            const float3 cena = FilmicaInv(SoftKnee(l));
+            folga = max(Lum(l), 1e-6) / max(Lum(SoftKneeInv(Filmica(cena))), 1e-6);
+            l = cena;
+        }
+        else
+            l = FilmicaInv(l);
     }
-    dst[p] = float4(l, 1.0);
+    // (luzes/sombras/cor antes da rede: no CSReduz e no resultado do CSCompoe; o quadro inteiro fica intacto)
+    dst[p] = float4(l, folga);
 }
 
 [numthreads(8, 8, 1)] void CSReduz(uint2 p : SV_DispatchThreadID)
@@ -163,6 +193,7 @@ SamplerState s : register(s0);
             a += src.SampleLevel(s, q / float2(fw, fh), 0);
         }
     float3 o = a.rgb / (n * n);
+    o = PreAjuste(o, TelaDe(o, hdr != 0, ponte == 3), preLuz, preSombra, preLimiar, preLimiarSombra, preCor);
     dst[p] = float4(o, 1.0);
     // exposicao: o ponto de operacao da rede (o proxy ve o quadro x exposicao; a composicao desfaz)
     dstProxy[p] = float4(Proxy(o * exposicao, ponte), 1.0);
@@ -173,7 +204,9 @@ SamplerState s : register(s0);
 // modo: 0 rede, 1 original, 2 comparacao (esquerda original | direita rede), 3 so a edicao (x4), 4 movimento
 inline const char* Compoe = R"(
 cbuffer C : register(b0) { uint fw; uint fh; uint dw; uint dh; float forca; uint modo; float divisao; uint usaEdicao;
-                           uint hdr; float escala; float kExp; float kCon; float kSat; uint grada; uint filmica; uint pad1; };
+                           uint hdr; float escala; float kExp; float kCon; float kSat; uint grada; uint filmica; uint pad1;
+                           float preLuz; float preSombra; float preLimiar; float preLimiarSombra; float preCor; uint pad2;
+                           uint pad3; uint pad4; };
 Texture2D<float4> inteiro : register(t0);
 Texture2D<float4> fed : register(t1);
 Texture2D<float4> edicao : register(t2);
@@ -208,13 +241,20 @@ float3 CatmullRom(Texture2D<float4> t, float2 uv, float2 tam)
 }
 
 // valor de saida: SDR em sRGB (UNORM); HDR em scRGB. A gradacao do modelo roda em valores de tela [0,1]:
-// no HDR, no dominio da ponte (SoftKnee + sRGB) e volta
-float3 Tela(float3 lin, bool grade)
+// no HDR, no dominio da ponte (SoftKnee + sRGB) e volta. folga: realces HDR acima do teto da curva (ponte 3)
+float3 Tela(float3 lin, bool grade, float folga)
 {
     if (!hdr)
     {
         float3 c = Srgb(filmica ? Filmica(lin) : lin);
         return grade ? GradacaoModelo(c, kExp, kCon, kSat) : c;
+    }
+    if (filmica)
+    {
+        // HDR com a curva do jogo: luz de cena -> tela SDR equivalente -> (gradacao) -> SoftKnee inverso -> scRGB
+        float3 d = Filmica(lin);
+        if (grade) d = Linear(GradacaoModelo(Srgb(d), kExp, kCon, kSat));
+        return SoftKneeInv(d) * folga * escala;
     }
     if (!grade) return max(lin, 0.0) * escala;
     float3 c = GradacaoModelo(Srgb(SoftKnee(lin)), kExp, kCon, kSat);
@@ -224,7 +264,8 @@ float3 Tela(float3 lin, bool grade)
 [numthreads(8, 8, 1)] void CSCompoe(uint2 p : SV_DispatchThreadID)
 {
     if (p.x >= fw || p.y >= fh) return;
-    float3 o = inteiro.Load(int3(p, 0)).rgb;
+    const float4 oi = inteiro.Load(int3(p, 0));
+    float3 o = oi.rgb;
     float3 e = 0;
     if (usaEdicao)
     {
@@ -233,9 +274,11 @@ float3 Tela(float3 lin, bool grade)
         else
             e = CatmullRom(edicao, (float2(p) + 0.5) / float2(fw, fh), float2(dw, dh));
     }
-    float3 r = o + forca * e;
+    // o resultado parte do quadro com o mesmo ajuste que a rede viu; o lado "original" fica intacto
+    float3 r = PreAjuste(o, TelaDe(o, hdr != 0, filmica != 0), preLuz, preSombra, preLimiar, preLimiarSombra, preCor) +
+               forca * e;
     bool orig = modo == 1 || (modo == 2 && (float)p.x < divisao * fw);
-    float3 c = orig ? Tela(o, false) : Tela(r, grada != 0);
+    float3 c = orig ? Tela(o, false, oi.a) : Tela(r, grada != 0, oi.a);
     float hs = hdr ? escala : 1.0;
     if (modo == 3) c = saturate(0.5 + 4.0 * e) * hs;
     if (modo == 4)

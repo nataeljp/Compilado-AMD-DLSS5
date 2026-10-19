@@ -6,6 +6,7 @@
 //           Ctrl+Alt+S  estilo 0 -> 1 -> 2
 //           Ctrl+Alt+Q  sai
 // Teste:    DLSS5Overlay.exe --alvo "titulo" --quadros N --grava saida.rgba
+#include <DirectXPackedVector.h>
 #include "Comum.h"
 #include "Captura.h"
 #include "Config.h"
@@ -104,9 +105,9 @@ struct App
         }
         const std::string prepara = std::string(hlsl::Comum) + hlsl::Prepara;
         const std::string compoe = std::string(hlsl::Comum) + hlsl::Compoe;
-        pInteiro.Cria(gpu.dev.Get(), prepara.c_str(), "CSInteiro", 1, 1, 12, "inteiro");
-        pReduz.Cria(gpu.dev.Get(), prepara.c_str(), "CSReduz", 1, 2, 12, "reduz");
-        pCompoe.Cria(gpu.dev.Get(), compoe.c_str(), "CSCompoe", 4, 1, 16, "compoe");
+        pInteiro.Cria(gpu.dev.Get(), prepara.c_str(), "CSInteiro", 1, 1, 16, "inteiro");
+        pReduz.Cria(gpu.dev.Get(), prepara.c_str(), "CSReduz", 1, 2, 16, "reduz");
+        pCompoe.Cria(gpu.dev.Get(), compoe.c_str(), "CSCompoe", 4, 1, 24, "compoe");
         fluxo.Cria(gpu.dev.Get());
         temporal.Cria(gpu.dev.Get());
         if (cfg.temporalRede > 0)
@@ -205,6 +206,8 @@ struct App
     // ---- modo imagem (comparacao com as fotos da NVIDIA): um arquivo no lugar da captura, sem overlay ----
     ComPtr<ID3D12Resource> imagem;
     UINT imgW = 0, imgH = 0;
+    DXGI_FORMAT imgFmt = DXGI_FORMAT_R8G8B8A8_UNORM;
+    float hdrSintetico = 0; // --hdr-sintetico <nits>: a foto vira scRGB (SoftKnee inverso x branco) para testar o caminho HDR
     bool CarregaImagem(const std::wstring& arq)
     {
         ComPtr<IWICImagingFactory> f;
@@ -223,6 +226,35 @@ struct App
         }
         std::vector<unsigned char> px(size_t(imgW) * imgH * 4);
         Ck(conv->CopyPixels(nullptr, imgW * 4, UINT(px.size()), px.data()), "CopyPixels");
+        UINT bpp = 4;
+        if (hdrSintetico > 0)
+        {
+            // HDR sintetico: linear * (o inverso do SoftKnee: o ombro vira folga acima do branco) * branco em scRGB
+            const float esc = hdrSintetico / 80.f;
+            std::vector<unsigned char> h(size_t(imgW) * imgH * 8);
+            auto lin = [](float c) { return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f); };
+            for (size_t i = 0; i < size_t(imgW) * imgH; ++i)
+            {
+                float c[3];
+                for (int k = 0; k < 3; ++k)
+                    c[k] = lin(px[i * 4 + k] / 255.f);
+                const float m = std::max(c[0], std::max(c[1], c[2]));
+                if (m > 0.75f)
+                {
+                    const float y = std::min(m, 0.99999f);
+                    const float inv = 0.75f - 0.25f * std::log(1.f - (y - 0.75f) / 0.25f);
+                    for (float& v : c)
+                        v *= inv / m;
+                }
+                uint16_t* d = reinterpret_cast<uint16_t*>(&h[i * 8]);
+                for (int k = 0; k < 3; ++k)
+                    d[k] = DirectX::PackedVector::XMConvertFloatToHalf(c[k] * esc);
+                d[3] = DirectX::PackedVector::XMConvertFloatToHalf(1.f);
+            }
+            px.swap(h);
+            bpp = 8;
+            imgFmt = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        }
         D3D12_HEAP_PROPERTIES hp{};
         hp.Type = D3D12_HEAP_TYPE_DEFAULT;
         D3D12_RESOURCE_DESC rd{};
@@ -231,7 +263,7 @@ struct App
         rd.Height = imgH;
         rd.DepthOrArraySize = 1;
         rd.MipLevels = 1;
-        rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        rd.Format = imgFmt;
         rd.SampleDesc.Count = 1;
         Ck(gpu.dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
                                             IID_PPV_ARGS(&imagem)),
@@ -255,7 +287,7 @@ struct App
         unsigned char* m = nullptr;
         up->Map(0, nullptr, (void**)&m);
         for (UINT y = 0; y < imgH; ++y)
-            memcpy(m + fp.Offset + size_t(y) * fp.Footprint.RowPitch, px.data() + size_t(y) * imgW * 4, size_t(imgW) * 4);
+            memcpy(m + fp.Offset + size_t(y) * fp.Footprint.RowPitch, px.data() + size_t(y) * imgW * bpp, size_t(imgW) * bpp);
         up->Unmap(0, nullptr);
         Ck(al[0]->Reset(), "reset");
         Ck(cl[0]->Reset(al[0].Get(), nullptr), "list");
@@ -268,9 +300,9 @@ struct App
         ID3D12CommandList* l[] = {cl[0].Get()};
         gpu.fila->ExecuteCommandLists(1, l);
         gpu.Espera();
-        hdr = false;
-        escalaSdr = 1.f;
-        Log("imagem", Fmt("imagem %ux%u: %s", imgW, imgH, Utf8(arq).c_str()));
+        hdr = hdrSintetico > 0;
+        escalaSdr = hdr ? hdrSintetico / 80.f : 1.f;
+        Log("imagem", Fmt("imagem %ux%u%s: %s", imgW, imgH, hdr ? " (HDR sintetico)" : "", Utf8(arq).c_str()));
         return true;
     }
 
@@ -334,7 +366,7 @@ struct App
         if (imagem)
         {
             q.tex = imagem.Get();
-            q.fmt = DXGI_FORMAT_R8G8B8A8_UNORM;
+            q.fmt = imgFmt;
             q.w = imgW;
             q.h = imgH;
             q.cercaValor = 0;
@@ -371,11 +403,11 @@ struct App
         // branco de papel: o do usuario em nits ou o branco SDR do Windows (HDR); ponte: auto = SDR direto, HDR SoftKnee
         float escK = cfg.brancoNits > 0.f ? cfg.brancoNits / 80.f : escalaSdr;
         escalaUsada = escK;
-        UINT ponte = cfg.ponte < 0 ? (hdr ? 1u : 0u) : (UINT)std::clamp(cfg.ponte, 0, 3);
-        if (ponte == 3 && hdr)
-            ponte = 1; // a curva do jogo (sanduiche) so no SDR por enquanto
+        const UINT ponte = cfg.ponte < 0 ? (hdr ? 1u : 0u) : (UINT)std::clamp(cfg.ponte, 0, 3);
         pontePassada = ponte;
-        UINT k[12] = {inteiro.w, inteiro.h, fed.w, fed.h, hdr ? 1u : 0u, 0, ponte, 0, 0, 0, 0, 0};
+        UINT k[16] = {inteiro.w, inteiro.h, fed.w, fed.h, hdr ? 1u : 0u, 0, ponte, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        memcpy(&k[11], &cfg.preLimiarSombra, 4);
+        memcpy(&k[12], &cfg.preCor, 4);
         memcpy(&k[8], &cfg.preLuz, 4);
         memcpy(&k[9], &cfg.preSombra, 4);
         memcpy(&k[10], &cfg.preLimiar, 4);
@@ -471,9 +503,12 @@ struct App
             UINT hdr;
             float escala, kExp, kCon, kSat;
             UINT grada, filmica, pad1;
+            float preLuz, preSombra, preLimiar, preLimiarSombra, preCor;
+            UINT pad2, pad3, pad4;
         } kc{inteiro.w,      inteiro.h,      fed.w, fed.h, edicao ? cfg.forca : 0.f, (UINT)cfg.modo, cfg.divisao,
              edicao ? 1u : 0u, hdr ? 1u : 0u, escalaUsada, kExp, kCon, kSat, grada ? 1u : 0u,
-             pontePassada == 3 ? 1u : 0u, 0};
+             pontePassada == 3 ? 1u : 0u, 0, cfg.preLuz, cfg.preSombra, cfg.preLimiar, cfg.preLimiarSombra, cfg.preCor,
+             0, 0, 0};
         pCompoe.Roda(c, desc, gpu.dev.Get(),
                      {{inteiro.r.Get(), inteiro.fmt},
                       {fed.r.Get(), fed.fmt},
@@ -675,6 +710,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             app.dumpPasta = argv[++i];
         else if (!wcscmp(argv[i], L"--runtime"))
             app.pastaRuntime = argv[++i];
+        else if (!wcscmp(argv[i], L"--hdr-sintetico"))
+            app.hdrSintetico = float(_wtof(argv[++i]));
         else if (!wcscmp(argv[i], L"--alterna"))
             app.alternaAltura = _wtoi(argv[++i]);
         else if (!wcscmp(argv[i], L"--pula"))

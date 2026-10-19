@@ -29,7 +29,9 @@ struct Config
     float brancoNits = 0.f; // branco de papel em nits (0 = o branco SDR do Windows)
     float preLuz = 0.f;     // antes da rede: ganho das luzes acima do limiar (ideia do Shadow-Light-Scattering.fx)
     float preSombra = 0.f;  // antes da rede: escurece (>0) ou levanta (<0) as sombras abaixo do limiar
-    float preLimiar = 0.5f; // limiar em luma de tela (0..1) entre sombra e luz
+    float preLimiar = 0.5f; // limiar em luma de tela (0..1) a partir do qual as luzes sobem
+    float preLimiarSombra = 0.2f; // abaixo dele as sombras descem (preSombra > 0) ou sobem (< 0)
+    float preCor = 0.f;     // antes da rede: saturacao (-0,5..1)
     int modo = 0;           // 0 rede, 1 original, 2 comparacao, 3 so a edicao, 4 movimento
     bool movimento = true;  // movimento simulado por fluxo optico
     bool usaConfianca = true; // descarta o historico onde o fluxo de ida e volta nao bate (oclusao)

@@ -321,11 +321,14 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         {
             // medido na Zorah (fotos on/off da NVIDIA): curva de tom, croma por faixa e detalhe (ferramentas/placar_nvidia.py)
             cfg.ngx = ParamsNgx{};
-            cfg.ngx.tomLocal = 0.25f;
+            cfg.ngx.modelo = 2;
+            cfg.ngx.tomLocal = 0.f;
             cfg.ponte = 3;
-            cfg.preLuz = 0.75f;
+            cfg.preLuz = 0.5f;
             cfg.preSombra = 0.f;
             cfg.preLimiar = 0.4f;
+            cfg.preLimiarSombra = 0.2f;
+            cfg.preCor = 0.f;
             cfg.forca = 1.f;
             cfg.temporal.composicao = 1;
             cfg.temporal.cor = 1.f;
@@ -334,8 +337,10 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             mc = true;
         }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Model A, tom 0,25, ponte 'Curva do jogo', luzes 0,75 antes da rede (limiar 0,4), forca 1.\n"
-                              "Na Zorah: curva de tom e cor iguais as da NVIDIA (o detalhe fino ainda e um pouco mais nitido).");
+            ImGui::SetTooltip("Model C, tom 0, ponte 'Curva do jogo' (SDR e HDR), luzes 0,5 antes da rede (limiar 0,4), forca 1.\n"
+                              "Medido na Zorah (fotos alinhadas): luz da pele no sentido da NVIDIA (rosto +0,2 / maos +2,5 L*;\n"
+                              "NVIDIA +0,7 / +3,1) e o melhor placar do quadro inteiro. A pele fica mais perto com a rede em 2160p\n"
+                              "(textura de pele), mas custa ~4x.");
         if (mc)
             a.zeraHistorico = true;
 
@@ -369,7 +374,12 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                           "Com a ponte 'Curva do jogo' o claro sobe sem estourar (o ombro da curva comprime na saida).");
         pre |= Deslizador("Sombras", &cfg.preSombra, -1.f, 1.f, "%.2f",
                           "Acima de 0 escurece as areas abaixo do limiar antes da rede; abaixo de 0 levanta.");
-        pre |= Deslizador("Limiar", &cfg.preLimiar, 0.05f, 0.95f, "%.2f", "Luma de tela que separa sombra e luz.");
+        pre |= Deslizador("Limiar das luzes", &cfg.preLimiar, 0.05f, 0.95f, "%.2f",
+                          "Luma de tela a partir da qual as luzes sobem.");
+        pre |= Deslizador("Limiar das sombras", &cfg.preLimiarSombra, 0.02f, 0.6f, "%.2f",
+                          "Luma de tela abaixo da qual as sombras descem (so o escuro, sem pegar os medios).");
+        pre |= Deslizador("Cor", &cfg.preCor, -0.5f, 1.f, "%.2f",
+                          "Saturacao antes da rede: a rede ve e devolve a cena mais (ou menos) colorida.");
         if (pre)
             a.zeraHistorico = true;
         ImGui::SliderFloat("Branco difuso (nits)", &cfg.brancoNits, 0.f, 400.f,
