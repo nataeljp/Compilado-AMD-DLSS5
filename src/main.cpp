@@ -166,13 +166,129 @@ struct App
         painel.Destroi();
         ov.Destroi();
         if (configArq.empty())
-            cfg.Salva(pasta + L"\\config.json");
+            cfg.Salva(perfilCarregado ? PerfilArq() : pasta + L"\\config.json");
+    }
+
+    // ---- perfis por jogo: bin\perfis\<exe>.json, carregado sozinho quando o overlay liga no mesmo exe ----
+    std::wstring exeAlvo;          // processo do jogo capturado
+    bool perfilCarregado = false;  // cfg veio do perfil do exe (e e nele que os ajustes sao gravados ao sair)
+    static std::wstring NomeExe(HWND h)
+    {
+        DWORD pid = 0;
+        GetWindowThreadProcessId(h, &pid);
+        std::wstring r;
+        if (HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid))
+        {
+            wchar_t b[MAX_PATH];
+            DWORD n = MAX_PATH;
+            if (QueryFullProcessImageNameW(p, 0, b, &n))
+            {
+                r.assign(b, n);
+                r = r.substr(r.find_last_of(L"\\/") + 1);
+            }
+            CloseHandle(p);
+        }
+        return r;
+    }
+    std::wstring PerfilArq() const
+    {
+        std::wstring n = exeAlvo;
+        const auto pt = n.find_last_of(L'.');
+        if (pt != std::wstring::npos)
+            n.resize(pt);
+        return pasta + L"\\perfis\\" + n + L".json";
+    }
+    bool PerfilExiste() const { return !exeAlvo.empty() && GetFileAttributesW(PerfilArq().c_str()) != INVALID_FILE_ATTRIBUTES; }
+    void AplicaConfig(const Config& c)
+    {
+        cfg = c;
+        zeraHistorico = true;
+        temporal.Reinicia();
+    }
+    void CarregaPerfil(HWND h)
+    {
+        exeAlvo = NomeExe(h);
+        if (!configArq.empty()) // testes com --config: o config do teste manda
+            return;
+        if (PerfilExiste())
+        {
+            Config c;
+            c.Carrega(PerfilArq());
+            AplicaConfig(c);
+            perfilCarregado = true;
+            Log("perfil", "carregado: " + Utf8(PerfilArq()));
+        }
+        else if (perfilCarregado)
+        {
+            // o jogo anterior tinha perfil e este nao: volta ao padrao (config.json), sem herdar o do outro jogo
+            Config c;
+            c.Carrega(pasta + L"\\config.json");
+            AplicaConfig(c);
+            perfilCarregado = false;
+            Log("perfil", "sem perfil para " + Utf8(exeAlvo) + ": padrao (config.json)");
+        }
+    }
+
+    // ---- como a Game Bar: o overlay e o painel so com o jogo (ou o proprio painel) em foco ----
+    bool pausado = false;
+    bool JogoEmFoco() const
+    {
+        HWND alvo = cap.Alvo();
+        if (!alvo || !IsWindow(alvo) || IsIconic(alvo) || !IsWindowVisible(alvo))
+            return false;
+        HWND fg = GetForegroundWindow();
+        if (fg == alvo || fg == painel.Janela() || fg == ov.Janela())
+            return true;
+        if (!fg)
+            return false;
+        DWORD pa = 0, pf = 0;
+        GetWindowThreadProcessId(alvo, &pa);
+        GetWindowThreadProcessId(fg, &pf);
+        return pa == pf; // outra janela do proprio jogo
+    }
+    // fora de foco (Alt+Tab, minimizado): o overlay some e nada e processado (a GPU fica para o que estiver na frente)
+    void Pausa()
+    {
+        if (pausado)
+            return;
+        pausado = true;
+        ov.Mostra(false);
+    }
+    // de volta: o que estava em voo e o historico sao de antes da pausa (o movimento parou de ser medido)
+    void Retoma()
+    {
+        if (!pausado)
+            return;
+        pausado = false;
+        fluxo.Reinicia();
+        temporal.Reinicia();
+        quadroCorte = quadros;
+        zeraHistorico = true;
+    }
+    // o overlay acompanha a janela mesmo sem quadro novo (jogo parado, arrastando a janela); redimensionando (o quadro
+    // ainda e do tamanho velho) ele some ate chegar o quadro do tamanho novo
+    void SegueJanela()
+    {
+        RECT r{};
+        if (imagem || !inteiro.w || !Captura::RetanguloCliente(cap.Alvo(), r))
+            return;
+        const LONG cw = r.right - r.left, ch = r.bottom - r.top;
+        if (std::abs(cw - LONG(inteiro.w)) > 2 || std::abs(ch - LONG(inteiro.h)) > 2)
+        {
+            ov.Mostra(false);
+            return;
+        }
+        r.right = r.left + LONG(inteiro.w);
+        r.bottom = r.top + LONG(inteiro.h);
+        ov.Posiciona(r, hdr);
     }
 
     void Liga(HWND h)
     {
         if (!h || h == ov.Janela() || h == painel.Janela())
             return;
+        CarregaPerfil(h);
+        painel.Ancora(h);
         float esc = 1.f;
         hdr = MonitorHdr(gpu, h, esc);
         escalaSdr = esc;
@@ -818,7 +934,28 @@ struct App
             e.fps = fps;
             e.fracaoRede = fracaoRede;
         }
+        e.exe = Utf8(exeAlvo);
+        e.perfilExiste = PerfilExiste();
+        e.perfilCarregado = perfilCarregado;
         const AcoesPainel a = painel.Quadro(cfg, e);
+        if (a.salvarPerfil && !exeAlvo.empty())
+        {
+            CreateDirectoryW((pasta + L"\\perfis").c_str(), nullptr);
+            cfg.Salva(PerfilArq());
+            perfilCarregado = true;
+            Log("perfil", "salvo: " + Utf8(PerfilArq()));
+        }
+        if (a.apagarPerfil && PerfilExiste())
+        {
+            DeleteFileW(PerfilArq().c_str());
+            perfilCarregado = false;
+            Log("perfil", "apagado: " + Utf8(PerfilArq()));
+        }
+        if (a.redefinir)
+        {
+            AplicaConfig(Config{});
+            Log("app", "ajustes redefinidos para os padroes");
+        }
         if (a.ligar)
             Liga(a.ligar);
         if (a.desligar)
@@ -1274,9 +1411,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         }
         if (!rodando)
             break;
+        // Game Bar: com o jogo fora de foco (Alt+Tab, minimizado, outra janela na frente) overlay e painel somem e
+        // nada e processado; o "sempre no topo" so e reafirmado com o jogo em foco (antes, a cada 250 ms, o overlay
+        // voltava por cima de qualquer janela e parecia que o Alt+Tab e o minimizar nao funcionavam)
+        const bool foco = !app.cap.Ativa() || app.quadrosTeste > 0 || app.JogoEmFoco();
+        app.painel.DefineAutoOculto(app.cap.Ativa() && !foco);
         {
             static auto ultimaOrdem = clk::now();
-            if (app.cap.Ativa() && clk::now() - ultimaOrdem >= std::chrono::milliseconds(250))
+            if (app.cap.Ativa() && foco && clk::now() - ultimaOrdem >= std::chrono::milliseconds(250))
             {
                 ultimaOrdem = clk::now();
                 app.ov.Ordena(app.painel.Janela());
@@ -1303,6 +1445,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             MsgWaitForMultipleObjects(0, nullptr, FALSE, 16, QS_ALLINPUT);
             continue;
         }
+        if (!foco)
+        {
+            app.Pausa();
+            MsgWaitForMultipleObjects(0, nullptr, FALSE, 16, QS_ALLINPUT);
+            continue;
+        }
+        app.Retoma();
+        app.SegueJanela();
         HANDLE ev = app.cap.EventoQuadro();
         MsgWaitForMultipleObjects(1, &ev, FALSE, 16, QS_ALLINPUT);
         if (app.cfg.fpsMax > 0)

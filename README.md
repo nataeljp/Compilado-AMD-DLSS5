@@ -10,9 +10,13 @@ Para rodar basta a pasta **`bin`**: `DLSS5Overlay.exe` e `runtime\` (runtime HIP
 `config.json`, `painel.ini` e `overlay.jsonl` (log) são criados ao lado do exe. O resto do projeto é fonte e ferramentas.
 
 1. Rode o jogo em **janela** ou **tela cheia sem borda** (tela cheia exclusiva não pode ter overlay por cima).
-2. Abra `DLSS5Overlay.exe`. No painel, escolha a janela do jogo e clique em **Ligar**, ou deixe o jogo em foco e aperte
-   **Ctrl+Alt+D**.
-3. Ajuste ao vivo no painel; **Salvar configuração** grava `config.json`.
+2. Abra `DLSS5Overlay.exe`. O painel (no estilo do *DLSS 5 Developer Controls* da NVIDIA) fica encostado na direita da
+   tela. Deixe o jogo em foco e aperte **Ctrl+Alt+D**, ou escolha a janela em **Jogo** e clique em **Ligar**.
+3. Como a Game Bar: overlay e painel só aparecem com o jogo em foco. Alt+Tab, minimizar ou outra janela na frente os
+   escondem e pausam a rede; ao voltar ao jogo eles voltam. O overlay acompanha a janela ao mover e redimensionar.
+4. **Perfil por jogo**: *Salvar perfil* grava os ajustes em `perfis\<exe>.json`, que carrega sozinho quando o overlay
+   liga no mesmo exe. *Redefinir* volta aos padrões; *Salvar como padrão* grava `config.json` (jogos sem perfil). Ao
+   sair, os ajustes vão para o perfil ativo (ou para `config.json`).
 
 | Atalho | Ação |
 |---|---|
