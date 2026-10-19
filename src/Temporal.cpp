@@ -218,7 +218,9 @@ float3 Fatia(float2 pos, float z01, float3 cp)
         float d = DifCor(fed.Load(int3(p, 0)).rgb, fedAnt.SampleLevel(s, uvAnt, 0).rgb);
         foto = saturate(1.0 - d * rejeicao);
         n *= foto;
-        if (temConf) n *= conf.Load(int3(p, 0));
+        // ida e volta so pesa onde a cor tambem diverge: onde a cor do quadro anterior reprojetado bate, o historico
+        // vale (em area lisa o vetor e arbitrario, nao confere, e zerar ali so trazia cintilacao: 0,129 -> 0,102 medido)
+        if (temConf) n *= lerp(conf.Load(int3(p, 0)), 1.0, foto);
     }
     float3 eg = 0;
     if (temGrade)

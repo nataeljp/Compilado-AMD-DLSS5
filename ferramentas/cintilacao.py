@@ -3,15 +3,17 @@
 #   granulado = a parte pixel a pixel dessa mudanca (tira a media 3x3): o "fog com poucas amostras"
 #   forca    = RMS da propria edicao (uma variante que so apaga o efeito tambem "pisca" pouco)
 # Mede so nos quadros com movimento, separando os que tiveram rede dos reaproveitados.
-# uso: python cintilacao.py <pasta> [<pasta> ...]
+# uso: python cintilacao.py [--fluxo <pasta>] <pasta> [<pasta> ...]
+#   --fluxo: compensa o movimento com o fluxo gravado de OUTRA pasta (comparar versoes do overlay com a mesma regua)
 import json, sys
 from pathlib import Path
 import cv2
 import numpy as np
 
 
-def mede(pasta):
+def mede(pasta, fluxo=None):
     pasta = Path(pasta)
+    fluxo = Path(fluxo) if fluxo else pasta
     l = [json.loads(x) for x in (pasta / 'meta.jsonl').read_text().splitlines() if x.strip()]
     cab, q = l[0], l[1:]
     W, H = cab['rede_w'], cab['rede_h']
@@ -23,7 +25,7 @@ def mede(pasta):
     for i in range(len(q)):
         e = ld(i, 'edicao', 4)[..., :3]
         if ant is not None and q[i]['mov']:
-            v = ld(i, 'mov', 2)
+            v = np.fromfile(fluxo / f'{i:04d}_mov.raw', np.float16).reshape(H, W, 2).astype(np.float32)
             rep = cv2.remap(ant, gx + v[..., 0], gy + v[..., 1], cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
             d = (e - rep)[::s, ::s]
             viz = cv2.blur(d, (3, 3))
@@ -37,5 +39,9 @@ def mede(pasta):
             for k, v in res.items()}
 
 
-for p in sys.argv[1:]:
-    print(Path(p).name, json.dumps(mede(p), ensure_ascii=False), flush=True)
+args = sys.argv[1:]
+fl = None
+if args[:1] == ['--fluxo']:
+    fl, args = args[1], args[2:]
+for p in args:
+    print(Path(p).name, json.dumps(mede(p, fl), ensure_ascii=False), flush=True)

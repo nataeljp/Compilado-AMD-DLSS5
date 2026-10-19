@@ -13,6 +13,16 @@ struct K
     float lambda;
     UINT pad;
 };
+struct KBusca
+{
+    UINT lw, lh, gw, gh;
+    int raio;
+    UINT temGrosso;
+    float lambda;
+    UINT janela, usaGlobal;
+    float escalaGlobal, meiaGlobal;
+    UINT pad;
+};
 const D3D12_RESOURCE_STATES SRV =
     D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 } // namespace
@@ -21,11 +31,14 @@ void Fluxo::Cria(ID3D12Device* d)
 {
     pLuma.Cria(d, hlsl::Fluxo, "CSLuma", 1, 1, 8, "fluxo luma");
     pReduzLuma.Cria(d, hlsl::ReduzLuma, "CSReduzLuma", 1, 1, 8, "fluxo reduz");
-    pBusca.Cria(d, hlsl::Busca, "CSBusca", 3, 1, 8, "fluxo busca");
+    pBusca.Cria(d, hlsl::Busca, "CSBusca", 4, 1, 12, "fluxo busca");
+    pGlobal.Cria(d, hlsl::Global, "CSGlobal", 1, 1, 8, "fluxo global");
     pMediana.Cria(d, hlsl::Mediana, "CSMediana", 1, 1, 8, "fluxo mediana");
     pAmplia.Cria(d, hlsl::Amplia, "CSAmplia", 1, 1, 8, "fluxo amplia");
     pConfianca.Cria(d, hlsl::Confianca, "CSConfianca", 2, 1, 8, "fluxo confianca");
     pEstat.Cria(d, hlsl::Estatisticas, "CSEstatisticas", 4, 1, 8, "fluxo estatisticas");
+    pGradiente.Cria(d, hlsl::Gradiente, "CSGradiente", 1, 1, 8, "fluxo gradiente");
+    pRefina.Cria(d, hlsl::Refina, "CSRefina", 4, 1, 8, "fluxo refina");
     auto buf = [&](D3D12_HEAP_TYPE t, D3D12_RESOURCE_STATES e, D3D12_RESOURCE_FLAGS f, ComPtr<ID3D12Resource>& r) {
         D3D12_HEAP_PROPERTIES hp{};
         hp.Type = t;
@@ -113,7 +126,18 @@ void Fluxo::Garante(ID3D12Device* d, UINT w_, UINT h_)
         tmpVolta[n].Cria(d, nw, nh, DXGI_FORMAT_R16G16_FLOAT, L"fluxo mediana volta");
     }
     rascunho.Cria(d, 1, 1, DXGI_FORMAT_R16G16_FLOAT, L"fluxo rascunho");
+    modeloIda.Cria(d, 2, 1, DXGI_FORMAT_R32G32B32A32_FLOAT, L"fluxo modelo global ida");
+    modeloVolta.Cria(d, 2, 1, DXGI_FORMAT_R32G32B32A32_FLOAT, L"fluxo modelo global volta");
+    nivelGlobal = 0;
+    while (nivelGlobal + 1 < niveis && luma[0][nivelGlobal].w > 320)
+        ++nivelGlobal;
     mov.Cria(d, w, h, DXGI_FORMAT_R16G16_FLOAT, L"movimento");
+    movBruto.Cria(d, w, h, DXGI_FORMAT_R16G16_FLOAT, L"movimento da busca");
+    for (int q = 0; q < 2; ++q)
+    {
+        lumaCheia[q].Cria(d, w, h, DXGI_FORMAT_R16_FLOAT, L"fluxo luma cheia");
+        gradCheia[q].Cria(d, w, h, DXGI_FORMAT_R16G16_FLOAT, L"fluxo gradiente");
+    }
     movVolta.Cria(d, w, h, DXGI_FORMAT_R16G16_FLOAT, L"movimento de volta");
     conf.Cria(d, w, h, DXGI_FORMAT_R16_FLOAT, L"confianca do movimento");
     temAnterior = false;
@@ -122,7 +146,7 @@ void Fluxo::Garante(ID3D12Device* d, UINT w_, UINT h_)
 }
 
 void Fluxo::Busca(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, UINT de, UINT para, Tex* campos,
-                  Tex* tmps, Tex& saida)
+                  Tex* tmps, Tex& saida, Tex& modelo)
 {
     // do grosso ao fino: busca (prevista pelo nivel de baixo) + mediana vetorial em cada nivel
     for (int n = int(niveis) - 1; n >= 0; --n)
@@ -135,15 +159,18 @@ void Fluxo::Busca(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device*
         Tex& grosso = temGrosso ? campos[n + 1] : campos[n];
         if (temGrosso)
             grosso.Para(c, SRV);
-        K k{la.w, la.h, temGrosso ? grosso.w : 1u, temGrosso ? grosso.h : 1u, n == int(niveis) - 1 ? 4 : 1,
-            temGrosso ? 1u : 0u, 0.02f, 0};
+        const bool usaGlobal = n < int(nivelGlobal);
+        KBusca k{la.w, la.h, temGrosso ? grosso.w : 1u, temGrosso ? grosso.h : 1u, n == int(niveis) - 1 ? 4 : 1,
+                 temGrosso ? 1u : 0u, 0.02f, n == 0 ? 0u : 1u, usaGlobal ? 1u : 0u,
+                 float(la.w) / float(luma[0][nivelGlobal].w), 0.5f * float(luma[0][nivelGlobal].w), 0};
+        modelo.Para(c, SRV);
         // no nivel mais grosso nao ha previsao; o SRV e o UAV do mesmo recurso nao podem coexistir: usa o rascunho
         ID3D12Resource* srvGrosso = temGrosso ? grosso.r.Get() : rascunho.r.Get();
         if (!temGrosso)
             rascunho.Para(c, SRV);
         pBusca.Roda(c, desc, d,
                     {{la.r.Get(), DXGI_FORMAT_R16_FLOAT}, {lp.r.Get(), DXGI_FORMAT_R16_FLOAT},
-                     {srvGrosso, DXGI_FORMAT_R16G16_FLOAT}},
+                     {srvGrosso, DXGI_FORMAT_R16G16_FLOAT}, {modelo.r.Get(), modelo.fmt}},
                     {{sai.r.Get(), sai.fmt}}, &k, (la.w + 7) / 8, (la.h + 7) / 8);
         sai.Para(c, SRV);
         Tex& tmp = tmps[n];
@@ -154,12 +181,38 @@ void Fluxo::Busca(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device*
         sai.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
         c->CopyResource(sai.r.Get(), tmp.r.Get());
         sai.Para(c, SRV);
+        if (n == int(nivelGlobal) && nivelGlobal > 0)
+        {
+            // modelo global a partir deste nivel, para os niveis mais finos
+            modelo.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            K kg{sai.w, sai.h, 0, 0, 0, 0, 0, 0};
+            pGlobal.Roda(c, desc, d, {{sai.r.Get(), DXGI_FORMAT_R16G16_FLOAT}}, {{modelo.r.Get(), modelo.fmt}}, &kg, 1, 1);
+            modelo.Para(c, SRV);
+        }
     }
     // nivel 0 -> tamanho da rede
     saida.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     K k{w, h, campos[0].w, campos[0].h, 0, 0, 0, 0};
     pAmplia.Roda(c, desc, d, {{campos[0].r.Get(), DXGI_FORMAT_R16G16_FLOAT}}, {{saida.r.Get(), saida.fmt}}, &k,
                  (w + 7) / 8, (h + 7) / 8);
+    saida.Para(c, SRV);
+}
+
+void Fluxo::Refina(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, UINT de, UINT para, Tex& bruto,
+                   Tex& saida)
+{
+    lumaCheia[de].Para(c, SRV);
+    gradCheia[de].Para(c, SRV);
+    lumaCheia[para].Para(c, SRV);
+    bruto.Para(c, SRV);
+    saida.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    K k{w, h, 0, 0, 0, 0, 0, 0};
+    pRefina.Roda(c, desc, d,
+                 {{lumaCheia[de].r.Get(), DXGI_FORMAT_R16_FLOAT},
+                  {gradCheia[de].r.Get(), DXGI_FORMAT_R16G16_FLOAT},
+                  {lumaCheia[para].r.Get(), DXGI_FORMAT_R16_FLOAT},
+                  {bruto.r.Get(), DXGI_FORMAT_R16G16_FLOAT}},
+                 {{saida.r.Get(), saida.fmt}}, &k, (w + 7) / 8, (h + 7) / 8);
     saida.Para(c, SRV);
 }
 
@@ -175,6 +228,19 @@ bool Fluxo::Calcula(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Devic
         pLuma.Roda(c, desc, d, {{cor, fmtCor}}, {{t.r.Get(), t.fmt}}, &k, (t.w + 7) / 8, (t.h + 7) / 8);
         t.Para(c, SRV);
     }
+    {
+        // luminancia e gradiente em resolucao cheia (modelo do refinamento)
+        auto& t = lumaCheia[a];
+        t.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        K k{w, h, w, h, 0, 0, 0, 0};
+        pLuma.Roda(c, desc, d, {{cor, fmtCor}}, {{t.r.Get(), t.fmt}}, &k, (w + 7) / 8, (h + 7) / 8);
+        t.Para(c, SRV);
+        auto& g = gradCheia[a];
+        g.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        pGradiente.Roda(c, desc, d, {{t.r.Get(), DXGI_FORMAT_R16_FLOAT}}, {{g.r.Get(), g.fmt}}, &k, (w + 7) / 8,
+                        (h + 7) / 8);
+        g.Para(c, SRV);
+    }
     for (UINT n = 1; n < niveis; ++n)
     {
         auto& t = luma[a][n];
@@ -189,8 +255,11 @@ bool Fluxo::Calcula(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Devic
     atual ^= 1;
     if (!tinha)
         return false;
-    Busca(c, desc, d, a, p, campoIda, tmpIda, mov);        // atual -> anterior
-    Busca(c, desc, d, p, a, campoVolta, tmpVolta, movVolta); // anterior -> atual
+    Busca(c, desc, d, a, p, campoIda, tmpIda, movBruto, modeloIda);         // atual -> anterior
+    Busca(c, desc, d, p, a, campoVolta, tmpVolta, movVolta, modeloVolta);   // anterior -> atual
+    // so a ida e refinada: a volta serve a confianca, que so pesa onde a cor diverge (refinar as duas: mesma
+    // qualidade medida, +1 ms a 1440p)
+    Refina(c, desc, d, a, p, movBruto, mov);
     // confianca: ida + volta(no ponto de chegada) ~ 0
     conf.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     K k{w, h, 0, 0, 0, 0, 0, 0};

@@ -1099,7 +1099,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
     catch (const std::exception& e)
     {
         Log("erro", e.what());
-        MessageBoxA(nullptr, e.what(), "DLSS5 Overlay", MB_ICONERROR);
+        // modos de teste (imagem, reproducao, --quadros): so o log e o codigo de saida, nunca uma janela modal que
+        // prende o processo e aparece na tela de quem esta usando o PC
+        if (imagemArq.empty() && app.pastaReproducao.empty() && app.quadrosTeste == 0)
+            MessageBoxA(nullptr, e.what(), "DLSS5 Overlay", MB_ICONERROR);
         return 1;
     }
     // reproducao: os quadros gravados pelo pipeline inteiro, gravando a saida de cada um (bin\gravacoes\<data_hora>)

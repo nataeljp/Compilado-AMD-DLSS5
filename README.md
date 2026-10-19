@@ -30,8 +30,11 @@ Requisitos: placa AMD RDNA 4 (RX 9070 / 9060) e driver AMD com `amdhip64_7.dll` 
 
 1. **Captura** (Windows Graphics Capture) da área cliente da janela; em monitor com HDR, captura em FP16 scRGB.
 2. **Entradas simuladas sem buffer do jogo**: a rede recebe a cor; os vetores de movimento saem de um fluxo óptico
-   próprio entre os quadros capturados (pirâmide de luminância, busca do grosso ao fino, sub-pixel, mediana vetorial),
-   no espírito do iMMERSE Launchpad (MartysMods) — implementação própria.
+   próprio entre os quadros capturados (pirâmide de luminância, busca do grosso ao fino, mediana vetorial), no espírito
+   do iMMERSE Launchpad (MartysMods) — implementação própria. Duas técnicas comprovadas em celular dão a precisão que
+   segura o acúmulo em movimento: **refinamento de Lucas-Kanade** em resolução cheia (o núcleo do DIS/KLT) e um
+   **candidato de movimento global** (afim robusto, como na estabilização de vídeo), que desfaz o casamento errado em
+   textura repetitiva. Medido contra movimento exato: cintilação da edição −63% (0,196 → 0,073; ideal 0,063).
 3. **Rede DLSS 5** (runtime HIP do lmxxf) no tamanho escolhido (720p a 2160p), numa **fila própria da GPU**: o quadro
    capturado vai para a tela na hora, sem esperar a rede (sem atraso de entrada, no ritmo do jogo); a resposta entra
    quando fica pronta, trazida pelo movimento acumulado desde o quadro que a rede viu.
@@ -81,7 +84,8 @@ gravados como `.f16`: metade do tamanho, saída idêntica bit a bit; pesos do hi
 `empacota.ps1` gera o zip de distribuição. `ferramentas\compara_ref.py` mede o overlay contra a saída real da NVIDIA.
 Gravações do jogo (Ctrl+Alt+G) podem ser reproduzidas com `--reproduz <pasta> [--atraso N]` (N = a resposta da rede
 entra N quadros depois, para medir o modo assíncrono); `ferramentas\compara_atraso.py` e `cintilacao.py` medem o custo
-do atraso e a cintilação.
+do atraso e a cintilação. `ferramentas\gera_sintetico.py` gera uma sequência com movimento exato conhecido e
+`avalia_sintetico.py` mede erro e cintilação contra a referência sem ruído (a média das respostas alinhadas).
 
 ## Créditos e licenças
 
