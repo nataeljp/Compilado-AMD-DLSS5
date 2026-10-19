@@ -310,14 +310,27 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         ImGui::Checkbox("Gradacao do modelo (B/C)", &cfg.ngx.gradacao);
         if (ImGui::Button("Padrao NVIDIA"))
         {
+            // medido contra a saida REAL da NVIDIA (RTX 5090, mesma entrada; ferramentas/compara_ref.py):
+            // 45,8 / 45,3 / 47,4 dB em 1080p / 1440p / 4K, edicao com correlacao 0,99
             cfg.ngx = ParamsNgx{};
             cfg.temporal.composicao = 1;
             cfg.temporal.cor = 1.f;
-            cfg.temporal.guarda = 2.f;
+            cfg.temporal.guarda = 16.f;
+            cfg.temporal.exposicao = 1.f;
+            cfg.forca = 1.f;
+            cfg.ponte = -1;
+            cfg.preLuz = cfg.preSombra = cfg.preCor = 0.f;
+            cfg.alturaRede = 2160; // a rede na resolucao da janela (abaixo da nativa e a maior perda: 1080 num 4K = 32,7 dB)
+            cfg.rede.redeCompleta = true;
+            cfg.rede.passes = 1;
             mc = true;
         }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Os padroes da NVIDIA (Model A, tons e estruturas em 1, sem protecao de luz, sem ajustes antes da\n"
+                              "rede, rede na resolucao da janela). Medido contra a saida real da NVIDIA para a mesma imagem:\n"
+                              "45,8 dB em 1080p e 47,4 dB em 4K (sem rede: 26-29 dB).");
         ImGui::SameLine();
-        if (ImGui::Button("Mais perto da foto NVIDIA (medido)"))
+        if (ImGui::Button("Visual da foto Zorah (jogo)"))
         {
             // medido na Zorah (fotos on/off da NVIDIA): curva de tom, croma por faixa e detalhe (ferramentas/placar_nvidia.py)
             cfg.ngx = ParamsNgx{};
@@ -337,9 +350,9 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             mc = true;
         }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Model C, tom 0, ponte 'Curva do jogo' (SDR e HDR), luzes 0,5 antes da rede (limiar 0,4), forca 1.\n"
-                              "Medido na Zorah (fotos alinhadas): luz da pele no sentido da NVIDIA (rosto +0,2 / maos +2,5 L*;\n"
-                              "NVIDIA +0,7 / +3,1) e o melhor placar do quadro inteiro. A pele fica mais perto com a rede em 2160p.");
+            ImGui::SetTooltip("Model C, tom 0, ponte 'Curva do jogo', luzes 0,5 antes da rede: imita a foto Zorah do jogo (o DLSS 5\n"
+                              "dentro do jogo, antes do tonemap). Se afasta do que a rede da NVIDIA faz numa imagem capturada\n"
+                              "(24 dB contra a saida real da NVIDIA; o 'Padrao NVIDIA' da 45-47 dB).");
         if (mc)
             a.zeraHistorico = true;
 
@@ -349,8 +362,9 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         ImGui::BeginDisabled(cfg.temporal.composicao == 0);
         Deslizador("Cor", &cfg.temporal.cor, 0.f, 1.f, "%.2f",
                    "0 = cores do jogo na luz da rede, 1 = cores da rede (padrao).");
-        Deslizador("Protecao de luz", &cfg.temporal.guarda, 1.f, 8.f, "%.2fx",
-                   "A luz de cada ponto muda no maximo esse fator, para cima e para baixo (padrao 2,0).");
+        Deslizador("Protecao de luz", &cfg.temporal.guarda, 1.f, 16.f, "%.2fx",
+                   "A luz de cada ponto muda no maximo esse fator, para cima e para baixo. 16 = desligada (padrao):\n"
+                   "medido contra a saida real da NVIDIA, 2,0 afastava 1,5-2 dB.");
         ImGui::EndDisabled();
 
         ImGui::SeparatorText("Ponte HDR -> rede");

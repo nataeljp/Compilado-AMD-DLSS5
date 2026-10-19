@@ -15,7 +15,8 @@ struct ParamsTemporal
     int composicao = 1;       // 0 crua (resposta - proxy), 1 referencia NVIDIA/RenoDX
     float intensidade = 1.f;  // DLSSNR.Intensity (vem dos parametros NGX)
     float cor = 1.f;          // mistura de cor da composicao (0 = cores do quadro na luz da rede, 1 = cores da rede)
-    float guarda = 2.f;       // protecao bilateral: a luz muda no maximo esse fator
+    float guarda = 16.f;      // protecao bilateral: a luz muda no maximo esse fator (16 = desligada; medido contra a
+                              // saida real da NVIDIA, 2,0 custava 1,5-2 dB)
     float exposicao = 1.f;    // ganho do quadro antes da rede (ponto de operacao); desfeito na composicao
 };
 
