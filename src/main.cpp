@@ -228,6 +228,93 @@ struct App
     ComPtr<ID3D12Resource> imagem;
     UINT imgW = 0, imgH = 0;
     DXGI_FORMAT imgFmt = DXGI_FORMAT_R8G8B8A8_UNORM;
+    // ---- reproducao (--reproduz pasta): os quadros gravados (Ctrl+Alt+G) entram como entrada, um por quadro ----
+    bool reproducao = false;
+    std::wstring pastaReproducao;
+    int quadrosReproducao = 0;
+    ComPtr<ID3D12Resource> uploadReproducao;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fpReproducao{};
+    bool AbreReproducao(const std::wstring& p)
+    {
+        FILE* f = nullptr;
+        _wfopen_s(&f, (p + L"\\meta.jsonl").c_str(), L"r");
+        if (!f)
+            return false;
+        char linha[1024];
+        std::string cab = fgets(linha, sizeof linha, f) ? linha : "";
+        int n = 0;
+        while (fgets(linha, sizeof linha, f))
+            ++n;
+        fclose(f);
+        auto num = [&](const char* chave) {
+            const auto i = cab.find(chave);
+            return i == std::string::npos ? 0.0 : std::atof(cab.c_str() + i + strlen(chave));
+        };
+        imgW = UINT(num("\"rede_w\":"));
+        imgH = UINT(num("\"rede_h\":"));
+        if (!imgW || !imgH || !n)
+            return false;
+        hdr = num("\"hdr\":") > 0;
+        escalaSdr = float(num("\"escala\":"));
+        quadrosReproducao = n;
+        pastaReproducao = p;
+        reproducao = true;
+        imgFmt = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        D3D12_HEAP_PROPERTIES hp{};
+        hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+        D3D12_RESOURCE_DESC rd{};
+        rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        rd.Width = imgW;
+        rd.Height = imgH;
+        rd.DepthOrArraySize = rd.MipLevels = 1;
+        rd.Format = imgFmt;
+        rd.SampleDesc.Count = 1;
+        Ck(gpu.dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COMMON, nullptr,
+                                            IID_PPV_ARGS(&imagem)),
+           "textura(reproducao)");
+        UINT64 total = 0;
+        gpu.dev->GetCopyableFootprints(&rd, 0, 1, 0, &fpReproducao, nullptr, nullptr, &total);
+        hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+        D3D12_RESOURCE_DESC bd{};
+        bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        bd.Width = total;
+        bd.Height = bd.DepthOrArraySize = bd.MipLevels = 1;
+        bd.SampleDesc.Count = 1;
+        bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        Ck(gpu.dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                            IID_PPV_ARGS(&uploadReproducao)),
+           "upload(reproducao)");
+        Log("reproducao", Fmt("%d quadros %ux%u de %s", n, imgW, imgH, Utf8(p).c_str()));
+        return true;
+    }
+    // carrega o quadro gravado i na textura de entrada (GPU ociosa)
+    void CarregaQuadroReproducao(int i)
+    {
+        wchar_t arq[64];
+        swprintf(arq, 64, L"\\%04d_orig.raw", i);
+        FILE* f = nullptr;
+        _wfopen_s(&f, (pastaReproducao + arq).c_str(), L"rb");
+        if (!f)
+            throw std::runtime_error("quadro gravado nao encontrado");
+        unsigned char* m = nullptr;
+        uploadReproducao->Map(0, nullptr, (void**)&m);
+        for (UINT y = 0; y < imgH; ++y)
+            fread(m + fpReproducao.Offset + size_t(y) * fpReproducao.Footprint.RowPitch, 1, size_t(imgW) * 8, f);
+        uploadReproducao->Unmap(0, nullptr);
+        fclose(f);
+        Ck(al[0]->Reset(), "reset");
+        Ck(cl[0]->Reset(al[0].Get(), nullptr), "list");
+        Barreira(cl[0].Get(), imagem.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+        D3D12_TEXTURE_COPY_LOCATION dst{imagem.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+        D3D12_TEXTURE_COPY_LOCATION src{uploadReproducao.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+        src.PlacedFootprint = fpReproducao;
+        cl[0]->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        Barreira(cl[0].Get(), imagem.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
+        cl[0]->Close();
+        ID3D12CommandList* l[] = {cl[0].Get()};
+        gpu.fila->ExecuteCommandLists(1, l);
+        gpu.Espera();
+    }
     float hdrSintetico = 0; // --hdr-sintetico <nits>: a foto vira scRGB (SoftKnee inverso x branco) para testar o caminho HDR
     bool CarregaImagem(const std::wstring& arq)
     {
@@ -432,6 +519,7 @@ struct App
         UINT k[16] = {inteiro.w, inteiro.h, fed.w, fed.h, hdr ? 1u : 0u, 0, ponte, 0, 0, 0, 0, 0, 0, 0, 0, 0};
         memcpy(&k[11], &cfg.preLimiarSombra, 4);
         memcpy(&k[12], &cfg.preCor, 4);
+        k[13] = reproducao ? 1u : 0u;
         memcpy(&k[8], &cfg.preLuz, 4);
         memcpy(&k[9], &cfg.preSombra, 4);
         memcpy(&k[10], &cfg.preLimiar, 4);
@@ -916,6 +1004,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         }
         else if (!wcscmp(argv[i], L"--imagem"))
             imagemArq = argv[++i];
+        else if (!wcscmp(argv[i], L"--reproduz"))
+            app.pastaReproducao = argv[++i];
         else if (!wcscmp(argv[i], L"--config"))
             app.configArq = argv[++i];
     }
@@ -924,7 +1014,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         if (!wcscmp(argv[i], L"--sem-painel"))
             app.comPainel = false;
     }
-    if (!imagemArq.empty())
+    if (!imagemArq.empty() || !app.pastaReproducao.empty())
         app.comPainel = false;
     try
     {
@@ -935,6 +1025,40 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         Log("erro", e.what());
         MessageBoxA(nullptr, e.what(), "DLSS5 Overlay", MB_ICONERROR);
         return 1;
+    }
+    // reproducao: os quadros gravados pelo pipeline inteiro, gravando a saida de cada um (bin\gravacoes\<data_hora>)
+    if (!app.pastaReproducao.empty())
+    {
+        int codigo = 0;
+        try
+        {
+            if (!app.AbreReproducao(app.pastaReproducao))
+                codigo = 2;
+            else
+            {
+                const int n = app.quadrosTeste > 0 ? std::min(app.quadrosTeste, app.quadrosReproducao) : app.quadrosReproducao;
+                for (int i = 0; i < n; ++i)
+                {
+                    app.CarregaQuadroReproducao(i);
+                    if (i == 0)
+                    {
+                        app.Quadro(); // cria os recursos no tamanho gravado
+                        app.IniciaGravacao();
+                        app.gravando = n - 1;
+                        continue;
+                    }
+                    app.Quadro();
+                }
+                app.gpu.Espera();
+            }
+        }
+        catch (const std::exception& e)
+        {
+            Log("erro", e.what());
+            codigo = 3;
+        }
+        app.Encerra();
+        return codigo;
     }
     // modo imagem: N quadros da mesma foto pelo pipeline inteiro (o acumulo temporal assenta) e grava a saida
     if (!imagemArq.empty())

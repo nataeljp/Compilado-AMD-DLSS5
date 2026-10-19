@@ -147,7 +147,7 @@ float3 GradacaoModelo(float3 c, float kExp, float kCon, float kSat)
 // captura -> quadro inteiro linear (branco de papel = 1); quadro inteiro -> tamanho da rede: original e proxy
 inline const char* Prepara = R"(
 cbuffer C : register(b0) { uint fw; uint fh; uint dw; uint dh; uint hdr; float escala; uint ponte; float exposicao;
-                           float preLuz; float preSombra; float preLimiar; float preLimiarSombra; float preCor; uint prePad0;
+                           float preLuz; float preSombra; float preLimiar; float preLimiarSombra; float preCor; uint passa;
                            uint prePad1; uint prePad2; };
 Texture2D<float4> src : register(t0);
 RWTexture2D<float4> dst : register(u0);
@@ -158,6 +158,8 @@ SamplerState s : register(s0);
 {
     if (p.x >= fw || p.y >= fh) return;
     float4 c = src.Load(int3(p, 0));
+    // reproducao de gravacao (--reproduz): a entrada ja e o quadro do overlay (luz de cena), sem conversao
+    if (passa) { dst[p] = float4(c.rgb, 1.0); return; }
     // HDR: scRGB dividido pelo branco de papel; SDR: sRGB -> linear (ponte 3: e desfaz a curva do jogo, luz de cena)
     float3 l = hdr ? max(c.rgb, 0.0) / escala : Linear(saturate(c.rgb));
     float folga = 1.0;
