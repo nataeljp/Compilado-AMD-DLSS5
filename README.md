@@ -6,6 +6,9 @@ injetado no jogo** (sem OptiScaler, sem AMDNR, sem DLL no processo do jogo).
 
 ## Como usar
 
+Para rodar basta a pasta **`bin`**: `DLSS5Overlay.exe` e `runtime\` (runtime HIP v3 do lmxxf + adaptador + pesos);
+`config.json`, `painel.ini` e `overlay.jsonl` (log) são criados ao lado do exe. O resto do projeto é fonte e ferramentas.
+
 1. Rode o jogo em **janela** ou **tela cheia sem borda** (tela cheia exclusiva não pode ter overlay por cima).
 2. Abra `DLSS5Overlay.exe`. No painel, escolha a janela do jogo e clique em **Ligar**, ou deixe o jogo em foco e aperte
    **Ctrl+Alt+D**.
@@ -67,9 +70,10 @@ numa janela própria. Não há como garantir a política de cada jogo; quem deci
 
 ## Compilar
 
-`build.ps1` (Visual Studio 2022 Build Tools, Windows SDK 10.0.26100) gera `bin\DLSS5Overlay.exe`;
-`monta_runtime.ps1` monta `bin\runtime` (pesos exatos em FP16 gravados como `.f16`: metade do tamanho, saída idêntica
-bit a bit); `empacota.ps1` gera o zip de distribuição.
+`build.ps1` (Visual Studio 2022 Build Tools, Windows SDK 10.0.26100) gera `bin\DLSS5Overlay.exe` com o ícone de
+`recursos\` ("NR" em fundo vermelho); `monta_runtime.ps1` monta `bin\runtime` com o runtime v3 (pesos exatos em FP16
+gravados como `.f16`: metade do tamanho, saída idêntica bit a bit; pesos do histórico extraídos do `nvngx_dlssnr` 310.8);
+`empacota.ps1` gera o zip de distribuição. `ferramentas\compara_ref.py` mede o overlay contra a saída real da NVIDIA.
 
 ## Créditos e licenças
 

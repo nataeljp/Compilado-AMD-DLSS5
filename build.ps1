@@ -15,7 +15,10 @@ if ($falta) {
 $fontes = (Get-ChildItem "$raiz\src\*.cpp" | ForEach-Object { '"' + $_.FullName + '"' }) -join ' '
 $objsImgui = ($imgui | ForEach-Object { "`"$raiz\obj\imgui\$_.obj`"" }) -join ' '
 $libs = 'd3d12.lib d3d11.lib dxgi.lib dcomp.lib d3dcompiler.lib dwmapi.lib windowscodecs.lib ole32.lib windowsapp.lib user32.lib shell32.lib'
-$cl = "cl $flags /Fo`"$raiz\obj\\`" /Fe`"$raiz\bin\DLSS5Overlay.exe`" $fontes $objsImgui /link /SUBSYSTEM:WINDOWS $libs"
+# icone do exe e das janelas ("NR" em fundo vermelho): recursos\DLSS5Overlay.rc -> obj\DLSS5Overlay.res
+cmd /c "`"$vs`" >nul 2>nul & rc /nologo /fo `"$raiz\obj\DLSS5Overlay.res`" `"$raiz\recursos\DLSS5Overlay.rc`"" 2>&1 | Where-Object { $_ -match 'error' }
+if ($LASTEXITCODE -ne 0) { "rc falhou"; exit 1 }
+$cl = "cl $flags /Fo`"$raiz\obj\\`" /Fe`"$raiz\bin\DLSS5Overlay.exe`" $fontes $objsImgui `"$raiz\obj\DLSS5Overlay.res`" /link /SUBSYSTEM:WINDOWS $libs"
 cmd /c "`"$vs`" >nul 2>nul & $cl" 2>&1 | Tee-Object -FilePath "$raiz\obj\build.log" | Where-Object { $_ -match 'error|warning C4[0-9]{3}' } | Select-Object -First 60
 if ($LASTEXITCODE -ne 0) { "build falhou ($LASTEXITCODE)"; exit 1 }
 "ok: $raiz\bin\DLSS5Overlay.exe"

@@ -66,6 +66,8 @@ bool Painel::Cria(Gpu& g, HINSTANCE inst, const std::wstring& pastaIni)
     wc.lpfnWndProc = ProcPainel;
     wc.hInstance = inst;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(1)); // recursos\icone.ico ("NR" em fundo vermelho)
+    wc.hIconSm = wc.hIcon;
     wc.lpszClassName = L"DLSS5OverlayPainel";
     RegisterClassExW(&wc);
     const UINT dpi = GetDpiForSystem();
