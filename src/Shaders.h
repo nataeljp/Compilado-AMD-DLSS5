@@ -123,7 +123,8 @@ float3 GradacaoModelo(float3 c, float kExp, float kCon, float kSat)
 
 // captura -> quadro inteiro linear (branco de papel = 1); quadro inteiro -> tamanho da rede: original e proxy
 inline const char* Prepara = R"(
-cbuffer C : register(b0) { uint fw; uint fh; uint dw; uint dh; uint hdr; float escala; uint ponte; float exposicao; };
+cbuffer C : register(b0) { uint fw; uint fh; uint dw; uint dh; uint hdr; float escala; uint ponte; float exposicao;
+                           float preLuz; float preSombra; float preLimiar; uint prePad; };
 Texture2D<float4> src : register(t0);
 RWTexture2D<float4> dst : register(u0);
 RWTexture2D<float4> dstProxy : register(u1);
@@ -136,6 +137,15 @@ SamplerState s : register(s0);
     // HDR: scRGB dividido pelo branco de papel; SDR: sRGB -> linear (ponte 3: e desfaz a curva do jogo, luz de cena)
     float3 l = hdr ? max(c.rgb, 0.0) / escala : Linear(saturate(c.rgb));
     if (!hdr && ponte == 3) l = FilmicaInv(l);
+    // luzes e sombras antes da rede (a ideia do Shadow-Light-Scattering.fx: ganho pela luma de tela acima/abaixo do
+    // limiar), aplicado na luz e sem corte: com a ponte 3 o ombro da curva do jogo comprime o claro na saida
+    if (preLuz != 0.0 || preSombra != 0.0)
+    {
+        float3 tela = hdr ? Srgb(SoftKnee(l)) : saturate(c.rgb);
+        float L = dot(tela, float3(0.299, 0.587, 0.114));
+        float t = clamp(preLimiar, 0.01, 0.99);
+        l *= (1.0 + preLuz * max(0.0, L - t)) * max(0.0, 1.0 - preSombra * max(0.0, t - L) / t);
+    }
     dst[p] = float4(l, 1.0);
 }
 

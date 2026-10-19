@@ -104,8 +104,8 @@ struct App
         }
         const std::string prepara = std::string(hlsl::Comum) + hlsl::Prepara;
         const std::string compoe = std::string(hlsl::Comum) + hlsl::Compoe;
-        pInteiro.Cria(gpu.dev.Get(), prepara.c_str(), "CSInteiro", 1, 1, 8, "inteiro");
-        pReduz.Cria(gpu.dev.Get(), prepara.c_str(), "CSReduz", 1, 2, 8, "reduz");
+        pInteiro.Cria(gpu.dev.Get(), prepara.c_str(), "CSInteiro", 1, 1, 12, "inteiro");
+        pReduz.Cria(gpu.dev.Get(), prepara.c_str(), "CSReduz", 1, 2, 12, "reduz");
         pCompoe.Cria(gpu.dev.Get(), compoe.c_str(), "CSCompoe", 4, 1, 16, "compoe");
         fluxo.Cria(gpu.dev.Get());
         temporal.Cria(gpu.dev.Get());
@@ -375,7 +375,10 @@ struct App
         if (ponte == 3 && hdr)
             ponte = 1; // a curva do jogo (sanduiche) so no SDR por enquanto
         pontePassada = ponte;
-        UINT k[8] = {inteiro.w, inteiro.h, fed.w, fed.h, hdr ? 1u : 0u, 0, ponte, 0};
+        UINT k[12] = {inteiro.w, inteiro.h, fed.w, fed.h, hdr ? 1u : 0u, 0, ponte, 0, 0, 0, 0, 0};
+        memcpy(&k[8], &cfg.preLuz, 4);
+        memcpy(&k[9], &cfg.preSombra, 4);
+        memcpy(&k[10], &cfg.preLimiar, 4);
         memcpy(&k[5], &escK, 4);
         const float expK = std::max(cfg.temporal.exposicao, 1e-3f);
         memcpy(&k[7], &expK, 4);

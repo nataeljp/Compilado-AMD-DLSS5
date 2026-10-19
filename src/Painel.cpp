@@ -316,6 +316,26 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             cfg.temporal.guarda = 2.f;
             mc = true;
         }
+        ImGui::SameLine();
+        if (ImGui::Button("Mais perto da foto NVIDIA (medido)"))
+        {
+            // medido na Zorah (fotos on/off da NVIDIA): curva de tom, croma por faixa e detalhe (ferramentas/placar_nvidia.py)
+            cfg.ngx = ParamsNgx{};
+            cfg.ngx.tomLocal = 0.25f;
+            cfg.ponte = 3;
+            cfg.preLuz = 0.75f;
+            cfg.preSombra = 0.f;
+            cfg.preLimiar = 0.4f;
+            cfg.forca = 1.f;
+            cfg.temporal.composicao = 1;
+            cfg.temporal.cor = 1.f;
+            cfg.temporal.guarda = 2.f;
+            cfg.temporal.exposicao = 1.f;
+            mc = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Model A, tom 0,25, ponte 'Curva do jogo', luzes 0,75 antes da rede (limiar 0,4), forca 1.\n"
+                              "Na Zorah: curva de tom e cor iguais as da NVIDIA (o detalhe fino ainda e um pouco mais nitido).");
         if (mc)
             a.zeraHistorico = true;
 
@@ -342,6 +362,16 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             ImGui::SetTooltip("Como o quadro vira o proxy SDR que a rede ve. A composicao devolve os realces acima\n"
                               "do branco que a ponte comprimiu.\nCurva do jogo: no jogo o DLSS 5 roda antes do tonemap;\n"
                               "aqui a curva filmica e desfeita na entrada (a rede ve luz de cena) e refeita na saida.");
+        ImGui::SeparatorText("Antes da rede: luzes e sombras");
+        bool pre = false;
+        pre |= Deslizador("Luzes", &cfg.preLuz, 0.f, 4.f, "%.2f",
+                          "Ganho das areas acima do limiar antes da rede (ideia do Shadow-Light-Scattering.fx).\n"
+                          "Com a ponte 'Curva do jogo' o claro sobe sem estourar (o ombro da curva comprime na saida).");
+        pre |= Deslizador("Sombras", &cfg.preSombra, -1.f, 1.f, "%.2f",
+                          "Acima de 0 escurece as areas abaixo do limiar antes da rede; abaixo de 0 levanta.");
+        pre |= Deslizador("Limiar", &cfg.preLimiar, 0.05f, 0.95f, "%.2f", "Luma de tela que separa sombra e luz.");
+        if (pre)
+            a.zeraHistorico = true;
         ImGui::SliderFloat("Branco difuso (nits)", &cfg.brancoNits, 0.f, 400.f,
                            cfg.brancoNits > 0.f ? "%.0f nits" : "do Windows");
         if (ImGui::IsItemHovered())

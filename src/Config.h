@@ -27,6 +27,9 @@ struct Config
     float forca = 1.f;      // quanto da edicao final entra no quadro (0..2)
     int ponte = -1;         // ponte do quadro para a rede: -1 auto (SDR direto, HDR SoftKnee), 0 direto, 1 SoftKnee, 2 ACES
     float brancoNits = 0.f; // branco de papel em nits (0 = o branco SDR do Windows)
+    float preLuz = 0.f;     // antes da rede: ganho das luzes acima do limiar (ideia do Shadow-Light-Scattering.fx)
+    float preSombra = 0.f;  // antes da rede: escurece (>0) ou levanta (<0) as sombras abaixo do limiar
+    float preLimiar = 0.5f; // limiar em luma de tela (0..1) entre sombra e luz
     int modo = 0;           // 0 rede, 1 original, 2 comparacao, 3 so a edicao, 4 movimento
     bool movimento = true;  // movimento simulado por fluxo optico
     bool usaConfianca = true; // descarta o historico onde o fluxo de ida e volta nao bate (oclusao)
