@@ -25,7 +25,8 @@ class Rede
 {
   public:
     // pasta: onde estao LmxxfNrRuntime.dll, lmxxf_upstream.dll e native-game-tiled-assets
-    bool Inicia(Gpu& g, const std::wstring& pasta);
+    // pequena: a rede pequena da 310.9.16 (runtime\pequena + os assets da grande, montados por hardlink na 1a vez)
+    bool Inicia(Gpu& g, const std::wstring& pasta, bool pequena = false);
     void Encerra();
     bool Pronta() const { return ctx != nullptr && !falhou; }
 

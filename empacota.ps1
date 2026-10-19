@@ -1,4 +1,4 @@
-# Gera o zip de distribuicao (para a aba Releases): DLSS5Overlay.exe, runtime (pesos FP16), config padrao, licencas, README.
+﻿# Gera o zip de distribuicao (para a aba Releases): DLSS5Overlay.exe, runtime (pesos FP16), config padrao, licencas, README.
 param([string]$Versao = '0.2')
 $ErrorActionPreference = 'Stop'
 $raiz = $PSScriptRoot
@@ -9,8 +9,8 @@ New-Item -ItemType Directory -Force $pasta | Out-Null
 Copy-Item "$raiz\bin\DLSS5Overlay.exe" $pasta
 Copy-Item "$raiz\README.md" $pasta
 Copy-Item "$raiz\licencas" "$pasta\licencas" -Recurse
-# runtime sem logs
-robocopy "$raiz\bin\runtime" "$pasta\runtime" /E /XF *.log /XD nr_variantes /NFL /NDL /NJH /NJS /NP | Out-Null
+# runtime sem logs nem caches (as variantes e a pasta montada da rede pequena sao refeitas pelo programa)
+robocopy "$raiz\bin\runtime" "$pasta\runtime" /E /XF *.log /XD nr_variantes native-game-tiled-assets-pequena logs /NFL /NDL /NJH /NJS /NP | Out-Null
 # configuracao padrao (a do usuario nao vai no pacote)
 Set-Content -Path "$pasta\config.json" -Encoding ascii -Value @'
 {

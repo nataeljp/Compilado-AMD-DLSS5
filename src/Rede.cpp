@@ -1,5 +1,7 @@
 #include "Rede.h"
 #include <algorithm>
+#include <filesystem>
+#include <set>
 
 namespace ov {
 
@@ -27,7 +29,56 @@ std::string Rede::Status()
     return b;
 }
 
-bool Rede::Inicia(Gpu& g, const std::wstring& pasta)
+// Pasta de assets da rede pequena: hardlinks dos assets da grande (copia se o hardlink falhar), menos os pesos que a
+// pequena troca (runtime\pequena, com o network-layout.txt: blocos ausentes e deslocamentos). Refeita so quando o
+// network-layout.txt da pequena muda.
+static bool MontaAssetsPequena(const std::wstring& pasta, std::wstring& saida)
+{
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path base = fs::path(pasta) / L"native-game-tiled-assets", peq = fs::path(pasta) / L"pequena",
+                   dst = fs::path(pasta) / L"native-game-tiled-assets-pequena";
+    if (!fs::exists(peq / L"network-layout.txt") || !fs::exists(base))
+        return false;
+    saida = dst.wstring();
+    const auto marca = dst / L"network-layout.txt";
+    if (fs::exists(marca) && fs::file_size(marca, ec) == fs::file_size(peq / L"network-layout.txt", ec) &&
+        fs::last_write_time(marca, ec) == fs::last_write_time(peq / L"network-layout.txt", ec))
+        return true;
+    fs::remove_all(dst, ec);
+    fs::create_directories(dst, ec);
+    std::set<std::wstring> proprios; // nomes (sem .f16/.f32) que a pequena traz: o da grande nao entra em nenhuma extensao
+    for (auto& e : fs::directory_iterator(peq, ec))
+        if (e.is_regular_file())
+            proprios.insert(e.path().stem().wstring());
+    for (auto it = fs::recursive_directory_iterator(base, ec); it != fs::recursive_directory_iterator(); it.increment(ec))
+    {
+        const auto rel = fs::relative(it->path(), base, ec);
+        const auto alvo = dst / rel;
+        if (it->is_directory())
+        {
+            fs::create_directories(alvo, ec);
+            continue;
+        }
+        const auto ext = it->path().extension().wstring();
+        if (rel.parent_path().empty() && (ext == L".f16" || ext == L".f32") && proprios.count(it->path().stem().wstring()))
+            continue;
+        fs::create_hard_link(it->path(), alvo, ec);
+        if (ec)
+        {
+            ec.clear();
+            fs::copy_file(it->path(), alvo, fs::copy_options::overwrite_existing, ec);
+        }
+    }
+    for (auto& e : fs::directory_iterator(peq, ec))
+        if (e.is_regular_file())
+            fs::copy_file(e.path(), dst / e.path().filename(), fs::copy_options::overwrite_existing, ec);
+    fs::last_write_time(marca, fs::last_write_time(peq / L"network-layout.txt", ec), ec);
+    Log("rede", "assets da rede pequena montados: " + Utf8(saida));
+    return fs::exists(marca);
+}
+
+bool Rede::Inicia(Gpu& g, const std::wstring& pasta, bool pequena)
 {
     // tamanho livre da rede (ate 3840x2176 de superficie): o tamanho que o overlay entrega e o que a rede roda
     SetEnvironmentVariableW(L"DLSS5_NETWORK_FREE_RES", L"1");
@@ -53,6 +104,12 @@ bool Rede::Inicia(Gpu& g, const std::wstring& pasta)
     setSkip = reinterpret_cast<int32_t (*)(void*, const uint32_t*, uint32_t)>(GetProcAddress(mod, "LmxxfNrSetDynamicSkip"));
     Log("rede", setSkip ? "profundidade dinamica disponivel (runtime v3)" : "runtime sem profundidade dinamica");
     assets = pasta + L"\\native-game-tiled-assets";
+    if (pequena && !MontaAssetsPequena(pasta, assets))
+    {
+        Log("rede", "rede pequena indisponivel (falta runtime\\pequena): usando a grande");
+        assets = pasta + L"\\native-game-tiled-assets";
+    }
+    Log("rede", pequena ? "rede: pequena 310.9.16 (31 blocos)" : "rede: grande (71 blocos)");
     LmxxfNrCreateInfo ci{};
     ci.struct_size = sizeof ci;
     ci.device = g.dev.Get();

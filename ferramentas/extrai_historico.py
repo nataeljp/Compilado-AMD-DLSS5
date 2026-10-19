@@ -18,13 +18,14 @@ sys.path.insert(0, str(RAIZ / 'lmxxf/Development'))
 from native_split_reference import bits  # noqa: E402
 
 dados = dll.read_bytes()
-if hashlib.sha256(dados).hexdigest() != conv.KNOWN_NVIDIA_SHA:
+# a 310.8 pelo hash; ou o arquivo hibrido da rede pequena (monta_rede_pequena.py), cujo bloco 70 e o bloco 30 dela
+if hashlib.sha256(dados).hexdigest() != conv.KNOWN_NVIDIA_SHA and not dll.name.startswith('nvngx_dlssnr_hibrido'):
     raise SystemExit('DLL nao e a 310.8 esperada')
 tam = int.from_bytes(dados[conv.ARCHIVE_OFFSET:conv.ARCHIVE_OFFSET + 8], 'little')
 arq = dados[conv.ARCHIVE_OFFSET:conv.ARCHIVE_OFFSET + tam]
 regs = {r['name']: arq[r['payload_offset']:r['payload_offset'] + r['payload_size']] for r in conv.parse_archive(arq)}
 corpo = [n for n, b in regs.items() if len(b) == 21808]
-mistura = [n for n, b in regs.items() if len(b) == 2 and int.from_bytes(b, 'little') == 0x39eb]
+mistura = [n for n, b in regs.items() if len(b) == 2 and int.from_bytes(b, 'little') == 0x39eb] or     [n for n in regs if n == 'block70.layer0.blend_scale']
 print('registro de 21808 bytes:', corpo, '| escalar 0x39eb:', mistura)
 if len(corpo) != 1 or not mistura:
     raise SystemExit('registros nao encontrados de forma unica')

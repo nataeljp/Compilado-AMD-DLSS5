@@ -78,6 +78,21 @@ struct App
     std::vector<uint32_t> pulaTeste; // --pula 1,2,3: blocos pulados fixos (medicao de custo por bloco)
     bool temPulaTeste = false;
     int alternaAltura = 0; // --alterna 720: modo imagem troca a altura da rede a cada 4 quadros e registra cada quadro
+    int trocaRedeNoQuadro = -1; // --troca-rede N: modo imagem troca grande <-> pequena no quadro N (teste da troca ao vivo)
+    bool redePequenaAtiva = false;
+    std::wstring PastaRede() const { return pastaRuntime.empty() ? pasta + L"\\runtime" : pastaRuntime; }
+    // troca grande <-> pequena ao vivo: a rede e recriada (o historico recomeca)
+    void TrocaRede()
+    {
+        gpu.Espera();
+        rede.Encerra();
+        redeOk = rede.Inicia(gpu, PastaRede(), cfg.redePequena);
+        redePequenaAtiva = cfg.redePequena;
+        nivelAtual = -1;
+        zeraHistorico = true;
+        temporal.Reinicia();
+        Log("rede", redeOk ? "rede trocada" : "a rede nao subiu depois da troca");
+    }
     std::wstring configArq;    // --config: outro config.json (comparacoes); nao e regravado
     ComPtr<ID3D12CommandAllocator> al[2];
     ComPtr<ID3D12GraphicsCommandList> cl[2];
@@ -126,7 +141,8 @@ struct App
             SetEnvironmentVariableW(L"DLSS5_HIP_GRAPH", L"0");
             SetEnvironmentVariableW(L"DLSS5_HIP_VIT_BYTE_STREAM", L"0");
         }
-        redeOk = rede.Inicia(gpu, pastaRuntime.empty() ? pasta + L"\\runtime" : pastaRuntime);
+        redeOk = rede.Inicia(gpu, PastaRede(), cfg.redePequena);
+        redePequenaAtiva = cfg.redePequena;
         if (!redeOk)
             Log("app", "a rede nao subiu: o overlay mostra o quadro original");
         cap.Cria(gpu);
@@ -326,7 +342,8 @@ struct App
     int nivelAtual = -1, nivelAlvo = 0, quadrosNoNivel = 0;
     void AjustaProfundidade(bool temMov)
     {
-        if (!rede.TemProfundidade())
+        // a rede pequena ja vem com os blocos dela (network-layout.txt); os niveis de profundidade sao da grande
+        if (!rede.TemProfundidade() || redePequenaAtiva)
             return;
         if (temPulaTeste)
         {
@@ -362,6 +379,8 @@ struct App
 
     bool Quadro()
     {
+        if (redeOk && cfg.redePequena != redePequenaAtiva)
+            TrocaRede();
         Captura::Quadro q;
         if (imagem)
         {
@@ -712,6 +731,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             app.pastaRuntime = argv[++i];
         else if (!wcscmp(argv[i], L"--hdr-sintetico"))
             app.hdrSintetico = float(_wtof(argv[++i]));
+        else if (!wcscmp(argv[i], L"--troca-rede"))
+            app.trocaRedeNoQuadro = _wtoi(argv[++i]);
         else if (!wcscmp(argv[i], L"--alterna"))
             app.alternaAltura = _wtoi(argv[++i]);
         else if (!wcscmp(argv[i], L"--pula"))
@@ -763,6 +784,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 int contados = 0;
                 for (int i = 0; i < n; ++i)
                 {
+                    if (i == app.trocaRedeNoQuadro)
+                        app.cfg.redePequena = !app.cfg.redePequena; // o Quadro() recria a rede
                     const int alturaBase = app.cfg.alturaRede;
                     if (app.alternaAltura && (i / 4) % 2)
                         app.cfg.alturaRede = app.alternaAltura;

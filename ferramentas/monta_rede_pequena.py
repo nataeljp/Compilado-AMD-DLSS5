@@ -1,4 +1,4 @@
-# Rede pequena do DLSS 5 (nvngx_dlssnr 310.9.16, recurso WEIGHTS_CC_SMALL_FP8, 31 blocos) no layout da rede grande
+﻿# Rede pequena do DLSS 5 (nvngx_dlssnr 310.9.16, recurso WEIGHTS_CC_SMALL_FP8, 31 blocos) no layout da rede grande
 # (WEIGHTS_HT, 71 blocos): cada bloco da pequena tem o formato exato de um bloco da grande; os pesos dela entram nas
 # posicoes equivalentes (codificador: os 2 ultimos de cada estagio, o ultimo reduz; decodificador: os 2 primeiros, o
 # primeiro amplia; ViT, entrada e saida iguais) e o runtime pula as posicoes que sobram. O arquivo hibrido passa pelo
@@ -16,7 +16,7 @@ DLL_310_8 = RAIZ / 'nvidia/nvngx_dlssnr_5b944399.dll'
 # bloco da rede pequena -> posicao na grande
 MAPA = {0: 0, 1: 3, 2: 4, 3: 7, 4: 8, 5: 13, 6: 14, 7: 21, 8: 22, 9: 29, 10: 30,
         **{11 + i: 31 + i for i in range(8)}, 19: 39, 20: 40, 21: 41, 22: 48, 23: 49, 24: 56, 25: 57,
-        26: 62, 27: 63, 28: 66, 29: 67, 30: 70}
+        26: 62, 27: 63, 28: 66, 29: 69, 30: 70}
 PULADOS = sorted(set(range(1, 70)) - set(MAPA.values()) - {39})
 
 
@@ -85,3 +85,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

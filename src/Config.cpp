@@ -74,6 +74,7 @@ void Config::Carrega(const std::wstring& arquivo)
     I("passes", rede.passes);
     B("redeCompleta", rede.redeCompleta);
     I("alturaRede", alturaRede);
+    B("redePequena", redePequena);
     F("forca", forca);
     I("ponte", ponte);
     F("brancoNits", brancoNits);
@@ -119,6 +120,7 @@ void Config::Salva(const std::wstring& arquivo) const
     f << "  \"passes\": " << rede.passes << ",\n";
     f << "  \"redeCompleta\": " << b(rede.redeCompleta) << ",\n";
     f << "  \"alturaRede\": " << alturaRede << ",\n";
+    f << "  \"redePequena\": " << b(redePequena) << ",\n";
     f << "  \"forca\": " << forca << ",\n";
     f << "  \"ponte\": " << ponte << ",\n";
     f << "  \"brancoNits\": " << brancoNits << ",\n";

@@ -414,10 +414,19 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Altura em que a rede roda (limitada pela janela). Menor = mais rapido; a edicao e\n"
                               "ampliada sobre o quadro nativo, que mantem o proprio detalhe.");
+        const char* redes[] = {"Grande (71 blocos)", "Pequena 310.9.16 (31 blocos, mais rapida)"};
+        int ir = cfg.redePequena ? 1 : 0;
+        if (ImGui::Combo("Rede", &ir, redes, 2))
+            cfg.redePequena = ir == 1;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("A rede pequena que a NVIDIA traz no DLSS 310.9.16 (WEIGHTS_CC_SMALL_FP8): 2 blocos por estagio\n"
+                              "em vez de 4-8. Mais rapida, um pouco menos fiel que a grande. A troca recria a rede na hora.");
+        ImGui::BeginDisabled(cfg.redePequena);
         ImGui::Checkbox("Rede completa (71 blocos)", &cfg.rede.redeCompleta);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("A rede tem 71 blocos (camadas) e roda 1 vez por quadro. Desligado pula 3 blocos\n"
                               "(42, 43, 46): ~1 ms mais rapido.");
+        ImGui::EndDisabled();
         ImGui::SliderInt("Passes", &cfg.rede.passes, 1, 3);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Quantas vezes a rede inteira roda por quadro (1 = normal). Mais passes = estilo mais\n"

@@ -24,6 +24,7 @@ struct Config
     ParamsRede rede;        // tamanho/passes/rede completa; os controles saem de `ngx`
     ParamsTemporal temporal;
     int alturaRede = 1080;  // altura em que a rede roda (720..2160); a largura segue a proporcao da janela
+    bool redePequena = false; // a rede pequena da 310.9.16 (31 blocos, mais rapida) no lugar da grande (71 blocos)
     float forca = 1.f;      // quanto da edicao final entra no quadro (0..2)
     int ponte = -1;         // ponte do quadro para a rede: -1 auto (SDR direto, HDR SoftKnee), 0 direto, 1 SoftKnee, 2 ACES
     float brancoNits = 0.f; // branco de papel em nits (0 = o branco SDR do Windows)
