@@ -323,14 +323,16 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             cfg.ponte = -1;
             cfg.preLuz = cfg.preSombra = cfg.preCor = 0.f;
             cfg.alturaRede = 2160; // a rede na resolucao da janela (abaixo da nativa e a maior perda: 1080 num 4K = 32,7 dB)
+            cfg.brancoNits = 0.f;  // branco de papel do Windows: 79 nits num monitor de 240 custava 13 dB em HDR
             cfg.rede.redeCompleta = true;
             cfg.rede.passes = 1;
             mc = true;
         }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Os padroes da NVIDIA (Model A, tons e estruturas em 1, sem protecao de luz, sem ajustes antes da\n"
-                              "rede, rede na resolucao da janela). Medido contra a saida real da NVIDIA para a mesma imagem:\n"
-                              "45,8 dB em 1080p e 47,4 dB em 4K (sem rede: 26-29 dB).");
+                              "rede, branco de papel do Windows, rede na resolucao da janela). Medido contra a saida real da\n"
+                              "NVIDIA para a mesma imagem: 45,8 dB em 1080p e 47,4 dB em 4K, SDR e HDR (sem rede: 26-29 dB).\n"
+                              "A rede pequena e outro modelo (o rapido da NVIDIA): 36 dB em 4K, nao chega a 47 com nenhum ajuste.");
         ImGui::SameLine();
         if (ImGui::Button("Visual da foto Zorah (jogo)"))
         {

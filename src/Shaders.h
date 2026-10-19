@@ -177,6 +177,16 @@ SamplerState s : register(s0);
         else
             l = FilmicaInv(l);
     }
+    else if (ponte == 1 && hdr)
+    {
+        // HDR pela ponte SoftKnee (a automatica em HDR): a cadeia inteira (rede, edicao, acumulo, ajustes) trabalha na
+        // tela SDR equivalente que a rede ve, e so a saida volta ao HDR (sanduiche, como a ponte 3). Antes a edicao era
+        // aplicada como razao de luz sobre o HDR expandido: nos realces (o ombro da curva) ela ficava menor do que a rede
+        // pretendia (medido contra a NVIDIA: 43,8 dB em HDR contra 47,4 em SDR). A folga guarda o que passa do teto.
+        const float3 sdr = SoftKnee(l);
+        folga = max(Lum(l), 1e-6) / max(Lum(SoftKneeInv(sdr)), 1e-6);
+        l = sdr;
+    }
     // (luzes/sombras/cor antes da rede: no CSReduz e no resultado do CSCompoe; o quadro inteiro fica intacto)
     dst[p] = float4(l, folga);
 }
@@ -195,10 +205,11 @@ SamplerState s : register(s0);
             a += src.SampleLevel(s, q / float2(fw, fh), 0);
         }
     float3 o = a.rgb / (n * n);
-    o = PreAjuste(o, TelaDe(o, hdr != 0, ponte == 3), preLuz, preSombra, preLimiar, preLimiarSombra, preCor);
+    const bool sanduiche = hdr != 0 && ponte == 1; // o quadro ja e a tela SDR equivalente (CSInteiro)
+    o = PreAjuste(o, TelaDe(o, hdr != 0 && !sanduiche, ponte == 3), preLuz, preSombra, preLimiar, preLimiarSombra, preCor);
     dst[p] = float4(o, 1.0);
     // exposicao: o ponto de operacao da rede (o proxy ve o quadro x exposicao; a composicao desfaz)
-    dstProxy[p] = float4(Proxy(o * exposicao, ponte), 1.0);
+    dstProxy[p] = float4(Proxy(o * exposicao, sanduiche ? 0u : ponte), 1.0);
 }
 )";
 
@@ -206,7 +217,7 @@ SamplerState s : register(s0);
 // modo: 0 rede, 1 original, 2 comparacao (esquerda original | direita rede), 3 so a edicao (x4), 4 movimento
 inline const char* Compoe = R"(
 cbuffer C : register(b0) { uint fw; uint fh; uint dw; uint dh; float forca; uint modo; float divisao; uint usaEdicao;
-                           uint hdr; float escala; float kExp; float kCon; float kSat; uint grada; uint filmica; uint pad1;
+                           uint hdr; float escala; float kExp; float kCon; float kSat; uint grada; uint filmica; uint sanduiche;
                            float preLuz; float preSombra; float preLimiar; float preLimiarSombra; float preCor; uint pad2;
                            uint pad3; uint pad4; };
 Texture2D<float4> inteiro : register(t0);
@@ -258,6 +269,13 @@ float3 Tela(float3 lin, bool grade, float folga)
         if (grade) d = Linear(GradacaoModelo(Srgb(d), kExp, kCon, kSat));
         return SoftKneeInv(d) * folga * escala;
     }
+    if (sanduiche)
+    {
+        // ponte SoftKnee em HDR: a cadeia esta na tela SDR equivalente; volta ao HDR pela inversa exata + folga
+        float3 d = max(lin, 0.0);
+        if (grade) d = Linear(GradacaoModelo(Srgb(saturate(d)), kExp, kCon, kSat));
+        return SoftKneeInv(d) * folga * escala;
+    }
     if (!grade) return max(lin, 0.0) * escala;
     float3 c = GradacaoModelo(Srgb(SoftKnee(lin)), kExp, kCon, kSat);
     return SoftKneeInv(Linear(c)) * escala;
@@ -277,7 +295,7 @@ float3 Tela(float3 lin, bool grade, float folga)
             e = CatmullRom(edicao, (float2(p) + 0.5) / float2(fw, fh), float2(dw, dh));
     }
     // o resultado parte do quadro com o mesmo ajuste que a rede viu; o lado "original" fica intacto
-    float3 r = PreAjuste(o, TelaDe(o, hdr != 0, filmica != 0), preLuz, preSombra, preLimiar, preLimiarSombra, preCor) +
+    float3 r = PreAjuste(o, TelaDe(o, hdr != 0 && sanduiche == 0, filmica != 0), preLuz, preSombra, preLimiar, preLimiarSombra, preCor) +
                forca * e;
     bool orig = modo == 1 || (modo == 2 && (float)p.x < divisao * fw);
     float3 c = orig ? Tela(o, false, oi.a) : Tela(r, grada != 0, oi.a);
