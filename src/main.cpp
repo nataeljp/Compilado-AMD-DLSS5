@@ -1,11 +1,11 @@
 // DLSS5 Overlay: captura a janela do jogo (Windows Graphics Capture), roda a rede DLSS 5 (lmxxf, MIT) sobre a imagem e
 // mostra o resultado num overlay por cima da janela. Nada e injetado no jogo.
 //
-// Atalhos:  Ctrl+Alt+D  liga/desliga no jogo em primeiro plano
-//           Ctrl+Alt+N  modo: rede -> original -> comparacao -> so a edicao
-//           Ctrl+Alt+S  estilo 0 -> 1 -> 2
-//           Ctrl+Alt+G  grava os proximos quadros em bruto (bin\gravacoes\), para analise
-//           Ctrl+Alt+Q  sai
+// Atalhos:  Ctrl+Shift+D  liga/desliga no jogo em primeiro plano
+//           Ctrl+Shift+N  modo: rede -> original -> comparacao -> so a edicao
+//           Ctrl+Shift+S  estilo 0 -> 1 -> 2
+//           Ctrl+Shift+G  grava os proximos quadros em bruto (bin\gravacoes\), para analise
+//           Ctrl+Shift+Q  sai
 // Teste:    DLSS5Overlay.exe --alvo "titulo" --quadros N --grava saida.rgba
 #include <DirectXPackedVector.h>
 #include "Comum.h"
@@ -289,6 +289,7 @@ struct App
             return;
         CarregaPerfil(h);
         painel.Ancora(h);
+        painel.DefineJogo(h);
         float esc = 1.f;
         hdr = MonitorHdr(gpu, h, esc);
         escalaSdr = esc;
@@ -345,7 +346,7 @@ struct App
     ComPtr<ID3D12Resource> imagem;
     UINT imgW = 0, imgH = 0;
     DXGI_FORMAT imgFmt = DXGI_FORMAT_R8G8B8A8_UNORM;
-    // ---- reproducao (--reproduz pasta): os quadros gravados (Ctrl+Alt+G) entram como entrada, um por quadro ----
+    // ---- reproducao (--reproduz pasta): os quadros gravados (Ctrl+Shift+G) entram como entrada, um por quadro ----
     bool reproducao = false;
     std::wstring pastaReproducao;
     int quadrosReproducao = 0;
@@ -977,7 +978,7 @@ struct App
     }
 
     // grava uma textura crua (bpp bytes por pixel) para conferencia
-    // ---- gravacao (Ctrl+Alt+G): os proximos quadros em bruto, no tamanho da rede, para analise fora do jogo ----
+    // ---- gravacao (Ctrl+Shift+G): os proximos quadros em bruto, no tamanho da rede, para analise fora do jogo ----
     // Por quadro: original (RGBA16F), edicao crua da rede (RGBA16F; so vale nos quadros com rede), edicao exibida
     // (RGBA16F), movimento (RG16F, pixels ate o quadro anterior) e confianca (R16F). meta.jsonl diz quais quadros tiveram
     // rede; config.json e o config em uso. Escrita numa thread; ~6 GB no maximo por gravacao.
@@ -1351,12 +1352,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         app.Encerra();
         return codigo;
     }
-    RegisterHotKey(nullptr, 1, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'D');
-    RegisterHotKey(nullptr, 2, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'N');
-    RegisterHotKey(nullptr, 3, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'S');
-    RegisterHotKey(nullptr, 4, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'Q');
-    RegisterHotKey(nullptr, 5, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'P');
-    RegisterHotKey(nullptr, 6, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'G');
+    RegisterHotKey(nullptr, 1, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'D');
+    RegisterHotKey(nullptr, 2, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'N');
+    RegisterHotKey(nullptr, 3, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'S');
+    RegisterHotKey(nullptr, 4, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'Q');
+    RegisterHotKey(nullptr, 5, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'P');
+    RegisterHotKey(nullptr, 6, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'G');
     if (!alvoTitulo.empty())
     {
         Busca b{alvoTitulo};
@@ -1365,7 +1366,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             Log("teste", "janela nao encontrada: " + Utf8(alvoTitulo));
         app.Liga(b.achou);
     }
-    Log("app", "pronto: Ctrl+Alt+D liga no jogo em primeiro plano");
+    Log("app", "pronto: Ctrl+Shift+D liga no jogo em primeiro plano");
     using clk = std::chrono::steady_clock;
     auto ultimo = clk::now();
     bool rodando = true;
@@ -1384,7 +1385,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     if (app.cap.Ativa())
                         app.Desliga();
                     else
+                    {
                         app.Liga(GetForegroundWindow());
+                        if (app.cap.Ativa())
+                            app.painel.Esconde(false);
+                    }
                     break;
                 case 2:
                     app.cfg.modo = (app.cfg.modo + 1) % 5;

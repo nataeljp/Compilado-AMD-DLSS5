@@ -42,7 +42,11 @@ class Painel
     // desenha e apresenta; devolve o que o usuario pediu
     AcoesPainel Quadro(Config& cfg, const EstadoPainel& e);
     HWND Janela() const { return hwnd; }
-    void Alterna();                   // mostra/esconde (Ctrl+Alt+P)
+    // Ctrl+Shift+P: escondido ou sem foco -> aparece com foco e o cursor livre (o jogo solta o mouse, como na Game
+    // Bar); aberto e em uso -> fecha e devolve o foco (e o mouse) ao jogo
+    void Alterna();
+    void Esconde(bool devolveFoco = true);
+    void DefineJogo(HWND j) { jogo = j; }
     void DefineAutoOculto(bool sim);  // some enquanto o jogo esta fora de foco (Alt+Tab, minimizado)
     void Ancora(HWND alvo);           // encosta na direita do monitor de `alvo` (ou do principal)
 
@@ -51,6 +55,7 @@ class Painel
     void Aplica();
     Gpu* gpu = nullptr;
     HWND hwnd = nullptr;
+    HWND jogo = nullptr;
     ComPtr<IDXGISwapChain3> sc;
     ComPtr<ID3D12DescriptorHeap> rtvHeap, srvHeap;
     ComPtr<ID3D12Resource> bb[2];

@@ -429,12 +429,44 @@ void Painel::Aplica()
         SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
+// Traz `h` para o primeiro plano mesmo com outro processo (o jogo) em foco: o Windows recusa SetForegroundWindow de
+// quem nao recebeu a ultima entrada; unir a fila de entrada da thread em foco a nossa durante a troca e o jeito
+// suportado (sem tecla simulada, que o jogo veria).
+static void Foca(HWND h)
+{
+    if (!h || !IsWindow(h))
+        return;
+    HWND fg = GetForegroundWindow();
+    const DWORD tFg = fg ? GetWindowThreadProcessId(fg, nullptr) : 0, tEu = GetCurrentThreadId();
+    const bool une = tFg && tFg != tEu && AttachThreadInput(tEu, tFg, TRUE);
+    BringWindowToTop(h);
+    SetForegroundWindow(h);
+    if (une)
+        AttachThreadInput(tEu, tFg, FALSE);
+}
+
 void Painel::Alterna()
 {
-    usuarioQuer = !(usuarioQuer && IsWindowVisible(hwnd));
+    if (!hwnd)
+        return;
+    if (IsWindowVisible(hwnd) && GetForegroundWindow() == hwnd)
+    {
+        Esconde(true);
+        return;
+    }
+    usuarioQuer = true;
     Aplica();
-    if (usuarioQuer && IsWindowVisible(hwnd))
-        SetForegroundWindow(hwnd);
+    Foca(hwnd);
+    // o jogo prende o cursor na janela dele (ClipCursor) enquanto tem o foco; sem o foco, solta: garante
+    ClipCursor(nullptr);
+}
+
+void Painel::Esconde(bool devolveFoco)
+{
+    usuarioQuer = false;
+    Aplica();
+    if (devolveFoco && jogo && IsWindow(jogo) && !IsIconic(jogo))
+        Foca(jogo);
 }
 
 void Painel::DefineAutoOculto(bool sim)
@@ -493,8 +525,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
     if (g_fechar)
     {
         g_fechar = false;
-        usuarioQuer = false; // fechar so esconde (Ctrl+Alt+P volta); sair e no botao
-        Aplica();
+        Esconde(true); // fechar so esconde (Ctrl+Shift+P volta); sair e no botao
         return a;
     }
     if (IsIconic(hwnd) || !IsWindowVisible(hwnd))
@@ -528,20 +559,17 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             x += g_secao->CalcTextSizeA(g_tSecao, FLT_MAX, 0, c, c + 1).x + 1.8f * g_e;
         }
         ImGui::SetCursorScreenPos(ImVec2(p.x + larg - 28 * g_e, p.y));
-        if (ImGui::InvisibleButton("##fecha", ImVec2(28 * g_e, 28 * g_e)))
-        {
-            usuarioQuer = false;
-            Aplica();
-        }
+        if (ImGui::InvisibleButton("##fecha", ImVec2(28 * g_e, 28 * g_e)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+            Esconde(true);
         const ImVec2 c(p.x + larg - 14 * g_e, p.y + 14 * g_e);
         const ImU32 cx = ImGui::IsItemHovered() ? kTexto : kTexto2;
         dl->AddLine(ImVec2(c.x - 6 * g_e, c.y - 6 * g_e), ImVec2(c.x + 6 * g_e, c.y + 6 * g_e), cx, 1.8f * g_e);
         dl->AddLine(ImVec2(c.x - 6 * g_e, c.y + 6 * g_e), ImVec2(c.x + 6 * g_e, c.y - 6 * g_e), cx, 1.8f * g_e);
-        Dica("Esconde o painel (Ctrl+Alt+P mostra de novo)");
+        Dica("Esconde o painel e devolve o jogo (Esc; Ctrl+Shift+P mostra de novo)");
         ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + g_tTitulo + 10 * g_e));
         ImGui::Dummy(ImVec2(0, 0));
         if (e.alvo.empty())
-            ImGui::TextColored(ImVec4(1, 0.78f, 0.3f, 1), "Nenhum jogo  ·  Ctrl+Alt+D com o jogo em foco");
+            ImGui::TextColored(ImVec4(1, 0.78f, 0.3f, 1), "Nenhum jogo  ·  Ctrl+Shift+D com o jogo em foco");
         else
         {
             const ImVec2 q = ImGui::GetCursorScreenPos();
@@ -555,7 +583,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "Rede indisponível: só o quadro original (overlay.jsonl)");
         ImGui::Dummy(ImVec2(0, 4 * g_e));
         bool ligado = cfg.modo != 1;
-        if (Marca("DLSS LIGADO", &ligado, "Liga/desliga a rede (Ctrl+Alt+N troca o modo de exibicao)", true))
+        if (Marca("DLSS LIGADO", &ligado, "Liga/desliga a rede (Ctrl+Shift+N troca o modo de exibicao)", true))
         {
             cfg.modo = ligado ? 0 : 1;
             mc = true;
@@ -697,7 +725,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         const char* modos[] = {"Rede", "Original", "Comparação (lado a lado)", "Só a edição da rede", "Movimento simulado"};
         ImGui::SetNextItemWidth(lc);
         ImGui::Combo("##modo", &cfg.modo, modos, 5);
-        Dica("Ctrl+Alt+N troca o modo.");
+        Dica("Ctrl+Shift+N troca o modo.");
         if (cfg.modo == 2)
             Deslizador("Divisão", &cfg.divisao, 0.f, 1.f, "%.2f", nullptr, 0.5f);
     }
@@ -820,9 +848,9 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             a.salvar = true;
         Dica("Grava em config.json: vale para os jogos sem perfil.");
         ImGui::SameLine(0, 8 * g_e);
-        if (Botao("Sair (Ctrl+Alt+Q)", b2))
+        if (Botao("Sair (Ctrl+Shift+Q)", b2))
             a.sair = true;
-        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kTexto2), "Ctrl+Alt+P esconde  ·  Ctrl+Alt+D liga/desliga");
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kTexto2), "Ctrl+Shift+P abre/fecha (com o mouse)  ·  Esc devolve o jogo");
         ImGui::TextDisabled("%s", Utf8(e.placa).c_str());
     }
     ImGui::PopFont();

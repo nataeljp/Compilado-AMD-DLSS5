@@ -11,7 +11,7 @@ Para rodar basta a pasta **`bin`**: `DLSS5Overlay.exe` e `runtime\` (runtime HIP
 
 1. Rode o jogo em **janela** ou **tela cheia sem borda** (tela cheia exclusiva não pode ter overlay por cima).
 2. Abra `DLSS5Overlay.exe`. O painel (no estilo do *DLSS 5 Developer Controls* da NVIDIA) fica encostado na direita da
-   tela. Deixe o jogo em foco e aperte **Ctrl+Alt+D**, ou escolha a janela em **Jogo** e clique em **Ligar**.
+   tela. Deixe o jogo em foco e aperte **Ctrl+Shift+D**, ou escolha a janela em **Jogo** e clique em **Ligar**.
 3. Como a Game Bar: overlay e painel só aparecem com o jogo em foco. Alt+Tab, minimizar ou outra janela na frente os
    escondem e pausam a rede; ao voltar ao jogo eles voltam. O overlay acompanha a janela ao mover e redimensionar.
 4. **Perfil por jogo**: *Salvar perfil* grava os ajustes em `perfis\<exe>.json`, que carrega sozinho quando o overlay
@@ -20,12 +20,12 @@ Para rodar basta a pasta **`bin`**: `DLSS5Overlay.exe` e `runtime\` (runtime HIP
 
 | Atalho | Ação |
 |---|---|
-| Ctrl+Alt+D | liga/desliga no jogo em primeiro plano |
-| Ctrl+Alt+N | modo: rede → original → comparação → só a edição → movimento |
-| Ctrl+Alt+S | estilo 0 → 1 → 2 |
-| Ctrl+Alt+P | mostra/esconde o painel |
-| Ctrl+Alt+G | grava os próximos quadros em bruto (`bin\gravacoes\`), para análise |
-| Ctrl+Alt+Q | sai |
+| Ctrl+Shift+D | liga/desliga no jogo em primeiro plano |
+| Ctrl+Shift+N | modo: rede → original → comparação → só a edição → movimento |
+| Ctrl+Shift+S | estilo 0 → 1 → 2 |
+| Ctrl+Shift+P | mostra/esconde o painel |
+| Ctrl+Shift+G | grava os próximos quadros em bruto (`bin\gravacoes\`), para análise |
+| Ctrl+Shift+Q | sai |
 
 Requisitos: placa AMD RDNA 4 (RX 9070 / 9060) e driver AMD com `amdhip64_7.dll` (os drivers atuais trazem), Windows 10
 2004 ou mais novo (Windows 11 recomendado: sem a borda amarela da captura).
@@ -86,7 +86,7 @@ numa janela própria. Não há como garantir a política de cada jogo; quem deci
 `recursos\` ("NR" em fundo vermelho); `monta_runtime.ps1` monta `bin\runtime` com o runtime v3 (pesos exatos em FP16
 gravados como `.f16`: metade do tamanho, saída idêntica bit a bit; pesos do histórico extraídos do `nvngx_dlssnr` 310.8);
 `empacota.ps1` gera o zip de distribuição. `ferramentas\compara_ref.py` mede o overlay contra a saída real da NVIDIA.
-Gravações do jogo (Ctrl+Alt+G) podem ser reproduzidas com `--reproduz <pasta> [--atraso N]` (N = a resposta da rede
+Gravações do jogo (Ctrl+Shift+G) podem ser reproduzidas com `--reproduz <pasta> [--atraso N]` (N = a resposta da rede
 entra N quadros depois, para medir o modo assíncrono); `ferramentas\compara_atraso.py` e `cintilacao.py` medem o custo
 do atraso e a cintilação. `ferramentas\gera_sintetico.py` gera uma sequência com movimento exato conhecido e
 `avalia_sintetico.py` mede erro e cintilação contra a referência sem ruído (a média das respostas alinhadas).
