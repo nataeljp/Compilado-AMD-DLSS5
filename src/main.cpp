@@ -4,6 +4,7 @@
 // Atalhos:  Ctrl+Alt+D  liga/desliga no jogo em primeiro plano
 //           Ctrl+Alt+N  modo: rede -> original -> comparacao -> so a edicao
 //           Ctrl+Alt+S  estilo 0 -> 1 -> 2
+//           Ctrl+Alt+G  grava os proximos quadros em bruto (bin\gravacoes\), para analise
 //           Ctrl+Alt+Q  sai
 // Teste:    DLSS5Overlay.exe --alvo "titulo" --quadros N --grava saida.rgba
 #include <DirectXPackedVector.h>
@@ -21,6 +22,9 @@
 #include <winrt/base.h>
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
 #include <thread>
 
 using namespace ov;
@@ -156,6 +160,7 @@ struct App
     void Encerra()
     {
         gpu.Espera();
+        EncerraGravacao();
         rede.Encerra();
         cap.Para();
         painel.Destroi();
@@ -569,6 +574,8 @@ struct App
         }
         gpu.Espera();
         estat = fluxo.LeEstatisticas();
+        if (gravando > 0)
+            GravaQuadro(preparou, temMov, edicao);
         if (preparou)
         {
             rede.Aposenta();
@@ -661,6 +668,166 @@ struct App
     }
 
     // grava uma textura crua (bpp bytes por pixel) para conferencia
+    // ---- gravacao (Ctrl+Alt+G): os proximos quadros em bruto, no tamanho da rede, para analise fora do jogo ----
+    // Por quadro: original (RGBA16F), edicao crua da rede (RGBA16F; so vale nos quadros com rede), edicao exibida
+    // (RGBA16F), movimento (RG16F, pixels ate o quadro anterior) e confianca (R16F). meta.jsonl diz quais quadros tiveram
+    // rede; config.json e o config em uso. Escrita numa thread; ~6 GB no maximo por gravacao.
+    int gravando = 0, gravados = 0;
+    std::wstring pastaGravacao;
+    FILE* metaGravacao = nullptr;
+    std::thread escritor;
+    std::mutex mxEscrita;
+    std::condition_variable cvEscrita;
+    std::deque<std::pair<std::wstring, std::vector<unsigned char>>> filaEscrita;
+    bool fimEscrita = false;
+    struct Leitura
+    {
+        ComPtr<ID3D12Resource> rb;
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
+        UINT64 total = 0;
+    };
+    Leitura leituras[5];
+
+    void IniciaGravacao()
+    {
+        if (gravando > 0 || !orig.r)
+        {
+            Log("gravacao", gravando > 0 ? "ja gravando" : "nada para gravar (ligue o overlay no jogo)");
+            return;
+        }
+        const double porQuadro = double(fed.w) * fed.h * (8 + 8 + 8 + 4 + 2);
+        gravando = std::clamp(int(6e9 / porQuadro), 8, 240);
+        gravados = 0;
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        wchar_t nome[64];
+        swprintf(nome, 64, L"%04u%02u%02u_%02u%02u%02u", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+        pastaGravacao = pasta + L"\\gravacoes\\" + nome;
+        CreateDirectoryW((pasta + L"\\gravacoes").c_str(), nullptr);
+        CreateDirectoryW(pastaGravacao.c_str(), nullptr);
+        cfg.Salva(pastaGravacao + L"\\config.json");
+        _wfopen_s(&metaGravacao, (pastaGravacao + L"\\meta.jsonl").c_str(), L"w");
+        if (metaGravacao)
+            fprintf(metaGravacao,
+                    "{\"rede_w\":%u,\"rede_h\":%u,\"janela_w\":%u,\"janela_h\":%u,\"hdr\":%d,\"escala\":%.4f,"
+                    "\"arquivos\":{\"orig\":\"RGBA16F\",\"crua\":\"RGBA16F\",\"edicao\":\"RGBA16F\",\"mov\":\"RG16F\","
+                    "\"conf\":\"R16F\"},\"quadros\":%d}\n",
+                    fed.w, fed.h, inteiro.w, inteiro.h, hdr ? 1 : 0, escalaUsada, gravando);
+        if (!escritor.joinable())
+            escritor = std::thread([this] {
+                for (;;)
+                {
+                    std::pair<std::wstring, std::vector<unsigned char>> item;
+                    {
+                        std::unique_lock<std::mutex> lk(mxEscrita);
+                        cvEscrita.wait(lk, [&] { return fimEscrita || !filaEscrita.empty(); });
+                        if (filaEscrita.empty())
+                            return;
+                        item = std::move(filaEscrita.front());
+                        filaEscrita.pop_front();
+                    }
+                    cvEscrita.notify_all();
+                    FILE* f = nullptr;
+                    _wfopen_s(&f, item.first.c_str(), L"wb");
+                    if (f)
+                    {
+                        fwrite(item.second.data(), 1, item.second.size(), f);
+                        fclose(f);
+                    }
+                }
+            });
+        MessageBeep(MB_OK);
+        Log("gravacao", Fmt("gravando %d quadros (rede %ux%u) em %s", gravando, fed.w, fed.h, Utf8(pastaGravacao).c_str()));
+    }
+
+    // copia as texturas do quadro (GPU ja ociosa) e entrega os bytes a thread de escrita
+    void GravaQuadro(bool comRede, bool comMov, Tex* edicaoExibida)
+    {
+        Tex* tex[5] = {&orig, &temporal.Crua(), edicaoExibida ? edicaoExibida : &temporal.Crua(), &fluxo.Movimento(),
+                       &fluxo.Confianca()};
+        const UINT bpp[5] = {8, 8, 8, 4, 2};
+        const wchar_t* nomes[5] = {L"orig", L"crua", L"edicao", L"mov", L"conf"};
+        Ck(al[0]->Reset(), "reset");
+        Ck(cl[0]->Reset(al[0].Get(), nullptr), "list");
+        for (int i = 0; i < 5; ++i)
+        {
+            Leitura& L = leituras[i];
+            const auto d = tex[i]->r->GetDesc();
+            UINT64 total = 0;
+            D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
+            gpu.dev->GetCopyableFootprints(&d, 0, 1, 0, &fp, nullptr, nullptr, &total);
+            if (!L.rb || L.total != total)
+            {
+                D3D12_HEAP_PROPERTIES hp{};
+                hp.Type = D3D12_HEAP_TYPE_READBACK;
+                D3D12_RESOURCE_DESC bd{};
+                bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+                bd.Width = total;
+                bd.Height = bd.DepthOrArraySize = bd.MipLevels = 1;
+                bd.SampleDesc.Count = 1;
+                bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+                L.rb.Reset();
+                Ck(gpu.dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                    IID_PPV_ARGS(&L.rb)),
+                   "readback(gravacao)");
+                L.total = total;
+            }
+            L.fp = fp;
+            tex[i]->Para(cl[0].Get(), D3D12_RESOURCE_STATE_COPY_SOURCE);
+            D3D12_TEXTURE_COPY_LOCATION dst{L.rb.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+            dst.PlacedFootprint = fp;
+            D3D12_TEXTURE_COPY_LOCATION src{tex[i]->r.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+            cl[0]->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        }
+        cl[0]->Close();
+        ID3D12CommandList* l[] = {cl[0].Get()};
+        gpu.fila->ExecuteCommandLists(1, l);
+        gpu.Espera();
+        for (int i = 0; i < 5; ++i)
+        {
+            Leitura& L = leituras[i];
+            std::vector<unsigned char> b(size_t(tex[i]->w) * tex[i]->h * bpp[i]);
+            unsigned char* p = nullptr;
+            L.rb->Map(0, nullptr, (void**)&p);
+            for (UINT y = 0; y < tex[i]->h; ++y)
+                memcpy(b.data() + size_t(y) * tex[i]->w * bpp[i], p + L.fp.Offset + size_t(y) * L.fp.Footprint.RowPitch,
+                       size_t(tex[i]->w) * bpp[i]);
+            L.rb->Unmap(0, nullptr);
+            wchar_t arq[96];
+            swprintf(arq, 96, L"\\%04d_%s.raw", gravados, nomes[i]);
+            std::unique_lock<std::mutex> lk(mxEscrita);
+            cvEscrita.wait(lk, [&] { return filaEscrita.size() < 24; }); // segura o overlay se o disco nao der conta
+            filaEscrita.emplace_back(pastaGravacao + arq, std::move(b));
+            lk.unlock();
+            cvEscrita.notify_all();
+        }
+        if (metaGravacao)
+            fprintf(metaGravacao, "{\"q\":%d,\"rede\":%d,\"mov\":%d,\"t_ms\":%.3f}\n", gravados, comRede ? 1 : 0,
+                    comMov ? 1 : 0,
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count());
+        ++gravados;
+        if (--gravando == 0)
+        {
+            if (metaGravacao)
+                fclose(metaGravacao), metaGravacao = nullptr;
+            MessageBeep(MB_ICONASTERISK);
+            Log("gravacao", Fmt("gravacao terminada: %d quadros em %s", gravados, Utf8(pastaGravacao).c_str()));
+        }
+    }
+
+    void EncerraGravacao()
+    {
+        if (metaGravacao)
+            fclose(metaGravacao), metaGravacao = nullptr;
+        {
+            std::lock_guard<std::mutex> lk(mxEscrita);
+            fimEscrita = true;
+        }
+        cvEscrita.notify_all();
+        if (escritor.joinable())
+            escritor.join(); // termina de escrever o que ja estava na fila
+    }
+
     void GravaTex(Tex& t, const std::wstring& arq, UINT bpp)
     {
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
@@ -829,6 +996,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
     RegisterHotKey(nullptr, 3, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'S');
     RegisterHotKey(nullptr, 4, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'Q');
     RegisterHotKey(nullptr, 5, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'P');
+    RegisterHotKey(nullptr, 6, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'G');
     if (!alvoTitulo.empty())
     {
         Busca b{alvoTitulo};
@@ -872,6 +1040,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     break;
                 case 5:
                     app.painel.Alterna();
+                    break;
+                case 6:
+                    app.IniciaGravacao();
                     break;
                 }
             }
