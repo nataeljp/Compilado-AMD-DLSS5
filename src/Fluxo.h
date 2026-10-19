@@ -38,6 +38,7 @@ class Fluxo
     };
     void Estatisticas(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, Tex& fed, Tex& fedAnt);
     Estat LeEstatisticas();
+    ID3D12Resource* BufEstat() { return bufEstat.Get(); } // as somas do quadro na GPU (lidas pelo Temporal no mesmo quadro)
     UINT niveis = 0;
 
   private:

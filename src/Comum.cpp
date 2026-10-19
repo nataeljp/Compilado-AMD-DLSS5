@@ -326,10 +326,22 @@ void Passe::Roda(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* 
     for (UINT i = 0; i < nSrv; ++i)
     {
         D3D12_SHADER_RESOURCE_VIEW_DESC v{};
-        v.Format = srvs[i].second;
-        v.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         v.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        v.Texture2D.MipLevels = 1;
+        const auto rd = srvs[i].first->GetDesc();
+        if (rd.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+        {
+            // buffer cru (ByteAddressBuffer)
+            v.Format = DXGI_FORMAT_R32_TYPELESS;
+            v.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+            v.Buffer.NumElements = UINT(rd.Width / 4);
+            v.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+        }
+        else
+        {
+            v.Format = srvs[i].second;
+            v.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            v.Texture2D.MipLevels = 1;
+        }
         d->CreateShaderResourceView(srvs[i].first, &v, desc.Cpu(base + i));
     }
     for (UINT i = 0; i < nUav; ++i)

@@ -44,7 +44,8 @@ class Temporal
     // Devolve a edicao estabilizada (RGBA16F: rgb = edicao, a = quadros acumulados), estado SRV
     Tex* Roda(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, Tex& orig, Tex& fed, Tex& fedAnt,
               bool chegou,
-              Tex* fedT0, Tex* deslocamento, Tex* mov, Tex* confianca, const ParamsTemporal& p);
+              Tex* fedT0, Tex* deslocamento, Tex* mov, Tex* confianca, ID3D12Resource* estatFluxo,
+              const ParamsTemporal& p);
     bool Valido() const { return valido; }
     Tex& Crua() { return crua; } // a edicao da ultima resposta, no espaco de t0 (diagnostico)
 

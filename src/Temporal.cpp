@@ -97,7 +97,7 @@ float3 CorP(float3 o) { o = max(o, 0.0); return pow(o / (1.0 + Lum(o)), 1.0 / 2.
 
 const char* kHlsl = R"(
 cbuffer C : register(b0) { uint w; uint h; uint temResp; uint temHist; float maxN; float rejeicao; float folga; uint temMov;
-                           uint temDesl; uint temConf; uint pad0; uint temGrade; uint gw; uint gh; uint temDeslG; uint pad; };
+                           uint temDesl; uint temConf; uint temEstat; uint temGrade; uint gw; uint gh; uint temDeslG; uint pad; };
 // espaco comprimido (x / (1 + luma), como o TAA dos jogos): o realce em HDR nao domina o acumulo nem o reposicionamento
 float3 Comprime(float3 x) { return x / (1.0 + max(Lum(x), 0.0)); }
 float3 Expande(float3 c) { return c / max(1.0 - Lum(c), 1e-3); }
@@ -114,6 +114,7 @@ Texture2D<float4> orig : register(t8);    // este quadro no tamanho da rede (lin
 Texture2D<float4> grade : register(t9);   // grade bilateral da edicao da ultima resposta (no espaco de t0 dela)
 Texture2D<float4> deslG : register(t10);  // deslocamento acumulado ate o t0 da grade
 Texture2D<float4> gradeCor : register(t11); // cor media (perceptual comprimida) de quem recebeu cada celula da grade
+ByteAddressBuffer estatFluxo : register(t12); // somas do quadro (Fluxo::Estatisticas): [0] (1-conf)*1024, [3] pixels
 RWTexture2D<float4> histNovo : register(u0);
 RWTexture2D<float4> edLin : register(u1); // a edicao estabilizada em luz linear (o que a composicao soma)
 SamplerState s : register(s0);
@@ -208,10 +209,19 @@ float3 Fatia(float2 pos, float z01, float3 cp)
     float2 v = temMov ? mov.Load(int3(p, 0)).xy : float2(0, 0);
     float2 uvAnt = (float2(p) + 0.5 + v) / tam;
     bool dentro = all(uvAnt > 0.0) && all(uvAnt < 1.0);
+    // corte de cena (troca de camera, menu, tela de carregamento): a confianca ida-e-volta desaba na tela inteira
+    // (medido no Cyberpunk: 0,01 no corte; >= 0,29 no giro de camera mais rapido). Como no TAA, o historico e a grade
+    // (da cena anterior) saem; a resposta atrasada, que e da cena anterior, tambem. Fica o original ate a rede responder.
+    bool corte = false;
+    if (temEstat)
+    {
+        uint np = estatFluxo.Load(12);
+        corte = np > 0 && float(estatFluxo.Load(0)) / 1024.0 / float(np) > 0.88;
+    }
     float3 hr = 0;
     float n = 0;
     float foto = 1;
-    if (temHist && temMov && dentro)
+    if (temHist && temMov && dentro && !corte)
     {
         hr = CatmullRomT(histAnt, uvAnt, tam);
         n = histAnt.SampleLevel(s, uvAnt, 0).a;
@@ -223,7 +233,7 @@ float3 Fatia(float2 pos, float z01, float3 cp)
         if (temConf) n *= lerp(conf.Load(int3(p, 0)), 1.0, foto);
     }
     float3 eg = 0;
-    if (temGrade)
+    if (temGrade && !corte)
     {
         float4 dg = temDeslG ? deslG.Load(int3(p, 0)) : float4(0, 0, 1, 1);
         float3 o = orig.Load(int3(p, 0)).rgb;
@@ -240,7 +250,7 @@ float3 Fatia(float2 pos, float z01, float3 cp)
         float2 uv0 = q0 / tam;
         float peso = 0;
         float3 e = 0;
-        if (dd.w > 0.5 && all(uv0 > 0.0) && all(uv0 < 1.0))
+        if (dd.w > 0.5 && all(uv0 > 0.0) && all(uv0 < 1.0) && !(corte && temDesl))
         {
             e = edT0.SampleLevel(s, uv0, 0).rgb;
             int2 c0 = int2(floor(q0));
@@ -268,8 +278,10 @@ float3 Fatia(float2 pos, float z01, float3 cp)
     }
     else
     {
-        // historico sem garantia (fluxo inconsistente E a cor do quadro anterior nao bate): cede a previsao da grade
-        float k = temConf ? max(conf.Load(int3(p, 0)), foto) : 1.0;
+        // o historico so vale onde a cor do quadro anterior reprojetado bate; onde nao bate cede a previsao da grade.
+        // (a confianca ida-e-volta nao salva historico de cor diferente: num corte ela dava alta por acaso e a edicao da
+        // cena anterior ficava pintada na nova)
+        float k = foto;
         hr = temGrade ? lerp(eg, hr, k) : hr * k;
         n = max(n, 1.0);
     }
@@ -291,7 +303,7 @@ struct K
 {
     UINT w, h, temResp, temHist;
     float maxN, rejeicao, folga;
-    UINT temMov, temDesl, temConf, pad0, temGrade, gw, gh, temDeslG, pad;
+    UINT temMov, temDesl, temConf, temEstat, temGrade, gw, gh, temDeslG, pad;
 };
 struct KGrade
 {
@@ -314,7 +326,7 @@ const D3D12_RESOURCE_STATES SRV =
 
 void Temporal::Cria(ID3D12Device* d)
 {
-    passe.Cria(d, (std::string(hlsl::Comum) + kHlsl).c_str(), "CSTemporal", 12, 2, 16, "temporal");
+    passe.Cria(d, (std::string(hlsl::Comum) + kHlsl).c_str(), "CSTemporal", 13, 2, 16, "temporal");
     passeGrade.Cria(d, (std::string(hlsl::Comum) + kGrade).c_str(), "CSGrade", 2, 2, 4, "grade");
     passeEdicao.Cria(d, (std::string(hlsl::Comum) + kEdicao).c_str(), "CSEdicao", 3, 1, 8, "edicao");
     passeAcumula.Cria(d, (std::string(hlsl::Comum) + kAcumula).c_str(), "CSAcumula", 3, 1, 4, "acumula");
@@ -424,7 +436,8 @@ void Temporal::Grade(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Devi
 }
 
 Tex* Temporal::Roda(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, Tex& orig, Tex& fed, Tex& fedAnt,
-                    bool chegou, Tex* fedT0, Tex* deslocamento, Tex* mov, Tex* confianca, const ParamsTemporal& p)
+                    bool chegou, Tex* fedT0, Tex* deslocamento, Tex* mov, Tex* confianca, ID3D12Resource* estatFluxo,
+                    const ParamsTemporal& p)
 {
     if (!chegou && !valido)
         return nullptr; // sem rede e sem historico: nada a mostrar
@@ -452,7 +465,7 @@ Tex* Temporal::Roda(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Devic
         mov ? 1u : 0u,
         deslocamento ? 1u : 0u,
         confianca ? 1u : 0u,
-        0,
+        (mov && estatFluxo) ? 1u : 0u,
         gradeValida ? 1u : 0u,
         gw,
         gh,
@@ -472,7 +485,8 @@ Tex* Temporal::Roda(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Devic
                 {orig.r.Get(), orig.fmt},
                 gradeValida ? Par{grade.r.Get(), grade.fmt} : vazio,
                 deslGAgora ? Par{deslGAgora->r.Get(), deslGAgora->fmt} : vazio,
-                gradeValida ? Par{gradeCor.r.Get(), gradeCor.fmt} : vazio},
+                gradeValida ? Par{gradeCor.r.Get(), gradeCor.fmt} : vazio,
+                {estatFluxo, DXGI_FORMAT_UNKNOWN}},
                {{novo.r.Get(), novo.fmt}, {linear.r.Get(), linear.fmt}}, &k, (fed.w + 7) / 8, (fed.h + 7) / 8);
     novo.Para(c, SRV);
     linear.Para(c, SRV);

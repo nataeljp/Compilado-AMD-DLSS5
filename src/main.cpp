@@ -594,7 +594,8 @@ struct App
         // edicao estabilizada no tempo (e reprojetada nos quadros sem resposta)
         ParamsTemporal tp = cfg.temporal;
         tp.intensidade = cfg.ngx.intensidade;
-        const bool usa = chegou && cfg.modo != 1 && redeOk;
+        // resposta de um quadro anterior a um corte de cena e da cena velha: descartada
+        const bool usa = chegou && cfg.modo != 1 && redeOk && quadroEnvio >= quadroCorte;
         if (usa)
         {
             temporal.Edicao(c, desc, gpu.dev.Get(), origRede, rede.Entrada(), rede.Resposta(), tp);
@@ -604,7 +605,8 @@ struct App
                           ? temporal.Roda(c, desc, gpu.dev.Get(), orig, fed, fedAnt, usa, usa ? &rede.Entrada() : nullptr,
                                           usa && !semDeslocamento ? deslocamento : nullptr,
                                           temMov ? &fluxo.Movimento() : nullptr,
-                                          (temMov && cfg.usaConfianca) ? &fluxo.Confianca() : nullptr, tp)
+                                          (temMov && cfg.usaConfianca) ? &fluxo.Confianca() : nullptr,
+                                          fluxo.BufEstat(), tp)
                           : nullptr;
         if (usa)
         {
@@ -687,6 +689,17 @@ struct App
         }
         gpu.EsperaValor(fim);
         estat = fluxo.LeEstatisticas();
+        if (estat.valida && estat.semConfianca > 0.88f)
+        {
+            // corte de cena (o shader ja limpou este quadro): historico e grade da cena velha saem; a resposta em voo,
+            // se foi enviada antes deste quadro, e descartada quando chegar; a rede roda logo na cena nova
+            temporal.Reinicia();
+            zeraHistorico = true;
+            quadroCorte = quadros;
+            if (cortes++ % 50 == 0)
+                Log("tempo", Fmt("corte de cena no quadro %llu (confianca %.2f)", (unsigned long long)quadros,
+                                 1.0 - estat.semConfianca));
+        }
         if (gravando > 0)
             GravaQuadro(usa, temMov, edicao);
         if (usa)
@@ -734,6 +747,8 @@ struct App
     bool semDeslocamento = false; // --sem-deslocamento (teste): a resposta atrasada entra onde estava em t0
     Tex origRede;            // o quadro que a rede esta vendo (t0), no tamanho da rede
     UINT64 quadroEnvio = 0;  // t0
+    UINT64 quadroCorte = 0;  // ultimo corte de cena: respostas enviadas antes dele sao da cena velha
+    UINT64 cortes = 0;
     bool deslZerado = false; // o deslocamento acumulado recomeca em t0
     std::chrono::steady_clock::time_point tEnvio;
     double somaAtrasoQ = 0, somaAtrasoMs = 0;
@@ -944,12 +959,17 @@ struct App
         {
             Leitura& L = leituras[i];
             std::vector<unsigned char> b(size_t(tex[i]->w) * tex[i]->h * bpp[i]);
-            unsigned char* p = nullptr;
-            L.rb->Map(0, nullptr, (void**)&p);
-            for (UINT y = 0; y < tex[i]->h; ++y)
-                memcpy(b.data() + size_t(y) * tex[i]->w * bpp[i], p + L.fp.Offset + size_t(y) * L.fp.Footprint.RowPitch,
-                       size_t(tex[i]->w) * bpp[i]);
-            L.rb->Unmap(0, nullptr);
+            // sem edicao exibida (antes da 1a resposta, depois de um corte de cena) a "edicao" gravada e zero; antes
+            // gravava a ultima crua, e as ferramentas mostravam na analise uma edicao velha que nao estava na tela
+            if (i != 2 || edicaoExibida)
+            {
+                unsigned char* p = nullptr;
+                L.rb->Map(0, nullptr, (void**)&p);
+                for (UINT y = 0; y < tex[i]->h; ++y)
+                    memcpy(b.data() + size_t(y) * tex[i]->w * bpp[i],
+                           p + L.fp.Offset + size_t(y) * L.fp.Footprint.RowPitch, size_t(tex[i]->w) * bpp[i]);
+                L.rb->Unmap(0, nullptr);
+            }
             wchar_t arq[96];
             swprintf(arq, 96, L"\\%04d_%s.raw", gravados, nomes[i]);
             std::unique_lock<std::mutex> lk(mxEscrita);
