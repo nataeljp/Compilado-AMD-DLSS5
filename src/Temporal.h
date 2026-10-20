@@ -37,7 +37,9 @@ class Temporal
     Tex* Acumula(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, Tex* mov, Tex* confianca, bool zera);
     // Grade: na chegada (depois de Edicao), a grade bilateral da edicao de t0; `deslocamento` = o ate t0 (nullptr = t0 e
     // este quadro). AcumulaGrade: um quadro a mais no deslocamento ate o t0 da grade (todo quadro, antes de Roda).
-    void Grade(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, Tex& origT0, Tex* deslocamento);
+    // zT0 (captura de buffer): a distancia da camera em t0; a grade separa camadas pela distancia
+    void Grade(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, Tex& origT0, Tex* deslocamento,
+               Tex* zT0 = nullptr);
     Tex* AcumulaGrade(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, Tex* mov, Tex* confianca);
     // grava o passe. chegou: a edicao de Edicao() entra neste quadro, trazida de t0 pelo `deslocamento` (nullptr = t0 e
     // este quadro); senao so reprojeta. mov == nullptr: sem movimento. confianca: do fluxo (1 = confiavel), opcional.
@@ -45,7 +47,7 @@ class Temporal
     Tex* Roda(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, Tex& orig, Tex& fed, Tex& fedAnt,
               bool chegou,
               Tex* fedT0, Tex* deslocamento, Tex* mov, Tex* confianca, ID3D12Resource* estatFluxo,
-              const ParamsTemporal& p);
+              const ParamsTemporal& p, Tex* zAgora = nullptr); // zAgora: movimento e confianca exatos (do jogo)
     bool Valido() const { return valido; }
     Tex& Crua() { return crua; } // a edicao da ultima resposta, no espaco de t0 (diagnostico)
 

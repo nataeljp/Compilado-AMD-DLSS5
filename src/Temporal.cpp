@@ -52,11 +52,13 @@ SamplerState s : register(s0);
 // grade bilateral da edicao de t0 (HDRnet): por bloco de CELULA px e faixa de brilho, a edicao media que a rede deu e a
 // cor media de quem a recebeu. Onde a edicao de t0 nao pode ser reposicionada (conteudo animado, oclusao, borda nova),
 // ela sai da grade: a mesma regiao, com o mesmo brilho E cor parecida, recebe o que a rede fez ali (um branco nunca
-// herda a edicao de um neon do mesmo brilho).
+// herda a edicao de um neon do mesmo brilho). Com a profundidade do jogo (captura de buffer), cada celula guarda tambem
+// a distancia media (log2) de quem recebeu: objeto e fundo do mesmo brilho viram camadas separadas.
 const char* kGrade = R"(
-cbuffer C : register(b0) { uint w; uint h; uint gw; uint gh; };
+cbuffer C : register(b0) { uint w; uint h; uint gw; uint gh; uint temZ; uint pad0; uint pad1; uint pad2; };
 Texture2D<float4> orig : register(t0); // o quadro de t0 (linear)
 Texture2D<float4> ed : register(t1);   // a edicao de t0 (espaco comprimido)
+Texture2D<float> zT0 : register(t2);   // distancia da camera em t0 (so com temZ)
 RWTexture2D<float4> grade : register(u0);
 RWTexture2D<float4> gradeCor : register(u1);
 #define CELULA 16
@@ -68,7 +70,8 @@ float3 CorP(float3 o) { o = max(o, 0.0); return pow(o / (1.0 + Lum(o)), 1.0 / 2.
     if (g.x >= gw || g.y >= gh) return;
     float4 acc[FAIXAS];
     float3 accC[FAIXAS];
-    [unroll] for (int b = 0; b < FAIXAS; ++b) acc[b] = 0, accC[b] = 0;
+    float accZ[FAIXAS];
+    [unroll] for (int b = 0; b < FAIXAS; ++b) acc[b] = 0, accC[b] = 0, accZ[b] = 0;
     for (int y = 0; y < CELULA; ++y)
         for (int x = 0; x < CELULA; ++x)
         {
@@ -80,24 +83,28 @@ float3 CorP(float3 o) { o = max(o, 0.0); return pow(o / (1.0 + Lum(o)), 1.0 / 2.
             int z0 = (int)floor(z);
             float f = z - z0;
             float3 e = ed.Load(int3(p, 0)).rgb;
+            const float lz = temZ ? log2(max(zT0.Load(int3(p, 0)), 1e-6)) : 0.0;
             [unroll] for (int b = 0; b < FAIXAS; ++b)
             {
                 float wb = b == z0 ? 1.0 - f : (b == z0 + 1 ? f : 0.0);
                 acc[b] += float4(e * wb, wb);
                 accC[b] += cp * wb;
+                accZ[b] += lz * wb;
             }
         }
     [unroll] for (int b = 0; b < FAIXAS; ++b)
     {
         grade[int2(g.x * FAIXAS + b, g.y)] = float4(acc[b].rgb / max(acc[b].a, 1e-6), acc[b].a / (CELULA * CELULA));
-        gradeCor[int2(g.x * FAIXAS + b, g.y)] = float4(accC[b] / max(acc[b].a, 1e-6), 0.0);
+        gradeCor[int2(g.x * FAIXAS + b, g.y)] = float4(accC[b] / max(acc[b].a, 1e-6), accZ[b] / max(acc[b].a, 1e-6));
     }
 }
 )";
 
 const char* kHlsl = R"(
 cbuffer C : register(b0) { uint w; uint h; uint temResp; uint temHist; float maxN; float rejeicao; float folga; uint temMov;
-                           uint temDesl; uint temConf; uint temEstat; uint temGrade; uint gw; uint gh; uint temDeslG; uint pad; };
+                           uint temDesl; uint temConf; uint temEstat; uint temGrade; uint gw; uint gh; uint temDeslG; uint exata; };
+// exata: movimento e confianca do proprio jogo (captura de buffer). A confianca vem da profundidade reprojetada e e
+// exata: vale inteira no historico, no caminho da resposta atrasada e na grade (que separa camadas pela distancia).
 // espaco comprimido (x / (1 + luma), como o TAA dos jogos): o realce em HDR nao domina o acumulo nem o reposicionamento
 float3 Comprime(float3 x) { return x / (1.0 + max(Lum(x), 0.0)); }
 float3 Expande(float3 c) { return c / max(1.0 - Lum(c), 1e-3); }
@@ -115,6 +122,7 @@ Texture2D<float4> grade : register(t9);   // grade bilateral da edicao da ultima
 Texture2D<float4> deslG : register(t10);  // deslocamento acumulado ate o t0 da grade
 Texture2D<float4> gradeCor : register(t11); // cor media (perceptual comprimida) de quem recebeu cada celula da grade
 ByteAddressBuffer estatFluxo : register(t12); // somas do quadro (Fluxo::Estatisticas): [0] (1-conf)*1024, [3] pixels
+Texture2D<float> zAgora : register(t13);  // distancia da camera deste quadro (so com exata)
 RWTexture2D<float4> histNovo : register(u0);
 RWTexture2D<float4> edLin : register(u1); // a edicao estabilizada em luz linear (o que a composicao soma)
 SamplerState s : register(s0);
@@ -152,8 +160,10 @@ float3 CatmullRomT(Texture2D<float4> t, float2 uv, float2 tam)
 #define CELULA 16
 #define FAIXAS 8
 float Guia(float3 o) { float l = max(Lum(max(o, 0.0)), 0.0); return pow(l / (1.0 + l), 1.0 / 2.2); }
-// a edicao que a grade preve para um pixel de brilho z na posicao pos (pixels, espaco de t0 da grade); 0 sem dados
-float3 Fatia(float2 pos, float z01, float3 cp)
+// a edicao que a grade preve para um pixel de brilho z na posicao pos (pixels, espaco de t0 da grade); 0 sem dados.
+// lz: log2 da distancia do pixel (exata): so celulas da mesma camada (+-0,35 oitava) contam
+float PesoZ(float zc, float lz) { if (!exata) return 1.0; float d = (zc - lz) / 0.35; return exp(-d * d); }
+float3 Fatia(float2 pos, float z01, float3 cp, float lz)
 {
     float2 g = pos / CELULA - 0.5;
     int2 g0 = int2(floor(g));
@@ -170,9 +180,11 @@ float3 Fatia(float2 pos, float z01, float3 cp)
                 int2 c = clamp(g0 + int2(i, j), int2(0, 0), int2(gw - 1, gh - 1));
                 int b = min(z0 + k, FAIXAS - 1);
                 float4 t = grade.Load(int3(c.x * FAIXAS + b, c.y, 0));
-                float3 dc = abs(gradeCor.Load(int3(c.x * FAIXAS + b, c.y, 0)).rgb - cp);
+                float4 gc4 = gradeCor.Load(int3(c.x * FAIXAS + b, c.y, 0));
+                float3 dc = abs(gc4.rgb - cp);
                 float sc = max(dc.x, max(dc.y, dc.z)) / 0.1;
-                float wt = (i ? f.x : 1.0 - f.x) * (j ? f.y : 1.0 - f.y) * (k ? fz : 1.0 - fz) * t.a * exp(-sc * sc);
+                float wt = (i ? f.x : 1.0 - f.x) * (j ? f.y : 1.0 - f.y) * (k ? fz : 1.0 - fz) * t.a * exp(-sc * sc) *
+                           PesoZ(gc4.a, lz);
                 acc += t.rgb * wt;
                 ws += wt;
             }
@@ -191,9 +203,10 @@ float3 Fatia(float2 pos, float z01, float3 cp)
                 int2 c = clamp(gc + int2(dx, dy), int2(0, 0), int2(gw - 1, gh - 1));
                 int b = min(z0 + k, FAIXAS - 1);
                 float4 t = grade.Load(int3(c.x * FAIXAS + b, c.y, 0));
-                float3 dc = abs(gradeCor.Load(int3(c.x * FAIXAS + b, c.y, 0)).rgb - cp);
+                float4 gc4 = gradeCor.Load(int3(c.x * FAIXAS + b, c.y, 0));
+                float3 dc = abs(gc4.rgb - cp);
                 float sc = max(dc.x, max(dc.y, dc.z)) / 0.2;
-                float wt = exp(-0.25 * (dx * dx + dy * dy)) * (k ? fz : 1.0 - fz) * t.a * exp(-sc * sc);
+                float wt = exp(-0.25 * (dx * dx + dy * dy)) * (k ? fz : 1.0 - fz) * t.a * exp(-sc * sc) * PesoZ(gc4.a, lz);
                 acc2 += t.rgb * wt;
                 ws2 += wt;
             }
@@ -230,14 +243,14 @@ float3 Fatia(float2 pos, float z01, float3 cp)
         n *= foto;
         // ida e volta so pesa onde a cor tambem diverge: onde a cor do quadro anterior reprojetado bate, o historico
         // vale (em area lisa o vetor e arbitrario, nao confere, e zerar ali so trazia cintilacao: 0,129 -> 0,102 medido)
-        if (temConf) n *= lerp(conf.Load(int3(p, 0)), 1.0, foto);
+        if (temConf) n *= exata ? conf.Load(int3(p, 0)) : lerp(conf.Load(int3(p, 0)), 1.0, foto);
     }
     float3 eg = 0;
     if (temGrade && !corte)
     {
         float4 dg = temDeslG ? deslG.Load(int3(p, 0)) : float4(0, 0, 1, 1);
         float3 o = orig.Load(int3(p, 0)).rgb;
-        eg = Fatia(float2(p) + 0.5 + dg.xy, Guia(o), CorP(o));
+        eg = Fatia(float2(p) + 0.5 + dg.xy, Guia(o), CorP(o), exata ? log2(max(zAgora.Load(int3(p, 0)), 1e-6)) : 0.0);
     }
     if (temResp)
     {
@@ -265,6 +278,7 @@ float3 Fatia(float2 pos, float z01, float3 cp)
             hr = clamp(hr, mn - folga, mx + folga);
             float d = DifCor(fed.Load(int3(p, 0)).rgb, fedT0.SampleLevel(s, uv0, 0).rgb);
             peso = saturate(1.0 - d * rejeicao);
+            if (exata && temDesl) peso *= dd.z; // o caminho ate t0 passou por outra superficie (oclusao)
         }
         if (temGrade)
         {
@@ -282,6 +296,7 @@ float3 Fatia(float2 pos, float z01, float3 cp)
         // (a confianca ida-e-volta nao salva historico de cor diferente: num corte ela dava alta por acaso e a edicao da
         // cena anterior ficava pintada na nova)
         float k = foto;
+        if (exata && temConf) k *= conf.Load(int3(p, 0)); // fundo recem-descoberto: a grade da camada certa
         hr = temGrade ? lerp(eg, hr, k) : hr * k;
         n = max(n, 1.0);
     }
@@ -307,7 +322,7 @@ struct K
 };
 struct KGrade
 {
-    UINT w, h, gw, gh;
+    UINT w, h, gw, gh, temZ, pad0, pad1, pad2;
 };
 const UINT kCelula = 16, kFaixas = 8;
 struct KEdicao
@@ -326,8 +341,8 @@ const D3D12_RESOURCE_STATES SRV =
 
 void Temporal::Cria(ID3D12Device* d)
 {
-    passe.Cria(d, (std::string(hlsl::Comum) + kHlsl).c_str(), "CSTemporal", 13, 2, 16, "temporal");
-    passeGrade.Cria(d, (std::string(hlsl::Comum) + kGrade).c_str(), "CSGrade", 2, 2, 4, "grade");
+    passe.Cria(d, (std::string(hlsl::Comum) + kHlsl).c_str(), "CSTemporal", 14, 2, 16, "temporal");
+    passeGrade.Cria(d, (std::string(hlsl::Comum) + kGrade).c_str(), "CSGrade", 3, 2, 8, "grade");
     passeEdicao.Cria(d, (std::string(hlsl::Comum) + kEdicao).c_str(), "CSEdicao", 3, 1, 8, "edicao");
     passeAcumula.Cria(d, (std::string(hlsl::Comum) + kAcumula).c_str(), "CSAcumula", 3, 1, 4, "acumula");
 }
@@ -404,14 +419,20 @@ Tex* Temporal::AcumulaGrade(ID3D12GraphicsCommandList* c, Descritores& desc, ID3
     return deslGAgora;
 }
 
-void Temporal::Grade(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, Tex& origT0, Tex* deslocamento)
+void Temporal::Grade(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, Tex& origT0, Tex* deslocamento,
+                     Tex* zT0)
 {
     origT0.Para(c, SRV);
     crua.Para(c, SRV);
+    if (zT0)
+        zT0->Para(c, SRV);
     grade.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     gradeCor.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    KGrade k{crua.w, crua.h, gw, gh};
-    passeGrade.Roda(c, desc, d, {{origT0.r.Get(), origT0.fmt}, {crua.r.Get(), crua.fmt}},
+    KGrade k{crua.w, crua.h, gw, gh, zT0 ? 1u : 0u, 0, 0, 0};
+    passeGrade.Roda(c, desc, d,
+                    {{origT0.r.Get(), origT0.fmt}, {crua.r.Get(), crua.fmt},
+                     zT0 ? std::pair<ID3D12Resource*, DXGI_FORMAT>{zT0->r.Get(), zT0->fmt}
+                         : std::pair<ID3D12Resource*, DXGI_FORMAT>{crua.r.Get(), crua.fmt}},
                     {{grade.r.Get(), grade.fmt}, {gradeCor.r.Get(), gradeCor.fmt}}, &k, (gw + 7) / 8, (gh + 7) / 8);
     grade.Para(c, SRV);
     gradeCor.Para(c, SRV);
@@ -437,7 +458,7 @@ void Temporal::Grade(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Devi
 
 Tex* Temporal::Roda(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, Tex& orig, Tex& fed, Tex& fedAnt,
                     bool chegou, Tex* fedT0, Tex* deslocamento, Tex* mov, Tex* confianca, ID3D12Resource* estatFluxo,
-                    const ParamsTemporal& p)
+                    const ParamsTemporal& p, Tex* zAgora)
 {
     if (!chegou && !valido)
         return nullptr; // sem rede e sem historico: nada a mostrar
@@ -455,6 +476,8 @@ Tex* Temporal::Roda(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Devic
         grade.Para(c, SRV), gradeCor.Para(c, SRV);
     if (deslGAgora)
         deslGAgora->Para(c, SRV);
+    if (zAgora)
+        zAgora->Para(c, SRV);
     K k{fed.w,
         fed.h,
         chegou ? 1u : 0u,
@@ -470,7 +493,7 @@ Tex* Temporal::Roda(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Devic
         gw,
         gh,
         deslGAgora ? 1u : 0u,
-        0};
+        zAgora ? 1u : 0u};
     using Par = std::pair<ID3D12Resource*, DXGI_FORMAT>;
     const Par vazio{fed.r.Get(), fed.fmt};
     passe.Roda(c, desc, d,
@@ -486,7 +509,8 @@ Tex* Temporal::Roda(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Devic
                 gradeValida ? Par{grade.r.Get(), grade.fmt} : vazio,
                 deslGAgora ? Par{deslGAgora->r.Get(), deslGAgora->fmt} : vazio,
                 gradeValida ? Par{gradeCor.r.Get(), gradeCor.fmt} : vazio,
-                {estatFluxo, DXGI_FORMAT_UNKNOWN}},
+                {estatFluxo, DXGI_FORMAT_UNKNOWN},
+                zAgora ? Par{zAgora->r.Get(), zAgora->fmt} : vazio},
                {{novo.r.Get(), novo.fmt}, {linear.r.Get(), linear.fmt}}, &k, (fed.w + 7) / 8, (fed.h + 7) / 8);
     novo.Para(c, SRV);
     linear.Para(c, SRV);

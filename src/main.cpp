@@ -12,7 +12,9 @@
 #include "Abertura.h"
 #include "Captura.h"
 #include "Config.h"
+#include "FonteBuffer.h"
 #include "Fluxo.h"
+#include "Injecao.h"
 #include "Temporal.h"
 #include "Overlay.h"
 #include "Painel.h"
@@ -76,7 +78,17 @@ struct App
     std::chrono::steady_clock::time_point marcaFps = std::chrono::steady_clock::now();
     UINT64 quadrosMarca = 0;
     Config cfg;
-    Passe pInteiro, pReduz, pCompoe;
+    Passe pInteiro, pReduz, pCompoe, pExporta;
+    // ---- captura de buffer (Modo de Rede): a DLSS5Buffer.dll no jogo aberto entrega cor sem HUD, movimento e
+    // profundidade do upscaler dele; a edicao volta para o jogo, que a soma no quadro seguinte ----
+    FonteBuffer fb;
+    bool buffer = false;        // ligado pela captura de buffer (sem WGC e sem a janela do overlay)
+    HWND alvoBuffer = nullptr;
+    std::string estadoBuffer;   // linha de estado no painel
+    int fonteLigada = 0;        // a fonte com que ligou (trocar no painel religa)
+    uint64_t quadroJogo = 0;    // numero do quadro do jogo em processamento (gravacao: alinha com o jogo)
+    bool Ligado() const { return cap.Ativa() || buffer; }
+    HWND Alvo() const { return buffer ? alvoBuffer : cap.Alvo(); }
     Tex inteiro, orig, fed, saida, fedAnt, saidaAnt; // orig: quadro no tamanho da rede; fed: o proxy dele
     std::wstring dumpPasta;
     std::wstring pastaRuntime; // --runtime: outra pasta do runtime (testes)
@@ -141,6 +153,8 @@ struct App
         pInteiro.Cria(gpu.dev.Get(), prepara.c_str(), "CSInteiro", 1, 1, 16, "inteiro");
         pReduz.Cria(gpu.dev.Get(), prepara.c_str(), "CSReduz", 1, 2, 16, "reduz");
         pCompoe.Cria(gpu.dev.Get(), compoe.c_str(), "CSCompoe", 4, 1, 24, "compoe");
+        pExporta.Cria(gpu.dev.Get(), (std::string(hlsl::Comum) + hlsl::Exporta).c_str(), "CSExporta", 3, 1, 8,
+                      "edicao para o jogo");
         fluxo.Cria(gpu.dev.Get());
         temporal.Cria(gpu.dev.Get());
         EsperaPasses();
@@ -182,6 +196,7 @@ struct App
         EncerraGravacao();
         rede.Encerra();
         cap.Para();
+        fb.Fecha();
         painel.Destroi();
         ov.Destroi();
         if (configArq.empty())
@@ -252,7 +267,7 @@ struct App
     bool pausado = false;
     bool JogoEmFoco() const
     {
-        HWND alvo = cap.Alvo();
+        HWND alvo = Alvo();
         if (!alvo || !IsWindow(alvo) || IsIconic(alvo) || !IsWindowVisible(alvo))
             return false;
         HWND fg = GetForegroundWindow();
@@ -289,7 +304,7 @@ struct App
     void SegueJanela()
     {
         RECT r{};
-        if (imagem || !inteiro.w || !Captura::RetanguloCliente(cap.Alvo(), r))
+        if (imagem || buffer || !inteiro.w || !Captura::RetanguloCliente(cap.Alvo(), r))
             return;
         const LONG cw = r.right - r.left, ch = r.bottom - r.top;
         if (std::abs(cw - LONG(inteiro.w)) > 2 || std::abs(ch - LONG(inteiro.h)) > 2)
@@ -306,6 +321,12 @@ struct App
     {
         if (!h || h == ov.Janela() || h == painel.Janela())
             return;
+        fonteLigada = cfg.fonte;
+        if (cfg.fonte == 1)
+        {
+            LigaBuffer(h);
+            return;
+        }
         CarregaPerfil(h);
         painel.Ancora(h);
         painel.DefineJogo(h);
@@ -324,7 +345,53 @@ struct App
     void Desliga()
     {
         cap.Para();
+        if (buffer)
+        {
+            gpu.Espera();
+            fb.Fecha(); // sem batimento o modulo do jogo para de exportar e de somar
+            buffer = false;
+            alvoBuffer = nullptr;
+            fluxo.Reinicia();
+            temporal.Reinicia();
+            zeraHistorico = true;
+        }
         ov.Mostra(false);
+    }
+    // captura de buffer: coloca a DLSS5Buffer.dll no jogo aberto (sem gravar nada na pasta dele) e espera o modulo
+    // aparecer (ele cria a memoria compartilhada no primeiro quadro do FSR/XeSS do jogo)
+    void LigaBuffer(HWND h)
+    {
+        DWORD pid = 0;
+        GetWindowThreadProcessId(h, &pid);
+        CarregaPerfil(h);
+        painel.Ancora(h);
+        painel.DefineJogo(h);
+        ResultadoInjecao r;
+        if (fb.Abre(gpu, pid))
+            r.ok = true; // o modulo ja esta no jogo (religou, ou e o jogo de teste)
+        else
+            r = InjetaBuffer(pid, pasta + L"\\captura\\DLSS5Buffer.dll");
+        if (!r.ok)
+        {
+            estadoBuffer = "nao conectou: " + r.motivo;
+            Log("buffer", estadoBuffer);
+            return;
+        }
+        if (!r.motivo.empty())
+            Log("buffer", r.motivo);
+        buffer = true;
+        alvoBuffer = h;
+        hdr = true; // a cor do jogo antes do tonemap e linear
+        escalaSdr = 1.f;
+        estadoBuffer = r.upscaler.empty() ? "esperando o jogo usar FSR ou XeSS (escolha no menu grafico do jogo)"
+                                          : "esperando o primeiro quadro do " + r.upscaler;
+        if (!r.motivo.empty())
+            estadoBuffer += " | " + r.motivo;
+        fluxo.Reinicia();
+        temporal.Reinicia();
+        zeraHistorico = true;
+        ov.Mostra(false);
+        Log("buffer", "ligado em " + Utf8(exeAlvo));
     }
 
     // tamanho em que a rede roda: altura configurada (ou a da janela, se menor), largura pela proporcao, pares
@@ -611,7 +678,43 @@ struct App
         if (redeOk && cfg.redePequena != redePequenaAtiva)
             TrocaRede();
         Captura::Quadro q;
-        if (imagem)
+        FonteBuffer::Quadro qb;
+        if (buffer)
+        {
+            if (!IsWindow(alvoBuffer))
+            {
+                Desliga();
+                return false;
+            }
+            if (!fb.Aberta())
+            {
+                DWORD pid = 0;
+                GetWindowThreadProcessId(alvoBuffer, &pid);
+                if (!fb.Abre(gpu, pid))
+                    return false;
+            }
+            fb.Batimento(true, cfg.modo != 1 && redeOk);
+            if (!fb.Pega(qb))
+            {
+                if (fb.Aberta() && !fb.JogoVivo())
+                    estadoBuffer = "o jogo parou de mandar quadros (FSR/XeSS desligado ou jogo pausado)";
+                return false;
+            }
+            quadroJogo = qb.n;
+            q.tex = qb.cor->r.Get();
+            q.fmt = qb.cor->fmt;
+            q.w = qb.cor->w;
+            q.h = qb.cor->h;
+            q.cercaValor = 0;
+            estadoBuffer = Fmt("conectado: %ux%u, cor sem HUD, profundidade e movimento do jogo", q.w, q.h);
+            if (qb.reset && temporal.Valido())
+            {
+                temporal.Reinicia(); // o jogo avisou corte de cena
+                zeraHistorico = true;
+                quadroCorte = quadros;
+            }
+        }
+        else if (imagem)
         {
             q.tex = imagem.Get();
             q.fmt = imgFmt;
@@ -623,13 +726,13 @@ struct App
             return false;
         const auto t0 = std::chrono::steady_clock::now();
         RECT r{};
-        if (!imagem && (IsIconic(cap.Alvo()) || !Captura::RetanguloCliente(cap.Alvo(), r)))
+        if (!imagem && !buffer && (IsIconic(cap.Alvo()) || !Captura::RetanguloCliente(cap.Alvo(), r)))
         {
             ov.Mostra(false);
             return false;
         }
         Garante(q.w, q.h);
-        if (!imagem)
+        if (!imagem && !buffer)
         {
             // o overlay cobre a area cliente
             r.right = r.left + LONG(q.w);
@@ -674,7 +777,23 @@ struct App
         fed.Para(c, SRV);
         Barreira(c, q.tex, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
         // movimento simulado (fluxo optico contra o quadro anterior): reprojeta a edicao e traz a resposta atrasada
-        const bool temMov = cfg.movimento && fluxo.Calcula(c, desc, gpu.dev.Get(), fed.r.Get(), fed.fmt);
+        bool temMov;
+        if (buffer)
+        {
+            // captura de buffer: o movimento e a profundidade do proprio jogo (exatos), no lugar do fluxo optico
+            Fluxo::Camera cam;
+            cam.corW = float(q.w);
+            cam.corH = float(q.h);
+            cam.perto = qb.perto;
+            cam.longe = qb.longe;
+            cam.invertida = qb.profInvertida;
+            cam.infinita = qb.profInfinita;
+            cam.reset = qb.reset;
+            fluxo.DoJogo(c, desc, gpu.dev.Get(), *qb.mov, *qb.prof, cam);
+            temMov = true;
+        }
+        else
+            temMov = cfg.movimento && fluxo.Calcula(c, desc, gpu.dev.Get(), fed.r.Get(), fed.fmt);
         if (temMov)
             fluxo.Estatisticas(c, desc, gpu.dev.Get(), fed, fedAnt);
         // A rede roda na fila dela e responde com atraso: este quadro vai para a tela agora, com a ultima edicao; a
@@ -735,14 +854,15 @@ struct App
         if (usa)
         {
             temporal.Edicao(c, desc, gpu.dev.Get(), origRede, rede.Entrada(), rede.Resposta(), tp);
-            temporal.Grade(c, desc, gpu.dev.Get(), origRede, semDeslocamento ? nullptr : deslocamento);
+            temporal.Grade(c, desc, gpu.dev.Get(), origRede, semDeslocamento ? nullptr : deslocamento,
+                           buffer && zRede.r ? &zRede : nullptr);
         }
         Tex* edicao = ultimaEdicao = (cfg.modo != 1 && redeOk)
                           ? temporal.Roda(c, desc, gpu.dev.Get(), orig, fed, fedAnt, usa, usa ? &rede.Entrada() : nullptr,
                                           usa && !semDeslocamento ? deslocamento : nullptr,
                                           temMov ? &fluxo.Movimento() : nullptr,
                                           (temMov && cfg.usaConfianca) ? &fluxo.Confianca() : nullptr,
-                                          fluxo.BufEstat(), tp)
+                                          fluxo.BufEstat(), tp, buffer ? fluxo.DistanciaAtual() : nullptr)
                           : nullptr;
         if (usa)
         {
@@ -789,6 +909,28 @@ struct App
                       temMov ? std::pair<ID3D12Resource*, DXGI_FORMAT>{fluxo.Movimento().r.Get(), fluxo.Movimento().fmt}
                              : std::pair<ID3D12Resource*, DXGI_FORMAT>{fed.r.Get(), fed.fmt}},
                      {{saida.r.Get(), saida.fmt}}, &kc, (saida.w + 7) / 8, (saida.h + 7) / 8);
+        // captura de buffer: a edicao (C(saida) - C(cor do jogo)) vai para o slot que o jogo soma no quadro seguinte
+        Tex* edJogo = buffer ? fb.EdicaoLivre() : nullptr;
+        if (edJogo)
+        {
+            saida.Para(c, SRV);
+            qb.cor->Para(c, SRV);
+            qb.prof->Para(c, SRV);
+            edJogo->Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            struct
+            {
+                UINT w, h, profW, profH;
+                float perto, longe;
+                UINT invertida, infinita;
+            } ke{saida.w, saida.h, qb.prof->w, qb.prof->h, qb.perto, qb.longe, qb.profInvertida ? 1u : 0u,
+                 qb.profInfinita ? 1u : 0u};
+            pExporta.Roda(c, desc, gpu.dev.Get(),
+                          {{qb.cor->r.Get(), qb.cor->fmt}, {saida.r.Get(), saida.fmt}, {qb.prof->r.Get(), qb.prof->fmt}},
+                          {{edJogo->r.Get(), edJogo->fmt}}, &ke, (saida.w + 7) / 8, (saida.h + 7) / 8);
+            edJogo->Para(c, D3D12_RESOURCE_STATE_COMMON);
+            qb.cor->Para(c, D3D12_RESOURCE_STATE_COMMON);
+            qb.prof->Para(c, D3D12_RESOURCE_STATE_COMMON);
+        }
         saida.Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
         if (!dumpPasta.empty() && !(quadrosTeste > 0 && quadros + 1 >= (UINT64)quadrosTeste))
         {
@@ -796,7 +938,7 @@ struct App
             c->CopyResource(saidaAnt.r.Get(), saida.r.Get());
         }
         ID3D12Resource* bb = ov.Buffer();
-        const bool apresenta = !imagem && bb && ov.Largura() == saida.w && ov.Altura() == saida.h;
+        const bool apresenta = !imagem && !buffer && bb && ov.Largura() == saida.w && ov.Altura() == saida.h;
         if (apresenta)
         {
             Barreira(c, bb, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST);
@@ -815,6 +957,8 @@ struct App
         Ck(c->Close(), "close1");
         ID3D12CommandList* l1[] = {c};
         gpu.fila->ExecuteCommandLists(1, l1);
+        if (edJogo)
+            fb.Publica(qb.n);
         const UINT64 fim = gpu.Sinaliza();
         if (envia && rede.Envia(gpu.cerca.Get(), fim, cfg.Rede()))
             MarcaEnvio();
@@ -824,6 +968,8 @@ struct App
             ov.Mostra(true);
         }
         gpu.EsperaValor(fim);
+        if (buffer)
+            fb.Consumido(qb.n);
         estat = fluxo.LeEstatisticas();
         if (estat.valida && estat.semConfianca > 0.88f)
         {
@@ -882,6 +1028,7 @@ struct App
     int atraso = -1;         // -1 ao vivo (a resposta entra quando fica pronta); 0 sincrono; N > 0 exatamente N quadros
     bool semDeslocamento = false; // --sem-deslocamento (teste): a resposta atrasada entra onde estava em t0
     Tex origRede;            // o quadro que a rede esta vendo (t0), no tamanho da rede
+    Tex zRede;               // captura de buffer: a distancia da camera em t0 (grade por camada)
     UINT64 quadroEnvio = 0;  // t0
     UINT64 quadroCorte = 0;  // ultimo corte de cena: respostas enviadas antes dele sao da cena velha
     UINT64 cortes = 0;
@@ -899,6 +1046,16 @@ struct App
         origRede.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
         c->CopyResource(origRede.r.Get(), orig.r.Get());
         orig.Para(c, antes);
+        if (Tex* z = buffer ? fluxo.DistanciaAtual() : nullptr)
+        {
+            if (zRede.w != z->w || zRede.h != z->h)
+                zRede.Cria(gpu.dev.Get(), z->w, z->h, z->fmt, L"distancia que a rede viu", false);
+            const auto antesZ = z->estado;
+            z->Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
+            zRede.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
+            c->CopyResource(zRede.r.Get(), z->r.Get());
+            z->Para(c, antesZ);
+        }
     }
     void MarcaEnvio()
     {
@@ -941,10 +1098,12 @@ struct App
         EstadoPainel e;
         e.placa = gpu.nome;
         e.redeOk = redeOk && rede.Pronta();
-        if (cap.Ativa())
+        e.fonte = cfg.fonte;
+        e.estadoBuffer = estadoBuffer;
+        if (Ligado())
         {
             wchar_t t[256] = {};
-            GetWindowTextW(cap.Alvo(), t, 256);
+            GetWindowTextW(Alvo(), t, 256);
             e.alvo = t[0] ? t : L"(sem titulo)";
             e.janelaW = inteiro.w;
             e.janelaH = inteiro.h;
@@ -955,7 +1114,7 @@ struct App
             e.fracaoRede = fracaoRede;
         }
         e.exe = Utf8(exeAlvo);
-        painel.DicaBandeja(cap.Ativa() && !exeAlvo.empty() ? L"DLSS 5 Overlay - " + exeAlvo : L"DLSS 5 Overlay - sem jogo");
+        painel.DicaBandeja(Ligado() && !exeAlvo.empty() ? L"DLSS 5 Overlay - " + exeAlvo : L"DLSS 5 Overlay - sem jogo");
         e.perfilExiste = PerfilExiste();
         e.perfilCarregado = perfilCarregado;
         const AcoesPainel a = painel.Quadro(cfg, e);
@@ -995,6 +1154,13 @@ struct App
             ov.OcultaDeGravacoes(cfg.ocultaDeGravacoes);
         if (a.sair)
             PostQuitMessage(0);
+        // trocou o Modo de Rede com o jogo ligado: religa na mesma janela pela outra fonte
+        if (Ligado() && cfg.fonte != fonteLigada)
+        {
+            HWND h = Alvo();
+            Desliga();
+            Liga(h);
+        }
     }
 
     // grava uma textura crua (bpp bytes por pixel) para conferencia
@@ -1137,8 +1303,8 @@ struct App
             cvEscrita.notify_all();
         }
         if (metaGravacao)
-            fprintf(metaGravacao, "{\"q\":%d,\"rede\":%d,\"mov\":%d,\"t_ms\":%.3f}\n", gravados, comRede ? 1 : 0,
-                    comMov ? 1 : 0,
+            fprintf(metaGravacao, "{\"q\":%d,\"jogo\":%llu,\"rede\":%d,\"mov\":%d,\"t_ms\":%.3f}\n", gravados,
+                    (unsigned long long)quadroJogo, comRede ? 1 : 0, comMov ? 1 : 0,
                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count());
         ++gravados;
         if (--gravando == 0)
@@ -1413,12 +1579,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 switch (m.wParam)
                 {
                 case 1:
-                    if (app.cap.Ativa())
+                    if (app.Ligado())
                         app.Desliga();
                     else
                     {
                         app.Liga(GetForegroundWindow());
-                        if (app.cap.Ativa())
+                        if (app.Ligado())
                             app.painel.Esconde(false);
                     }
                     break;
@@ -1450,8 +1616,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         // Game Bar: com o jogo fora de foco (Alt+Tab, minimizado, outra janela na frente) overlay e painel somem e
         // nada e processado; o "sempre no topo" so e reafirmado com o jogo em foco (antes, a cada 250 ms, o overlay
         // voltava por cima de qualquer janela e parecia que o Alt+Tab e o minimizar nao funcionavam)
-        const bool foco = !app.cap.Ativa() || app.quadrosTeste > 0 || app.JogoEmFoco();
-        app.painel.DefineAutoOculto(app.cap.Ativa() && !foco);
+        const bool foco = !app.Ligado() || app.quadrosTeste > 0 || app.JogoEmFoco();
+        app.painel.DefineAutoOculto(app.Ligado() && !foco);
         {
             static auto ultimaOrdem = clk::now();
             if (app.cap.Ativa() && foco && clk::now() - ultimaOrdem >= std::chrono::milliseconds(250))
@@ -1473,7 +1639,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 }
             }
         }
-        if (!app.cap.Ativa())
+        if (!app.Ligado())
         {
             app.ov.Mostra(false);
             if (app.quadrosTeste > 0 && !alvoTitulo.empty())
@@ -1489,8 +1655,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         }
         app.Retoma();
         app.SegueJanela();
-        HANDLE ev = app.cap.EventoQuadro();
-        MsgWaitForMultipleObjects(1, &ev, FALSE, 16, QS_ALLINPUT);
+        HANDLE ev = app.buffer ? app.fb.Evento() : app.cap.EventoQuadro();
+        MsgWaitForMultipleObjects(ev ? 1 : 0, ev ? &ev : nullptr, FALSE, 16, QS_ALLINPUT);
         if (app.cfg.fpsMax > 0)
         {
             const auto minimo = std::chrono::microseconds(1000000 / app.cfg.fpsMax);

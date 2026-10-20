@@ -314,4 +314,50 @@ float3 Tela(float3 lin, bool grade, float folga)
 }
 )";
 
+// captura de buffer: a edicao que o jogo soma no quadro seguinte, no espaco comprimido (C(x) = x / (1 + luma), o mesmo
+// do Temporal e do modulo do jogo): C(saida) - C(cor do jogo)
+// No alfa vai log2 da distancia da camera do pixel: o jogo so reprojeta a edicao de um ponto para a MESMA superficie
+// (onde o objeto acabou de sair, o vetor aponta para o objeto; sem o teste, a edicao dele virava rastro no fundo).
+inline const char* Exporta = R"(
+cbuffer C : register(b0) { uint w; uint h; uint profW; uint profH; float perto; float longe; uint invertida; uint infinita; };
+Texture2D<float4> cor : register(t0);   // a cor que o jogo mandou (linear x exposicao)
+Texture2D<float4> saida : register(t1); // o resultado no mesmo espaco
+Texture2D<float> prof : register(t2);   // a profundidade que o jogo mandou
+RWTexture2D<float4> edicao : register(u0);
+float3 Comprime(float3 x) { return x / (1.0 + max(Lum(x), 0.0)); }
+static const float CEU = 1e6;
+// profundidade do jogo -> distancia da camera (a mesma conta no overlay e no jogo: Fluxo/DoJogo, Exporta, CSCor)
+float Dist(float d)
+{
+    if (!isfinite(d)) return CEU;
+    const float e = 1e-7;
+    float z;
+    if (perto > 0.0)
+    {
+        if (invertida)
+            z = (infinita || longe <= perto) ? perto / max(d, e) : perto * longe / max(perto + d * (longe - perto), e);
+        else
+            z = (infinita || longe <= perto) ? perto / max(1.0 - d, e) : perto * longe / max(longe - d * (longe - perto), e);
+    }
+    else
+        z = invertida ? 1.0 / max(d, e) : 1.0 / max(1.0 - d, e);
+    return min(z, CEU);
+}
+// mesma superficie: distancias relativas perto (as duas no ceu tambem)
+float Mesma(float za, float zb)
+{
+    if (za >= CEU * 0.5 && zb >= CEU * 0.5) return 1.0;
+    return 1.0 - smoothstep(0.04, 0.15, abs(za - zb) / max(min(za, zb), 1e-6));
+}
+[numthreads(8, 8, 1)] void CSExporta(uint2 p : SV_DispatchThreadID)
+{
+    if (p.x >= w || p.y >= h) return;
+    const float3 o = max(cor.Load(int3(p, 0)).rgb, 0.0);
+    float3 r = max(saida.Load(int3(p, 0)).rgb, 0.0);
+    r = all(isfinite(r)) ? r : o;
+    const uint2 pp = min(uint2((p + 0.5) * float2(profW, profH) / float2(w, h)), uint2(profW - 1, profH - 1));
+    edicao[p] = float4(Comprime(r) - Comprime(o), log2(max(Dist(prof.Load(int3(pp, 0))), 1e-6)));
+}
+)";
+
 } // namespace ov::hlsl

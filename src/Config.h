@@ -34,6 +34,8 @@ struct Config
     float preLimiarSombra = 0.2f; // abaixo dele as sombras descem (preSombra > 0) ou sobem (< 0)
     float preCor = 0.f;     // antes da rede: saturacao (-0,5..1)
     int modo = 0;           // 0 rede, 1 original, 2 comparacao, 3 so a edicao, 4 movimento
+    int fonte = 0;          // Modo de Rede: 0 captura de video (WGC), 1 captura de buffer (cor sem HUD, profundidade e
+                            // movimento do upscaler do proprio jogo, pela DLSS5Buffer.dll colocada no jogo aberto)
     bool movimento = true;  // movimento simulado por fluxo optico
     bool usaConfianca = true; // descarta o historico onde o fluxo de ida e volta nao bate (oclusao)
     int ritmo = 1;          // a rede roda a cada N quadros (1 = todo quadro; a rede nunca deve sumir em movimento)

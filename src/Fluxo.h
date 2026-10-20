@@ -24,7 +24,17 @@ class Fluxo
     // na primeira chamada (ou depois de Reinicia) devolve false: nao ha anterior
     bool Calcula(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, ID3D12Resource* cor,
                  DXGI_FORMAT fmtCor);
-    void Reinicia() { temAnterior = false; }
+    void Reinicia() { temAnterior = false; zValido = false; }
+    // captura de buffer: movimento e confianca a partir dos vetores e da profundidade do jogo (ver hlsl::DoJogo)
+    struct Camera
+    {
+        float corW = 0, corH = 0;   // tamanho da cor do jogo (o movimento vem em pixels dela)
+        float perto = 0, longe = 0; // 0 = desconhecida
+        bool invertida = true, infinita = true, reset = false;
+    };
+    void DoJogo(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, Tex& movJogo, Tex& profJogo,
+                const Camera& cam);
+    Tex* DistanciaAtual() { return zValido ? &z[zAtual ^ 1] : nullptr; } // R32F, a do ultimo DoJogo
     Tex& Movimento() { return mov; }   // RG16F, w x h, pixels (atual -> anterior)
     Tex& Confianca() { return conf; }  // R16F, w x h, 1 = ida e volta batem
 
@@ -46,6 +56,10 @@ class Fluxo
     // busca do grosso ao fino de `de` contra `para` (indices da piramide), resultado em `saida` (tamanho da rede)
     void Busca(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, UINT de, UINT para, Tex* campos,
                Tex* tmps, Tex& saida, Tex& modelo);
+    Passe pDoJogo;
+    Tex z[2];          // distancia da camera do quadro atual/anterior (captura de buffer)
+    UINT zAtual = 0;
+    bool zValido = false;
     Passe pLuma, pReduzLuma, pBusca, pMediana, pAmplia, pConfianca, pEstat, pGradiente, pRefina, pGlobal;
     Tex modeloIda, modeloVolta; // movimento global (afim) de cada sentido, 2x1 RGBA32F
     UINT nivelGlobal = 0;       // nivel em que o modelo global e ajustado (o primeiro com ate 320 px de largura)

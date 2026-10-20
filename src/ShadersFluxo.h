@@ -375,4 +375,81 @@ float LumaP(float3 c) { return pow(max(dot(c, float3(0.2126, 0.7152, 0.0722)), 0
 }
 )";
 
+// Captura de buffer: movimento e profundidade do proprio jogo (o que ele entrega ao upscaler) no lugar do fluxo optico.
+// Movimento: o do vizinho mais perto da camera (3x3), como no TAA -- a borda do objeto da frente leva o movimento dele.
+// Confianca: a distancia do ponto reprojetado no quadro anterior bate com a deste (2x2, a melhor); se nao bate, ali
+// havia outra superficie (oclusao) e o historico do pixel cai.
+inline const char* DoJogo = R"(
+cbuffer K : register(b0)
+{
+    uint w; uint h; uint movW; uint movH;
+    uint profW; uint profH; uint temAnt; uint invertida;
+    float corW; float corH; float perto; float longe;
+    uint infinita; uint pad0; uint pad1; uint pad2;
+};
+Texture2D<float2> movJogo : register(t0); // pixels da cor, do atual ao anterior
+Texture2D<float> profJogo : register(t1);
+Texture2D<float> zAnt : register(t2);     // distancia do quadro anterior (w x h)
+RWTexture2D<float2> mov : register(u0);   // pixels da rede
+RWTexture2D<float> conf : register(u1);
+RWTexture2D<float> zAtual : register(u2);
+SamplerState s : register(s0);
+
+static const float CEU = 1e6;
+// profundidade do jogo -> distancia da camera (linear com perto/longe do FSR; sem camera, proporcional a ela)
+float Dist(float d)
+{
+    if (!isfinite(d)) return CEU;
+    const float e = 1e-7;
+    float z;
+    if (perto > 0.0)
+    {
+        if (invertida)
+            z = (infinita || longe <= perto) ? perto / max(d, e) : perto * longe / max(perto + d * (longe - perto), e);
+        else
+            z = (infinita || longe <= perto) ? perto / max(1.0 - d, e) : perto * longe / max(longe - d * (longe - perto), e);
+    }
+    else
+        z = invertida ? 1.0 / max(d, e) : 1.0 / max(1.0 - d, e);
+    return min(z, CEU);
+}
+
+[numthreads(8, 8, 1)] void CSDoJogo(uint2 p : SV_DispatchThreadID)
+{
+    if (p.x >= w || p.y >= h) return;
+    const float2 uv = (p + 0.5) / float2(w, h);
+    const int2 lim = int2(profW, profH) - 1;
+    const int2 pp = clamp(int2(uv * float2(profW, profH)), 0, lim);
+    float zMin = CEU * 2.0;
+    int2 perto3 = pp;
+    [unroll] for (int dy = -1; dy <= 1; ++dy)
+        [unroll] for (int dx = -1; dx <= 1; ++dx)
+        {
+            const int2 q = clamp(pp + int2(dx, dy), 0, lim);
+            const float z = Dist(profJogo.Load(int3(q, 0)));
+            if (z < zMin) { zMin = z; perto3 = q; }
+        }
+    const float zc = Dist(profJogo.Load(int3(pp, 0)));
+    const float2 uvM = (perto3 + 0.5) / float2(profW, profH);
+    const int2 pm = clamp(int2(uvM * float2(movW, movH)), 0, int2(movW, movH) - 1);
+    float2 m = movJogo.Load(int3(pm, 0)) * float2(float(w) / corW, float(h) / corH);
+    m = all(isfinite(m)) ? m : 0;
+    mov[p] = m;
+    zAtual[p] = zc;
+    float c = 0.0;
+    const float2 pa = p + 0.5 + m;
+    if (temAnt && all(pa >= 0.0) && all(pa <= float2(w, h)))
+    {
+        const float4 za = zAnt.GatherRed(s, pa / float2(w, h));
+        float r = 1e9;
+        [unroll] for (int i = 0; i < 4; ++i)
+            r = min(r, abs(za[i] - zc) / max(min(za[i], zc), 1e-6));
+        if (zc >= CEU * 0.5 && max(max(za.x, za.y), max(za.z, za.w)) >= CEU * 0.5)
+            r = 0.0; // ceu dos dois lados
+        c = 1.0 - smoothstep(0.04, 0.15, r);
+    }
+    conf[p] = c;
+}
+)";
+
 } // namespace ov::hlsl

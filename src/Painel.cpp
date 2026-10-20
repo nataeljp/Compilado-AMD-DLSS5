@@ -885,6 +885,28 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         Marca("Gradação do modelo (B/C)", &cfg.ngx.gradacao, "A gradacao final do kernel da NVIDIA para os Models B e C.");
     }
 
+    Secao("MODO DE REDE");
+    {
+        const char* fontes[] = {"Captura de vídeo", "Captura de buffer"};
+        int f = cfg.fonte == 1 ? 1 : 0;
+        if (Segmentos("fonte", fontes, 2, &f, 32 * g_e))
+            cfg.fonte = f;
+        Dica("Video: le a janela como o OBS (qualquer jogo, inclusive online); a rede ve o HUD e o movimento e estimado.\n"
+             "Buffer: o overlay coloca uma DLL no jogo aberto (nada e gravado na pasta dele) e pega o que o jogo entrega\n"
+             "ao FSR/XeSS: a cor sem HUD, a profundidade e o movimento exato; o resultado volta para o proprio jogo.\n"
+             "So jogos DirectX 12 com FSR ou XeSS ligado no menu grafico. Jogo com anti-cheat e recusado (banimento).");
+        if (cfg.fonte == 1)
+        {
+            const std::string& s = e.estadoBuffer;
+            const ImVec4 cor = s.rfind("conectado", 0) == 0     ? ImGui::ColorConvertU32ToFloat4(kVerde)
+                               : s.rfind("nao conectou", 0) == 0 ? ImVec4(1, 0.45f, 0.4f, 1)
+                                                                 : ImVec4(1, 0.78f, 0.3f, 1);
+            ImGui::PushTextWrapPos(0.f);
+            ImGui::TextColored(cor, "%s", s.empty() ? "Ctrl+Shift+D com o jogo em foco (FSR ou XeSS ligado no jogo)" : s.c_str());
+            ImGui::PopTextWrapPos();
+        }
+    }
+
     Secao("REDE");
     {
         const char* redes[] = {"Grande", "Pequena (rápida)"};

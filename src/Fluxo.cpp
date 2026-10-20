@@ -39,6 +39,7 @@ void Fluxo::Cria(ID3D12Device* d)
     pEstat.Cria(d, hlsl::Estatisticas, "CSEstatisticas", 4, 1, 8, "fluxo estatisticas");
     pGradiente.Cria(d, hlsl::Gradiente, "CSGradiente", 1, 1, 8, "fluxo gradiente");
     pRefina.Cria(d, hlsl::Refina, "CSRefina", 4, 1, 8, "fluxo refina");
+    pDoJogo.Cria(d, hlsl::DoJogo, "CSDoJogo", 3, 3, 16, "movimento do jogo");
     auto buf = [&](D3D12_HEAP_TYPE t, D3D12_RESOURCE_STATES e, D3D12_RESOURCE_FLAGS f, ComPtr<ID3D12Resource>& r) {
         D3D12_HEAP_PROPERTIES hp{};
         hp.Type = t;
@@ -140,6 +141,9 @@ void Fluxo::Garante(ID3D12Device* d, UINT w_, UINT h_)
     }
     movVolta.Cria(d, w, h, DXGI_FORMAT_R16G16_FLOAT, L"movimento de volta");
     conf.Cria(d, w, h, DXGI_FORMAT_R16_FLOAT, L"confianca do movimento");
+    for (auto& t : z)
+        t.Cria(d, w, h, DXGI_FORMAT_R32_FLOAT, L"distancia da camera (jogo)");
+    zValido = false;
     temAnterior = false;
     Log("fluxo", Fmt("fluxo optico %ux%u, %u niveis (nivel 0 = %ux%u), ida e volta", w, h, niveis, luma[0][0].w,
                      luma[0][0].h));
@@ -267,6 +271,38 @@ bool Fluxo::Calcula(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Devic
                     &k, (w + 7) / 8, (h + 7) / 8);
     conf.Para(c, SRV);
     return true;
+}
+
+void Fluxo::DoJogo(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, Tex& movJogo, Tex& profJogo,
+                   const Camera& cam)
+{
+    const UINT a = zAtual, p = zAtual ^ 1;
+    if (cam.reset)
+        zValido = false;
+    movJogo.Para(c, SRV);
+    profJogo.Para(c, SRV);
+    z[p].Para(c, SRV);
+    mov.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    conf.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    z[a].Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    struct
+    {
+        UINT w, h, movW, movH, profW, profH, temAnt, invertida;
+        float corW, corH, perto, longe;
+        UINT infinita, pad0, pad1, pad2;
+    } k{w, h, movJogo.w, movJogo.h, profJogo.w, profJogo.h, zValido ? 1u : 0u, cam.invertida ? 1u : 0u,
+        cam.corW, cam.corH, cam.perto, cam.longe, cam.infinita ? 1u : 0u, 0, 0, 0};
+    pDoJogo.Roda(c, desc, d, {{movJogo.r.Get(), movJogo.fmt}, {profJogo.r.Get(), profJogo.fmt}, {z[p].r.Get(), z[p].fmt}},
+                 {{mov.r.Get(), mov.fmt}, {conf.r.Get(), conf.fmt}, {z[a].r.Get(), z[a].fmt}}, &k, (w + 7) / 8, (h + 7) / 8);
+    mov.Para(c, SRV);
+    conf.Para(c, SRV);
+    z[a].Para(c, SRV);
+    // de volta ao COMMON: as texturas do jogo sao compartilhadas entre processos
+    movJogo.Para(c, D3D12_RESOURCE_STATE_COMMON);
+    profJogo.Para(c, D3D12_RESOURCE_STATE_COMMON);
+    zAtual = p;
+    zValido = true;
+    temAnterior = false; // o fluxo optico recomeca se voltar para a captura de video
 }
 
 } // namespace ov

@@ -2,6 +2,7 @@
 #include <cstdarg>
 #include <chrono>
 #include <mutex>
+#include <share.h>
 
 namespace ov {
 
@@ -49,7 +50,7 @@ void LogAbre(const std::wstring& pasta)
 {
     std::lock_guard<std::mutex> l(g_logMutex);
     if (!g_log)
-        _wfopen_s(&g_log, (pasta + L"\\overlay.jsonl").c_str(), L"w");
+        g_log = _wfsopen((pasta + L"\\overlay.jsonl").c_str(), L"w", _SH_DENYNO); // legivel com o programa aberto
 }
 
 void Log(const char* tipo, const std::string& msg)
