@@ -99,7 +99,7 @@ bool FonteBuffer::AbreGeracao()
               AbreRecurso(L"cercaOverlay", 0, IID_PPV_ARGS(&cercaOverlay));
     for (uint32_t s = 0; ok && s < dlss5ov::kSlotsEntrada; ++s)
         ok = tex(cor[s], L"cor", s, cab->corW, cab->corH, DXGI_FORMAT_R16G16B16A16_FLOAT) &&
-             tex(mov[s], L"mov", s, cab->movW, cab->movH, DXGI_FORMAT_R16G16_FLOAT) &&
+             tex(mov[s], L"mov", s, cab->movW, cab->movH, DXGI_FORMAT_R32G32_FLOAT) &&
              tex(prof[s], L"prof", s, cab->profW, cab->profH, DXGI_FORMAT_R32_FLOAT);
     for (uint32_t s = 0; ok && s < dlss5ov::kSlotsEdicao; ++s)
         ok = tex(edicao[s], L"edicao", s, cab->corW, cab->corH, DXGI_FORMAT_R16G16B16A16_FLOAT);

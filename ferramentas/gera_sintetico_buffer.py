@@ -3,7 +3,9 @@
 # recorte da propria foto) andando com movimento proprio -- oclusao e desoclusao de verdade, com profundidade.
 # Grava por quadro: NNNN_orig.raw (RGBA16F, cor linear), NNNN_mv.raw (RG32F, pixels do atual ao anterior),
 # NNNN_prof.raw (R32F, Z invertido infinito, perto = 0,1: d = 0,1 / z), e transf.json/objeto.json (verdade).
-# uso: python gera_sintetico_buffer.py <foto> <pasta> <quadros>
+# uso: python gera_sintetico_buffer.py <foto> <pasta> <quadros> [--rapido]
+#   --rapido: movimento extremo -- a camera da "flicks" de ate ~300 px por quadro com reversoes bruscas e zoom, e o
+#   objeto cruza a tela a ate ~270 px por quadro (o teste de fantasma e de liga/desliga)
 import json, sys, math
 from pathlib import Path
 import cv2
@@ -17,7 +19,14 @@ PERTO, Z_FUNDO, Z_OBJ = 0.1, 20.0, 2.0
 TAM = 360  # lado do objeto (pixels do quadro)
 obj = cv2.resize(cv2.GaussianBlur(lin[200:200 + 720, 2400:2400 + 720], (0, 0), 1.0), (TAM, TAM), interpolation=cv2.INTER_AREA)
 
+RAPIDO = '--rapido' in sys.argv
+
 def camera(i):
+    if RAPIDO:
+        z = 1.0 + 0.15 * math.sin(2 * math.pi * i / 30)
+        cx = 1920 + 900 * math.sin(2 * math.pi * i / 18)
+        cy = 1080 + 400 * math.sin(2 * math.pi * i / 23)
+        return np.array([[z, 0, cx - (W / 2 - 0.5) * z - 0.5], [0, z, cy - (H / 2 - 0.5) * z - 0.5]], np.float64)
     t = i / (N - 1)
     z = 1.9 - 0.2 * t
     cx = 1920 + 700 * math.sin(2.2 * t * math.pi) * t
@@ -25,6 +34,8 @@ def camera(i):
     return np.array([[z, 0, cx - (W / 2 - 0.5) * z - 0.5], [0, z, cy - (H / 2 - 0.5) * z - 0.5]], np.float64)
 
 def objeto(i):
+    if RAPIDO:
+        return np.array([780 + 700 * math.sin(2 * math.pi * i / 16), 360 + 300 * math.sin(2 * math.pi * i / 11)])
     # canto superior esquerdo do objeto: atravessa a tela com velocidade variando (6..20 px/quadro) e sobe e desce
     t = i / (N - 1)
     return np.array([200 + 1300 * (t + 0.15 * math.sin(4 * math.pi * t)), 300 + 250 * math.sin(3 * math.pi * t)])
@@ -72,4 +83,6 @@ with open(pasta / 'meta.jsonl', 'w') as m:
         m.write(json.dumps({'q': i, 'rede': 1, 'mov': 1, 't_ms': i * 16.7}) + '\n')
 json.dump(transf, open(pasta / 'transf.json', 'w'))
 json.dump({'tam': TAM, 'pos': objs}, open(pasta / 'objeto.json', 'w'))
-print('quadros', N, W, 'x', H, 'com objeto em primeiro plano')
+vc = [math.hypot(*(np.array(camera(i))[:, 2] - np.array(camera(i - 1))[:, 2])) for i in range(1, N)]
+vo = [float(np.hypot(*(objeto(i) - objeto(i - 1)))) for i in range(1, N)]
+print('quadros', N, W, 'x', H, '| camera ate %.0f px/quadro (mediana %.0f), objeto ate %.0f px/quadro' % (max(vc), float(np.median(vc)), max(vo)))

@@ -32,6 +32,11 @@ class Gancho
     void Area(const RECT& area);
     // eventos desde a ultima chamada (vale como batimento); `esc` = Esc apertada desde a ultima chamada
     std::vector<EventoMouse> Coleta(POINT& cursor, bool& esc);
+    // false: o MOVIMENTO passa para o jogo (o modulo dentro dele pega o movimento bruto e zera o que o jogo ve);
+    // cliques e roda continuam presos aqui
+    void EngoleMouse(bool sim);
+    // movimento bruto (do modulo do jogo): anda o cursor virtual e devolve a posicao
+    POINT MoveBruto(int dx, int dy);
 
   private:
     std::thread t;

@@ -50,6 +50,8 @@ class Temporal
               const ParamsTemporal& p, Tex* zAgora = nullptr); // zAgora: movimento e confianca exatos (do jogo)
     bool Valido() const { return valido; }
     Tex& Crua() { return crua; } // a edicao da ultima resposta, no espaco de t0 (diagnostico)
+    Tex zGrade;                  // distancia da camera no t0 da grade (captura de buffer)
+    bool zGradeValida = false;
 
   private:
     Tex* AcumulaEm(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, Tex (&par)[2], UINT& qual, Tex* mov,

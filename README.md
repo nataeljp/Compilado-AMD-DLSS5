@@ -41,6 +41,14 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
     (colocar código no jogo pode dar banimento). Jogo com anti-cheat instalado mas aberto sem ele: conecta, com aviso —
     use só offline.
   - OptiScaler instalado na pasta do jogo assume o upscaler: tire o `dxgi.dll` dele para a captura de buffer.
+  - A rede responde 1–2 quadros depois; o jogo soma a edição pelo movimento acumulado de todos os quadros desde o
+    quadro que a rede viu (nenhum quadro pula sem o movimento dele ser contado: era o "liga/desliga"), e só para a
+    mesma superfície (profundidade). Onde um objeto acabou de sair, a edição vem dos vizinhos do fundo no quadro atual.
+    Validado com movimento extremo (câmera até 335 px/quadro, objeto até 317 px/quadro): nenhum quadro sem edição fora
+    de corte de cena e nenhuma textura do objeto no fundo descoberto (`ferramentas\fantasma_textura.py`: 0,00; uma
+    cópia de 50% do objeto dá 0,98).
+  - Painel sobre o jogo: jogos que leem o mouse por entrada bruta (Unreal) travam o cursor do Windows; o módulo pega o
+    movimento bruto antes do jogo, manda ao painel e entrega zero ao jogo (a mira não mexe, o jogo não pausa).
 
 | Atalho | Ação |
 |---|---|

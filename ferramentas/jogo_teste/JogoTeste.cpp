@@ -27,8 +27,26 @@ static void Ck(HRESULT h, const char* o)
     }
 }
 
+// --raw: o mouse por entrada bruta, sem mensagens nem cursor (RIDEV_NOLEGACY), como o Gears; conta o que o jogo recebe
+static long g_rawDx = 0, g_rawDy = 0, g_rawCliques = 0, g_rawEventos = 0;
 static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l)
 {
+    if (m == WM_INPUT)
+    {
+        RAWINPUT ri{};
+        UINT tam = sizeof ri;
+        // so os eventos injetados (o teste usa mouse_event, sem dispositivo): o mouse fisico de quem esta usando o PC
+        // nao entra na conta
+        if (GetRawInputData(reinterpret_cast<HRAWINPUT>(l), RID_INPUT, &ri, &tam, sizeof(RAWINPUTHEADER)) != UINT(-1) &&
+            ri.header.dwType == RIM_TYPEMOUSE && ri.header.hDevice == nullptr)
+        {
+            ++g_rawEventos;
+            g_rawDx += ri.data.mouse.lLastX;
+            g_rawDy += ri.data.mouse.lLastY;
+            if (ri.data.mouse.usButtonFlags & RI_MOUSE_LEFT_BUTTON_DOWN)
+                ++g_rawCliques;
+        }
+    }
     if (m == WM_DESTROY)
         PostQuitMessage(0);
     return DefWindowProcW(h, m, w, l);
@@ -50,13 +68,19 @@ int wmain(int argc, wchar_t** argv)
     }
     const std::wstring seq = argv[1], saida = argv[2];
     int voltas = 3, fps = 30;
+    bool raw = false;
+    std::wstring modulo;
     for (int i = 3; i + 1 < argc; ++i)
     {
         if (!wcscmp(argv[i], L"--voltas"))
             voltas = _wtoi(argv[i + 1]);
         if (!wcscmp(argv[i], L"--fps"))
             fps = _wtoi(argv[i + 1]);
+        if (!wcscmp(argv[i], L"--modulo"))
+            modulo = argv[i + 1];
     }
+    for (int i = 3; i < argc; ++i)
+        raw |= !wcscmp(argv[i], L"--raw");
     CreateDirectoryW(saida.c_str(), nullptr);
     // tamanho e quadros: meta.jsonl
     FILE* f = nullptr;
@@ -81,7 +105,14 @@ int wmain(int argc, wchar_t** argv)
     RegisterClassW(&wc);
     HWND jan = CreateWindowW(wc.lpszClassName, L"jogo teste buffer", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 40, 40, 640, 360,
                              nullptr, nullptr, wc.hInstance, nullptr);
-    (void)jan;
+    if (raw)
+    {
+        RAWINPUTDEVICE d{0x01, 0x02, RIDEV_NOLEGACY, jan};
+        if (!RegisterRawInputDevices(&d, 1, sizeof d))
+            fprintf(stderr, "RegisterRawInputDevices falhou\n");
+    }
+    if (!modulo.empty() && !LoadLibraryW(modulo.c_str()))
+        fprintf(stderr, "o modulo nao carregou\n");
 
     ComPtr<ID3D12Device> dev;
     Ck(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&dev)), "D3D12CreateDevice");
@@ -268,6 +299,9 @@ int wmain(int argc, wchar_t** argv)
            (unsigned long long)gravados);
     if (mapa)
         fclose(mapa);
+    if (raw)
+        printf("mouse injetado recebido pelo jogo (entrada bruta): %ld eventos, dx %ld dy %ld, %ld cliques\n", g_rawEventos,
+               g_rawDx, g_rawDy, g_rawCliques);
     cli.Encerra();
     return 0;
 }

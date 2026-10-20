@@ -21,7 +21,7 @@
 
 namespace dlss5ov {
 
-constexpr uint32_t kVersao = 1;
+constexpr uint32_t kVersao = 2; // 2: movimento RG32F acumulado ate a exportacao anterior
 constexpr uint32_t kSlotsEntrada = 2;
 constexpr uint32_t kSlotsEdicao = 3;
 
@@ -74,7 +74,13 @@ struct Cabecalho
     volatile uint64_t quadroJogo;         // ultimo quadro gravado pelo jogo
     volatile uint64_t quadroAplicado;     // ultimo quadro em que o jogo somou uma edicao (diagnostico)
     volatile uint32_t profInvertidaUsada; // a convencao que o overlay usou na distancia (alfa) da edicao
-    uint32_t pad0;
+    // Mouse do painel aberto sobre o jogo: o jogo le o mouse por entrada bruta (o cursor do sistema nem anda), entao o
+    // modulo pega o movimento e os cliques antes dele, zera o que o jogo recebe e manda para o overlay (como o UUU/IGCS).
+    volatile uint32_t painelAberto;          // overlay -> jogo
+    volatile int32_t mouseDx, mouseDy;       // jogo -> overlay: movimento bruto acumulado (o overlay troca por 0)
+    volatile int32_t mouseRoda;              // entalhes x 120
+    volatile uint32_t botaoDesce[3], botaoSobe[3]; // contadores (esquerdo, direito, meio)
+    volatile uint32_t mouseEventos;          // eventos de mouse que o jogo leu (diagnostico)
     SlotEntrada entrada[kSlotsEntrada];
     SlotEdicao edicao[kSlotsEdicao];
 };

@@ -4,6 +4,7 @@
 #include "Comum.h"
 #include "Config.h"
 #include "Gancho.h"
+#include "buffer/Protocolo.h"
 
 struct ImFont;
 
@@ -52,6 +53,9 @@ class Painel
     void Esconde(bool devolveFoco = true);
     void DefineJogo(HWND j) { jogo = j; }
     void DefineAutoOculto(bool sim);  // some enquanto o jogo esta fora de foco (Alt+Tab, minimizado)
+    // captura de buffer: o modulo dentro do jogo entrega o mouse ao painel (o jogo le entrada bruta e o cursor do
+    // sistema nem anda); nullptr = sem modulo
+    void DefineMouseJogo(dlss5ov::Cabecalho* c);
     void Ancora(HWND alvo);           // encosta na direita do monitor de `alvo` (ou do principal)
     // icone na bandeja do sistema: clique esquerdo mostra/esconde o painel; direito abre o menu (Sair fecha o app)
     void DicaBandeja(const std::wstring& dica);
@@ -61,6 +65,15 @@ class Painel
     void Aplica();
     bool JogoNaFrente() const;
     Gancho gancho;
+    dlss5ov::Cabecalho* mouseJogo = nullptr;
+    uint32_t desceVisto[3] = {}, sobeVisto[3] = {};
+    ULONGLONG ultimoBruto = 0; // ultima vez que veio movimento bruto do jogo (com ele, o do cursor e ignorado)
+    // o jogo nao le o mouse por entrada bruta (GameInput?): o modulo nao ve nada; o gancho do Windows volta a segurar
+    uint32_t eventosAoAbrir = 0;
+    int movesSemJogo = 0;
+    bool jogoSemBruta = false;
+    long brutoDx = 0, brutoDy = 0;   // diagnostico: movimento recebido do jogo nesta abertura
+    ULONGLONG vigiaFocoAte = 0;      // fechado sobre o jogo: devolve o foco se o Windows ativar outra janela logo depois
     bool semFoco = false; // aberto sobre o jogo sem tirar o foco dele (mouse pelo gancho)
     void CriaBandeja();
     std::wstring dicaBandeja;

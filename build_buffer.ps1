@@ -8,7 +8,7 @@ $vs = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxilia
 New-Item -ItemType Directory -Force $Saida, "$raiz\obj\buffer" | Out-Null
 $flags = '/nologo /std:c++20 /EHsc /O2 /MT /W3 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOMINMAX /permissive- /Zc:__cplusplus /utf-8'
 $cli = "`"$raiz\src\buffer\ClienteBuffer.cpp`""
-$cl = "cl $flags /Fo`"$raiz\obj\buffer\\`" /Fe`"$raiz\obj\JogoTeste.exe`" `"$raiz\ferramentas\jogo_teste\JogoTeste.cpp`" $cli /link /SUBSYSTEM:CONSOLE d3d12.lib dxgi.lib user32.lib"
+$cl = "cl $flags /Fo`"$raiz\obj\buffer\\`" /Fe`"$raiz\obj\JogoTeste.exe`" `"$raiz\ferramentas\jogo_teste\JogoTeste.cpp`" $cli /link /SUBSYSTEM:WINDOWS /ENTRY:wmainCRTStartup d3d12.lib dxgi.lib user32.lib"
 cmd /c "`"$vs`" >nul 2>nul & $cl" 2>&1 | Where-Object { $_ -match 'error|warning C4[0-9]{3}' } | Select-Object -First 30
 if ($LASTEXITCODE -ne 0) { "jogo de teste falhou ($LASTEXITCODE)"; exit 1 }
 "ok: $raiz\obj\JogoTeste.exe"

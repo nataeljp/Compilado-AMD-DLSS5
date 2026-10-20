@@ -1,6 +1,7 @@
 #include "Temporal.h"
 #include "Shaders.h"
 #include <algorithm>
+#include <cstdlib>
 
 namespace ov {
 
@@ -123,9 +124,79 @@ Texture2D<float4> deslG : register(t10);  // deslocamento acumulado ate o t0 da 
 Texture2D<float4> gradeCor : register(t11); // cor media (perceptual comprimida) de quem recebeu cada celula da grade
 ByteAddressBuffer estatFluxo : register(t12); // somas do quadro (Fluxo::Estatisticas): [0] (1-conf)*1024, [3] pixels
 Texture2D<float> zAgora : register(t13);  // distancia da camera deste quadro (so com exata)
+Texture2D<float> zGrade : register(t14);  // distancia da camera no t0 da grade (o quadro da ultima resposta)
+
 RWTexture2D<float4> histNovo : register(u0);
 RWTexture2D<float4> edLin : register(u1); // a edicao estabilizada em luz linear (o que a composicao soma)
 SamplerState s : register(s0);
+
+// Fundo recem-descoberto (o historico foi descartado pela profundidade): a edicao vem da ultima resposta da rede, em
+// resolucao cheia, so de pixels da MESMA superficie (distancia da camera igual) -- anel que cresce ate 128 px, primeiro
+// raio com amostras e o seguinte, peso 1/r. A grade (celulas de 16 px) misturava a vizinhanca do objeto que saiu dali:
+// era o fantasma. achou = 0: nada da mesma superficie por perto (fica a grade).
+static const float CEU = 1e6;
+float MesmaZ(float za, float zb)
+{
+    if (za >= CEU * 0.5 && zb >= CEU * 0.5) return 1.0;
+    return 1.0 - smoothstep(0.04, 0.15, abs(za - zb) / max(min(za, zb), 1e-6));
+}
+// Fundo recem-descoberto: os VIZINHOS deste quadro na mesma superficie cujo historico e valido (a faixa e estreita perto
+// da borda; com o objeto andando centenas de pixels, procurar em volta da posicao antiga caia dentro da area que ele
+// cobria e nao achava fundo). O valor e o historico reprojetado de cada vizinho, peso 1/r.
+float3 PreencheVizinhos(int2 p, float zc, out float achou)
+{
+    float3 acc = 0;
+    float ws = 0;
+    achou = 0;
+    const int2 lim = int2(w, h) - 1;
+    const float2 tam = float2(w, h);
+    [loop] for (float r = 3.0; r <= 384.0 && achou < 2.0; r *= 2.0)
+    {
+        float s1 = 0;
+        [unroll] for (int k = 0; k < 16; ++k)
+        {
+            float2 dir;
+            sincos(k * 0.3926991 + r * 0.29, dir.y, dir.x);
+            const int2 t = clamp(int2(float2(p) + 0.5 + dir * r), 0, lim);
+            const float ct = conf.Load(int3(t, 0));
+            if (ct < 0.5) continue;
+            const float wv = MesmaZ(zAgora.Load(int3(t, 0)), zc) * ct / r;
+            if (wv <= 0.0) continue;
+            const float2 uvT = (float2(t) + 0.5 + mov.Load(int3(t, 0)).xy) / tam;
+            acc += histAnt.SampleLevel(s, uvT, 0).rgb * wv;
+            s1 += wv;
+        }
+        ws += s1;
+        if (s1 > 0.3 / r || achou > 0.0)
+            achou += 1.0;
+    }
+    return ws > 1e-6 ? acc / ws : 0;
+}
+
+float3 PreencheMesma(float2 q, float zc, out float achou)
+{
+    float3 acc = 0;
+    float ws = 0;
+    achou = 0;
+    const int2 lim = int2(w, h) - 1;
+    [loop] for (float r = 2.0; r <= 128.0 && achou < 2.0; r *= 2.0)
+    {
+        float s1 = 0;
+        [unroll] for (int k = 0; k < 12; ++k)
+        {
+            float2 dir;
+            sincos(k * 0.5235988 + r * 0.37, dir.y, dir.x);
+            const int2 t = clamp(int2(q + dir * r), 0, lim);
+            const float wv = MesmaZ(zGrade.Load(int3(t, 0)), zc) / r;
+            acc += edT0.Load(int3(t, 0)).rgb * wv;
+            s1 += wv;
+        }
+        ws += s1;
+        if (s1 > 0.3 / r || achou > 0.0)
+            achou += 1.0;
+    }
+    return ws > 1e-5 ? acc / ws : 0;
+}
 
 // cor perceptual no espaco comprimido: a mesma diferenca relativa pesa igual no escuro e no realce HDR
 float3 CorP(float3 o) { o = max(o, 0.0); return pow(o / (1.0 + Lum(o)), 1.0 / 2.2); }
@@ -243,7 +314,9 @@ float3 Fatia(float2 pos, float z01, float3 cp, float lz)
         n *= foto;
         // ida e volta so pesa onde a cor tambem diverge: onde a cor do quadro anterior reprojetado bate, o historico
         // vale (em area lisa o vetor e arbitrario, nao confere, e zerar ali so trazia cintilacao: 0,129 -> 0,102 medido)
-        if (temConf) n *= exata ? conf.Load(int3(p, 0)) : lerp(conf.Load(int3(p, 0)), 1.0, foto);
+        // exata: a confianca vem da profundidade (quase binaria); corte seco -- multiplicar por 0,03 ainda deixava ~20% do
+        // historico velho (a edicao do objeto que estava ali) no fundo recem-descoberto: era o fantasma
+        if (temConf) n *= exata ? smoothstep(0.3, 0.7, conf.Load(int3(p, 0))) : lerp(conf.Load(int3(p, 0)), 1.0, foto);
     }
     float3 eg = 0;
     if (temGrade && !corte)
@@ -251,6 +324,19 @@ float3 Fatia(float2 pos, float z01, float3 cp, float lz)
         float4 dg = temDeslG ? deslG.Load(int3(p, 0)) : float4(0, 0, 1, 1);
         float3 o = orig.Load(int3(p, 0)).rgb;
         eg = Fatia(float2(p) + 0.5 + dg.xy, Guia(o), CorP(o), exata ? log2(max(zAgora.Load(int3(p, 0)), 1e-6)) : 0.0);
+        if (exata && temConf && conf.Load(int3(p, 0)) < 0.5)
+        {
+            // fundo recem-descoberto (ou borda nova da tela): a ultima resposta, so da mesma superficie
+            float achou;
+            const float zp = zAgora.Load(int3(p, 0));
+            float3 em = temHist ? PreencheVizinhos(p, zp, achou) : 0;
+            if (achou <= 0.0)
+                em = PreencheMesma(float2(p) + 0.5 + dg.xy, zp, achou);
+            if (achou > 0.0)
+                eg = em;
+            if (exata & 2u) // DLSS5_DEBUG_FAIXA: marca de vermelho onde o preenchimento atua (verde: nao achou vizinho)
+                eg = achou > 0.0 ? float3(0.25, -0.1, -0.1) : float3(-0.1, 0.25, -0.1);
+        }
     }
     if (temResp)
     {
@@ -280,12 +366,14 @@ float3 Fatia(float2 pos, float z01, float3 cp, float lz)
             peso = saturate(1.0 - d * rejeicao);
             if (exata && temDesl) peso *= dd.z; // o caminho ate t0 passou por outra superficie (oclusao)
         }
-        if (temGrade)
+        if (temGrade && !(exata && n > 0.5))
         {
             // a resposta entra inteira: reposicionada onde o quadro de t0 bate com o atual, pela grade onde nao bate
             e = lerp(eg, e, peso);
             peso = 1.0;
         }
+        // exata com historico valido: onde a resposta (de 1-2 quadros atras) nao viu esta superficie (o objeto estava na
+        // frente), o historico do proprio fundo fica; misturar a grade ali trazia um pouco do objeto (fantasma)
         float nn = min(n + peso, maxN);
         hr = lerp(hr, e, peso / max(nn, 1.0));
         n = nn;
@@ -296,7 +384,7 @@ float3 Fatia(float2 pos, float z01, float3 cp, float lz)
         // (a confianca ida-e-volta nao salva historico de cor diferente: num corte ela dava alta por acaso e a edicao da
         // cena anterior ficava pintada na nova)
         float k = foto;
-        if (exata && temConf) k *= conf.Load(int3(p, 0)); // fundo recem-descoberto: a grade da camada certa
+        if (exata && temConf) k *= smoothstep(0.3, 0.7, conf.Load(int3(p, 0))); // fundo recem-descoberto: o preenchimento
         hr = temGrade ? lerp(eg, hr, k) : hr * k;
         n = max(n, 1.0);
     }
@@ -341,7 +429,7 @@ const D3D12_RESOURCE_STATES SRV =
 
 void Temporal::Cria(ID3D12Device* d)
 {
-    passe.Cria(d, (std::string(hlsl::Comum) + kHlsl).c_str(), "CSTemporal", 14, 2, 16, "temporal");
+    passe.Cria(d, (std::string(hlsl::Comum) + kHlsl).c_str(), "CSTemporal", 15, 2, 16, "temporal");
     passeGrade.Cria(d, (std::string(hlsl::Comum) + kGrade).c_str(), "CSGrade", 3, 2, 8, "grade");
     passeEdicao.Cria(d, (std::string(hlsl::Comum) + kEdicao).c_str(), "CSEdicao", 3, 1, 8, "edicao");
     passeAcumula.Cria(d, (std::string(hlsl::Comum) + kAcumula).c_str(), "CSAcumula", 3, 1, 4, "acumula");
@@ -363,6 +451,8 @@ void Temporal::Garante(ID3D12Device* d, UINT w, UINT h)
     gh = (h + kCelula - 1) / kCelula;
     grade.Cria(d, gw * kFaixas, gh, DXGI_FORMAT_R16G16B16A16_FLOAT, L"grade bilateral da edicao");
     gradeCor.Cria(d, gw * kFaixas, gh, DXGI_FORMAT_R16G16B16A16_FLOAT, L"cor da grade bilateral");
+    zGrade.Cria(d, w, h, DXGI_FORMAT_R32_FLOAT, L"distancia no t0 da grade", false);
+    zGradeValida = false;
     gradeValida = false;
     valido = false;
 }
@@ -437,6 +527,18 @@ void Temporal::Grade(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Devi
     grade.Para(c, SRV);
     gradeCor.Para(c, SRV);
     gradeValida = true;
+    zGradeValida = false;
+    if (zT0 && zT0->w == zGrade.w && zT0->h == zGrade.h)
+    {
+        // a distancia do t0 desta grade (a de quem chamou e reescrita no envio seguinte)
+        const auto antes = zT0->estado;
+        zT0->Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        zGrade.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
+        c->CopyResource(zGrade.r.Get(), zT0->r.Get());
+        zGrade.Para(c, SRV);
+        zT0->Para(c, antes);
+        zGradeValida = true;
+    }
     if (deslocamento)
     {
         // o t0 da grade e o da resposta: o deslocamento ate ela, daqui em diante, parte do da resposta
@@ -478,6 +580,8 @@ Tex* Temporal::Roda(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Devic
         deslGAgora->Para(c, SRV);
     if (zAgora)
         zAgora->Para(c, SRV);
+    if (zGradeValida)
+        zGrade.Para(c, SRV);
     K k{fed.w,
         fed.h,
         chegou ? 1u : 0u,
@@ -493,7 +597,7 @@ Tex* Temporal::Roda(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Devic
         gw,
         gh,
         deslGAgora ? 1u : 0u,
-        zAgora ? 1u : 0u};
+        ((zAgora && zGradeValida) ? 1u : 0u) | (getenv("DLSS5_DEBUG_FAIXA") ? 2u : 0u)};
     using Par = std::pair<ID3D12Resource*, DXGI_FORMAT>;
     const Par vazio{fed.r.Get(), fed.fmt};
     passe.Roda(c, desc, d,
@@ -510,7 +614,8 @@ Tex* Temporal::Roda(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Devic
                 deslGAgora ? Par{deslGAgora->r.Get(), deslGAgora->fmt} : vazio,
                 gradeValida ? Par{gradeCor.r.Get(), gradeCor.fmt} : vazio,
                 {estatFluxo, DXGI_FORMAT_UNKNOWN},
-                zAgora ? Par{zAgora->r.Get(), zAgora->fmt} : vazio},
+                zAgora ? Par{zAgora->r.Get(), zAgora->fmt} : vazio,
+                zGradeValida ? Par{zGrade.r.Get(), zGrade.fmt} : vazio},
                {{novo.r.Get(), novo.fmt}, {linear.r.Get(), linear.fmt}}, &k, (fed.w + 7) / 8, (fed.h + 7) / 8);
     novo.Para(c, SRV);
     linear.Para(c, SRV);

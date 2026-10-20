@@ -88,6 +88,7 @@ struct App
     std::string estadoBuffer;   // linha de estado no painel
     int fonteLigada = 0;        // a fonte com que ligou (trocar no painel religa)
     uint64_t quadroJogo = 0;    // numero do quadro do jogo em processamento (gravacao: alinha com o jogo)
+    int gravaEm = 0;            // --grava-em N: comeca a gravar no quadro N (testes)
     bool invertidaUsada = true; // Z invertido em uso (do jogo, ou medido quando ele nao diz)
     bool Ligado() const { return cap.Ativa() || buffer; }
     HWND Alvo() const { return buffer ? alvoBuffer : cap.Alvo(); }
@@ -986,6 +987,8 @@ struct App
                 Log("tempo", Fmt("corte de cena no quadro %llu (confianca %.2f)", (unsigned long long)quadros,
                                  1.0 - estat.semConfianca));
         }
+        if (gravaEm > 0 && quadros + 1 == (UINT64)gravaEm)
+            IniciaGravacao(); // --grava-em N (testes): grava a partir do quadro N
         if (gravando > 0)
             GravaQuadro(usa, temMov, edicao);
         if (usa)
@@ -1121,6 +1124,7 @@ struct App
         painel.DicaBandeja(Ligado() && !exeAlvo.empty() ? L"DLSS 5 Overlay - " + exeAlvo : L"DLSS 5 Overlay - sem jogo");
         e.perfilExiste = PerfilExiste();
         e.perfilCarregado = perfilCarregado;
+        painel.DefineMouseJogo(buffer && fb.Conectada() && fb.JogoVivo() ? fb.Cab() : nullptr);
         const AcoesPainel a = painel.Quadro(cfg, e);
         if (a.salvarPerfil && !exeAlvo.empty())
         {
@@ -1387,6 +1391,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
     App app;
     std::wstring alvoTitulo, imagemArq;
+    bool teclasTeste = false;
     int atrasoArg = -2; // --atraso N: a resposta da rede entra N quadros depois do envio (teste do modo assincrono)
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
@@ -1394,6 +1399,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
     {
         if (!wcscmp(argv[i], L"--alvo"))
             alvoTitulo = argv[++i];
+        else if (!wcscmp(argv[i], L"--teclas-teste"))
+            teclasTeste = true; // testes com outro overlay aberto: atalhos Ctrl+Shift+F5..F10
+        else if (!wcscmp(argv[i], L"--grava-em"))
+            app.gravaEm = _wtoi(argv[++i]);
         else if (!wcscmp(argv[i], L"--quadros"))
             app.quadrosTeste = _wtoi(argv[++i]);
         else if (!wcscmp(argv[i], L"--grava"))
@@ -1553,12 +1562,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         app.Encerra();
         return codigo;
     }
-    RegisterHotKey(nullptr, 1, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'D');
-    RegisterHotKey(nullptr, 2, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'N');
-    RegisterHotKey(nullptr, 3, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'S');
-    RegisterHotKey(nullptr, 4, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'Q');
-    RegisterHotKey(nullptr, 5, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'P');
-    RegisterHotKey(nullptr, 6, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'G');
+    // --teclas-teste (testes com outro overlay aberto): Ctrl+Shift+F5..F10 no lugar de D, N, S, Q, P, G
+    const UINT mods = MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT;
+    const UINT teclas[6] = {'D', 'N', 'S', 'Q', 'P', 'G'};
+    for (int i = 0; i < 6; ++i)
+        RegisterHotKey(nullptr, i + 1, mods, teclasTeste ? UINT(VK_F5 + i) : teclas[i]);
     if (!alvoTitulo.empty())
     {
         Busca b{alvoTitulo};

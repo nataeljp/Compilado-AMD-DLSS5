@@ -49,6 +49,7 @@ class ClienteBuffer
     void Submetido(ID3D12CommandQueue* q);
     bool OverlayVivo() const;
     uint64_t Aplicado() const { return cab ? cab->quadroAplicado : 0; } // ultimo quadro com a edicao somada
+    Cabecalho* Cab() const { return cab; }
     const char* UltimoErro() const { return erro.c_str(); }
 
   private:
@@ -80,6 +81,15 @@ class ClienteBuffer
     uint64_t quadro = 0, pendente = 0;
     std::string erro;
     std::vector<HANDLE> handles; // nomes da geracao atual (fechados quando ela troca)
+    // movimento acumulado ate cada ancora (quadro exportado): 3 acumuladores em vai-e-volta, na resolucao do MV
+    void Esquece();
+    Com<ID3D12Resource> acc[3][2];
+    D3D12_RESOURCE_STATES estadoAcc[3][2] = {};
+    uint64_t ancora[3] = {};
+    int jUlt = -1;
+    UINT pp = 0;
+    uint64_t ultimaExport = 0;
+    bool estavaVivo = false;
 };
 
 } // namespace dlss5ov

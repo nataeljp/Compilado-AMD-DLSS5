@@ -499,12 +499,38 @@ void Painel::Aplica()
     const bool v = usuarioQuer && !autoOculto;
     if (v != (IsWindowVisible(hwnd) != FALSE))
     {
-        ShowWindow(hwnd, v ? SW_SHOWNOACTIVATE : SW_HIDE);
         if (v)
+        {
+            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
             SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+        else // sem ativar outra janela (com ShowWindow o Windows ativava a proxima da fila: area de trabalho, barra)
+            SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                         SWP_HIDEWINDOW | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
     }
     // o mouse so fica com o painel enquanto ele esta na tela sobre o jogo (Alt+Tab o esconde e solta o mouse)
     const bool querGancho = v && semFoco;
+    if (mouseJogo)
+    {
+        mouseJogo->painelAberto = querGancho ? 1u : 0u;
+        if (querGancho)
+        {
+            // o que o jogo acumulou antes de abrir nao conta
+            InterlockedExchange(reinterpret_cast<volatile LONG*>(&mouseJogo->mouseDx), 0);
+            InterlockedExchange(reinterpret_cast<volatile LONG*>(&mouseJogo->mouseDy), 0);
+            InterlockedExchange(reinterpret_cast<volatile LONG*>(&mouseJogo->mouseRoda), 0);
+            for (int i = 0; i < 3; ++i)
+                desceVisto[i] = mouseJogo->botaoDesce[i], sobeVisto[i] = mouseJogo->botaoSobe[i];
+            eventosAoAbrir = mouseJogo->mouseEventos;
+            movesSemJogo = 0;
+            brutoDx = brutoDy = 0;
+        }
+        else
+        {
+            Log("painel", Fmt("mouse do jogo nesta abertura: %u eventos, dx %ld dy %ld",
+                              mouseJogo->mouseEventos - eventosAoAbrir, brutoDx, brutoDy));
+        }
+    }
     if (querGancho && !gancho.Ligado())
     {
         RECT r{};
@@ -513,6 +539,21 @@ void Painel::Aplica()
     }
     else if (!querGancho && gancho.Ligado())
         gancho.Desliga();
+}
+
+void Painel::DefineMouseJogo(dlss5ov::Cabecalho* c)
+{
+    if (c && jogoSemBruta)
+        c = nullptr; // ja visto: este jogo nao passa o mouse pela entrada bruta
+    if (c == mouseJogo)
+        return;
+    if (mouseJogo)
+        mouseJogo->painelAberto = 0;
+    mouseJogo = c;
+    if (c)
+        for (int i = 0; i < 3; ++i)
+            desceVisto[i] = c->botaoDesce[i], sobeVisto[i] = c->botaoSobe[i];
+    gancho.EngoleMouse(c == nullptr);
 }
 
 // a janela em primeiro plano e o jogo (ou, sem jogo ligado, um programa qualquer que nao seja a area de trabalho, a
@@ -573,7 +614,8 @@ void Painel::Alterna()
     Aplica();
     if (semFoco)
     {
-        Log("painel", "aberto sem tirar o foco do jogo (mouse no painel; Esc ou Ctrl+Shift+P devolve)");
+        Log("painel", Fmt("aberto sem tirar o foco do jogo (mouse no painel; Esc ou Ctrl+Shift+P devolve)%s",
+                          mouseJogo ? "; mouse pelo modulo do jogo" : "; mouse pelo Windows"));
         return;
     }
     Foca(hwnd);
@@ -587,7 +629,7 @@ void Painel::Esconde(bool devolveFoco)
     Aplica();
     const bool estavaSemFoco = semFoco;
     semFoco = false;
-    if (!avisouBandeja && devolveFoco)
+    if (!avisouBandeja && devolveFoco && !estavaSemFoco) // sobre o jogo, a notificacao puxava o foco para a barra
     {
         avisouBandeja = true;
         NOTIFYICONDATAW n{sizeof n};
@@ -600,8 +642,18 @@ void Painel::Esconde(bool devolveFoco)
                   _TRUNCATE);
         Shell_NotifyIconW(NIM_MODIFY, &n);
     }
-    if (devolveFoco && !estavaSemFoco && jogo && IsWindow(jogo) && !IsIconic(jogo))
-        Foca(jogo);
+    if (devolveFoco && jogo && IsWindow(jogo) && !IsIconic(jogo))
+    {
+        // aberto com foco: devolve; aberto sobre o jogo: so se algo tirou o foco dele ao esconder
+        DWORD pj = 0, pf = 0;
+        GetWindowThreadProcessId(jogo, &pj);
+        if (HWND fg = GetForegroundWindow())
+            GetWindowThreadProcessId(fg, &pf);
+        if (!estavaSemFoco || pf != pj)
+            Foca(jogo);
+        else
+            vigiaFocoAte = GetTickCount64() + 600;
+    }
 }
 
 void Painel::DefineAutoOculto(bool sim)
@@ -680,6 +732,22 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         Esconde(true); // fechar so esconde (Ctrl+Shift+P ou o icone da bandeja volta); sair e no menu da bandeja
         return a;
     }
+    if (vigiaFocoAte)
+    {
+        // ao esconder, o Windows as vezes ativa a area de trabalho/barra logo depois: o foco volta para o jogo
+        if (GetTickCount64() > vigiaFocoAte)
+            vigiaFocoAte = 0;
+        else if (HWND fg = GetForegroundWindow(); jogo && IsWindow(jogo) && fg != jogo)
+        {
+            wchar_t c[64] = {};
+            GetClassNameW(fg, c, 64);
+            if (!wcscmp(c, L"Progman") || !wcscmp(c, L"WorkerW") || !wcscmp(c, L"Shell_TrayWnd") || fg == hwnd)
+            {
+                Foca(jogo);
+                vigiaFocoAte = 0;
+            }
+        }
+    }
     if (IsIconic(hwnd) || !IsWindowVisible(hwnd))
         return a;
     if (g_pendW && g_pendH && (g_pendW != w || g_pendH != h))
@@ -699,8 +767,52 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             gancho.Area(r);
             POINT cur{};
             bool esc = false;
-            for (const EventoMouse& m : gancho.Coleta(cur, esc))
+            // mouse de dentro do jogo (captura de buffer): movimento bruto e cliques que o modulo tirou do jogo
+            bool bruto = false;
+            if (mouseJogo)
             {
+                const LONG dx = InterlockedExchange(reinterpret_cast<volatile LONG*>(&mouseJogo->mouseDx), 0);
+                const LONG dy = InterlockedExchange(reinterpret_cast<volatile LONG*>(&mouseJogo->mouseDy), 0);
+                const LONG roda = InterlockedExchange(reinterpret_cast<volatile LONG*>(&mouseJogo->mouseRoda), 0);
+                if (dx || dy)
+                {
+                    brutoDx += dx, brutoDy += dy;
+                    ultimoBruto = GetTickCount64();
+                    const POINT pb = gancho.MoveBruto(dx, dy);
+                    io.AddMousePosEvent(float(pb.x - r.left), float(pb.y - r.top));
+                }
+                // com o modulo no jogo o cursor anda so pelo movimento bruto (o do Windows somava ~1,3x); se o jogo nao
+                // ler entrada bruta, a reserva abaixo desliga o modulo e o do Windows volta
+                bruto = true;
+                (void)roda; // cliques e roda chegam pelo gancho do Windows (que os segura)
+                // o movimento passa pelo Windows (para o modulo ver a entrada bruta) e leva o cursor de verdade junto:
+                // fora da janela do jogo, o Windows ativava a area de trabalho. Ele volta ao centro do jogo a cada quadro
+                RECT cj{};
+                if (jogo && IsWindow(jogo) && GetClientRect(jogo, &cj))
+                {
+                    POINT c0{(cj.left + cj.right) / 2, (cj.top + cj.bottom) / 2};
+                    ClientToScreen(jogo, &c0);
+                    SetCursorPos(c0.x, c0.y);
+                }
+            }
+            std::vector<EventoMouse> evs = gancho.Coleta(cur, esc);
+            if (mouseJogo && mouseJogo->mouseEventos == eventosAoAbrir)
+            {
+                // o Windows ve o mouse andar e o jogo nao leu nenhum evento bruto: ele usa outra entrada (GameInput?).
+                // Volta ao gancho do Windows segurando o mouse (o jogo nao ve o mouse; o cursor anda pelo do Windows)
+                for (const EventoMouse& m : evs)
+                    movesSemJogo += m.tipo == EventoMouse::Move;
+                if (movesSemJogo > 20)
+                {
+                    Log("painel", "o jogo nao leu o mouse por entrada bruta: o painel segura o mouse pelo Windows");
+                    jogoSemBruta = true;
+                    DefineMouseJogo(nullptr);
+                }
+            }
+            for (const EventoMouse& m : evs)
+            {
+                if (m.tipo == EventoMouse::Move && bruto)
+                    continue; // o jogo manda movimento bruto: o do cursor andaria em dobro
                 if (m.tipo == EventoMouse::Move)
                     io.AddMousePosEvent(float(m.x - r.left), float(m.y - r.top));
                 else if (m.tipo == EventoMouse::Botao)

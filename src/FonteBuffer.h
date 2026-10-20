@@ -29,7 +29,7 @@ class FonteBuffer
     {
         uint64_t n = 0;
         Tex* cor = nullptr;  // RGBA16F, linear x exposicao
-        Tex* mov = nullptr;  // RG16F, pixels da cor, do atual ao anterior
+        Tex* mov = nullptr;  // RG32F, pixels da cor, do atual ate o quadro exportado anterior
         Tex* prof = nullptr; // R32F
         bool reset = false, profInvertida = false, profInfinita = false;
         bool profInvertidaConhecida = true; // false: medir (Fluxo::InvertidaMedida)
@@ -47,6 +47,7 @@ class FonteBuffer
     UINT CorW() const { return cab ? cab->corW : 0; }
     UINT CorH() const { return cab ? cab->corH : 0; }
     uint64_t Aplicados() const { return cab ? cab->quadroAplicado : 0; }
+    dlss5ov::Cabecalho* Cab() const { return cab; }
 
   private:
     bool AbreGeracao();

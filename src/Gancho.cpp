@@ -1,4 +1,5 @@
 #include "Gancho.h"
+#include "Comum.h"
 #include <algorithm>
 #include <mutex>
 
@@ -11,6 +12,7 @@ POINT g_cursor{};
 RECT g_area{};
 bool g_esc = false;
 std::atomic<ULONGLONG> g_batimento{0};
+std::atomic<bool> g_engole{true};
 ULONGLONG g_ultimoSolta = 0;
 
 bool Vivo() { return GetTickCount64() - g_batimento.load() < 1000; }
@@ -44,10 +46,17 @@ void Estaciona()
         SetCursorPos((c.left + c.right) / 2, (c.top + c.bottom) / 2);
 }
 
+std::atomic<int> g_passou{0}, g_engoliu{0};
 LRESULT CALLBACK ProcMouse(int code, WPARAM w, LPARAM l)
 {
     if (code != HC_ACTION || !Vivo())
+    {
+        if (code == HC_ACTION)
+            ++g_passou;
         return CallNextHookEx(nullptr, code, w, l);
+    }
+    if (w != WM_MOUSEMOVE)
+        ++g_engoliu;
     const auto* s = reinterpret_cast<const MSLLHOOKSTRUCT*>(l);
     std::lock_guard<std::mutex> lk(g_mx);
     EventoMouse e;
@@ -56,11 +65,15 @@ LRESULT CALLBACK ProcMouse(int code, WPARAM w, LPARAM l)
     case WM_MOUSEMOVE:
     {
         // o evento ainda nao moveu o cursor de verdade (e nao vai: e engolido): o passo e o ponto novo - o atual
-        POINT atual{};
-        GetCursorPos(&atual);
-        g_cursor.x += s->pt.x - atual.x;
-        g_cursor.y += s->pt.y - atual.y;
-        Prende(g_cursor);
+        // com o modulo no jogo (g_engole falso) quem anda o cursor e o movimento bruto dele (MoveBruto)
+        if (g_engole.load())
+        {
+            POINT atual{};
+            GetCursorPos(&atual);
+            g_cursor.x += s->pt.x - atual.x;
+            g_cursor.y += s->pt.y - atual.y;
+            Prende(g_cursor);
+        }
         e.tipo = EventoMouse::Move;
         e.x = g_cursor.x;
         e.y = g_cursor.y;
@@ -89,6 +102,9 @@ LRESULT CALLBACK ProcMouse(int code, WPARAM w, LPARAM l)
     }
     if (g_eventos.size() < 4096)
         g_eventos.push_back(e);
+    if (!g_engole.load() && w == WM_MOUSEMOVE)
+        return CallNextHookEx(nullptr, code, w, l); // so o movimento passa: o modulo do jogo tira do jogo e manda ao
+                                                    // painel. Cliques e roda nunca passam (ativariam outra janela)
     return 1; // engole: o jogo nao ve
 }
 
@@ -146,11 +162,24 @@ void Gancho::Desliga()
 {
     if (!Ligado())
         return;
+    Log("painel", Fmt("gancho do mouse: %d cliques/roda segurados, %d eventos passaram por falta de batimento",
+                      g_engoliu.exchange(0), g_passou.exchange(0)));
     PostThreadMessageW(idThread.load(), WM_QUIT, 0, 0);
     t.join();
     idThread = 0;
     std::lock_guard<std::mutex> lk(g_mx);
     g_eventos.clear();
+}
+
+void Gancho::EngoleMouse(bool sim) { g_engole = sim; }
+
+POINT Gancho::MoveBruto(int dx, int dy)
+{
+    std::lock_guard<std::mutex> lk(g_mx);
+    g_cursor.x += dx;
+    g_cursor.y += dy;
+    Prende(g_cursor);
+    return g_cursor;
 }
 
 void Gancho::Area(const RECT& area)

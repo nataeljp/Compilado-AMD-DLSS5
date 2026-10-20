@@ -3,7 +3,9 @@
 // movimento, exposicao, camera) e conversa com o overlay pelo ClienteBuffer (buffer/Protocolo.h). Ganchos:
 //   - ffxCreateContext / ffxDispatch da DLL do upscaler (amd_fidelityfx_upscaler_dx12.dll; FSR 3.1 antigo:
 //     amd_fidelityfx_dx12.dll): depois do despacho de upscale, grava os passes do cliente na mesma lista;
-//   - ID3D12CommandQueue::ExecuteCommandLists: quando essa lista e submetida, sinaliza a cerca do jogo.
+//   - ID3D12CommandQueue::ExecuteCommandLists: quando essa lista e submetida, sinaliza a cerca do jogo;
+//   - entrada (com o painel do overlay aberto sobre o jogo): GetRawInputData/GetRawInputBuffer e as mensagens de mouse
+//     da janela do jogo -- o movimento e os cliques vao para o painel e o jogo recebe zero (a mira nao mexe).
 // Registro em DLSS5Buffer.log ao lado da DLL.
 #include "../buffer/ClienteBuffer.h"
 #include "ffx_api.h"
@@ -45,6 +47,171 @@ PfnFfxCreateContext oCriaContexto = nullptr;
 PfnFfxDispatch oDespacha = nullptr;
 using PfnExecuta = void(STDMETHODCALLTYPE*)(ID3D12CommandQueue*, UINT, ID3D12CommandList* const*);
 PfnExecuta oExecuta = nullptr;
+using PfnRawData = UINT(WINAPI*)(HRAWINPUT, UINT, LPVOID, PUINT, UINT);
+using PfnRawBuffer = UINT(WINAPI*)(PRAWINPUT, PUINT, UINT);
+PfnRawData oRawData = nullptr;
+PfnRawBuffer oRawBuffer = nullptr;
+HHOOK g_ganchoMsg = nullptr;
+volatile LONG g_rawVistos = 0;
+
+// o cabecalho deste processo: o do cliente, ou (antes do primeiro FSR, ou num processo de teste que tem o proprio
+// cliente) o mapeamento pelo nome
+dlss5ov::Cabecalho* g_cabNome = nullptr;
+dlss5ov::Cabecalho* CabSeAberto()
+{
+    dlss5ov::Cabecalho* c = g_clienteOk ? g_cli.Cab() : nullptr;
+    if (!c)
+    {
+        if (!g_cabNome)
+        {
+            static ULONGLONG tentou = 0;
+            if (GetTickCount64() - tentou > 1000)
+            {
+                tentou = GetTickCount64();
+                wchar_t nome[96];
+                dlss5ov::NomeMapa(nome, 96, GetCurrentProcessId());
+                if (HANDLE m = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, nome))
+                    g_cabNome = static_cast<dlss5ov::Cabecalho*>(
+                        MapViewOfFile(m, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(dlss5ov::Cabecalho)));
+            }
+        }
+        c = g_cabNome;
+    }
+    return c && c->painelAberto && c->ativo && GetTickCount64() - c->batimentoOverlay < 1000 ? c : nullptr;
+}
+
+// o movimento e os cliques vao para o painel; o jogo recebe um evento vazio
+void Filtra(RAWMOUSE& m)
+{
+    InterlockedIncrement(&g_rawVistos);
+    dlss5ov::Cabecalho* c = CabSeAberto();
+    {
+        // diagnostico (1 por segundo): por que o painel nao recebe
+        static ULONGLONG ultimo = 0;
+        const ULONGLONG agora = GetTickCount64();
+        if (agora - ultimo > 1000)
+        {
+            ultimo = agora;
+            dlss5ov::Cabecalho* b = g_clienteOk ? g_cli.Cab() : g_cabNome;
+            Log("mouse bruto: cabecalho %s, painel %u, ativo %u, batimento ha %llu ms -> %s", b ? "ok" : "nenhum",
+                b ? b->painelAberto : 0u, b ? b->ativo : 0u, b ? (unsigned long long)(agora - b->batimentoOverlay) : 0ull,
+                c ? "para o painel" : "para o jogo");
+        }
+    }
+    if (!c)
+        return;
+    InterlockedIncrement(reinterpret_cast<volatile LONG*>(&c->mouseEventos));
+    if (!(m.usFlags & MOUSE_MOVE_ABSOLUTE))
+    {
+        InterlockedExchangeAdd(reinterpret_cast<volatile LONG*>(&c->mouseDx), m.lLastX);
+        InterlockedExchangeAdd(reinterpret_cast<volatile LONG*>(&c->mouseDy), m.lLastY);
+    }
+    const USHORT b = m.usButtonFlags;
+    const USHORT desce[3] = {RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_RIGHT_BUTTON_DOWN, RI_MOUSE_MIDDLE_BUTTON_DOWN};
+    const USHORT sobe[3] = {RI_MOUSE_LEFT_BUTTON_UP, RI_MOUSE_RIGHT_BUTTON_UP, RI_MOUSE_MIDDLE_BUTTON_UP};
+    for (int i = 0; i < 3; ++i)
+    {
+        if (b & desce[i])
+            InterlockedIncrement(reinterpret_cast<volatile LONG*>(&c->botaoDesce[i]));
+        if (b & sobe[i])
+            InterlockedIncrement(reinterpret_cast<volatile LONG*>(&c->botaoSobe[i]));
+    }
+    if (b & RI_MOUSE_WHEEL)
+        InterlockedExchangeAdd(reinterpret_cast<volatile LONG*>(&c->mouseRoda), short(m.usButtonData));
+    m.lLastX = m.lLastY = 0;
+    m.usButtonFlags = 0;
+    m.usButtonData = 0;
+}
+
+UINT WINAPI RawData(HRAWINPUT h, UINT cmd, LPVOID dados, PUINT tam, UINT cab)
+{
+    const UINT r = oRawData(h, cmd, dados, tam, cab);
+    if (cmd == RID_INPUT && dados && r != UINT(-1) && r >= sizeof(RAWINPUTHEADER))
+    {
+        auto* ri = static_cast<RAWINPUT*>(dados);
+        if (ri->header.dwType == RIM_TYPEMOUSE)
+            Filtra(ri->data.mouse);
+    }
+    return r;
+}
+
+UINT WINAPI RawBuffer(PRAWINPUT dados, PUINT tam, UINT cab)
+{
+    const UINT r = oRawBuffer(dados, tam, cab);
+    if (dados && r != UINT(-1))
+    {
+        PRAWINPUT ri = dados;
+        for (UINT i = 0; i < r; ++i)
+        {
+            if (ri->header.dwType == RIM_TYPEMOUSE)
+                Filtra(ri->data.mouse);
+            // o proximo bloco (NEXTRAWINPUTBLOCK: alinhado em 8 bytes)
+            ri = reinterpret_cast<PRAWINPUT>((reinterpret_cast<ULONG_PTR>(ri) + ri->header.dwSize + 7) & ~ULONG_PTR(7));
+        }
+    }
+    return r;
+}
+
+// mensagens de mouse da janela do jogo (jogos que usam o cursor do Windows): viram WM_NULL com o painel aberto
+LRESULT CALLBACK GanchoMensagem(int code, WPARAM w, LPARAM l)
+{
+    if (code == HC_ACTION && w == PM_REMOVE)
+    {
+        auto* m = reinterpret_cast<MSG*>(l);
+        if (m->message >= WM_MOUSEFIRST && m->message <= WM_MOUSELAST && CabSeAberto())
+            m->message = WM_NULL;
+    }
+    return CallNextHookEx(nullptr, code, w, l);
+}
+
+BOOL CALLBACK JanelaDoJogo(HWND h, LPARAM l)
+{
+    DWORD pid = 0;
+    const DWORD t = GetWindowThreadProcessId(h, &pid);
+    if (pid == GetCurrentProcessId() && IsWindowVisible(h) && !GetWindow(h, GW_OWNER))
+    {
+        *reinterpret_cast<DWORD*>(l) = t;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+void GanchoMensagens()
+{
+    if (g_ganchoMsg)
+        return;
+    DWORD t = 0;
+    EnumWindows(JanelaDoJogo, reinterpret_cast<LPARAM>(&t));
+    if (t)
+    {
+        g_ganchoMsg = SetWindowsHookExW(WH_GETMESSAGE, GanchoMensagem, g_eu, t);
+        Log("gancho nas mensagens de mouse da janela do jogo (thread %lu): %s", t, g_ganchoMsg ? "ok" : "falhou");
+    }
+}
+
+void GanchosEntrada()
+{
+    HMODULE u = GetModuleHandleW(L"user32.dll");
+    oRawData = reinterpret_cast<PfnRawData>(GetProcAddress(u, "GetRawInputData"));
+    oRawBuffer = reinterpret_cast<PfnRawBuffer>(GetProcAddress(u, "GetRawInputBuffer"));
+    DetourTransactionBegin();
+    DetourUpdateThread(GetCurrentThread());
+    DetourAttach(reinterpret_cast<PVOID*>(&oRawData), reinterpret_cast<PVOID>(&RawData));
+    DetourAttach(reinterpret_cast<PVOID*>(&oRawBuffer), reinterpret_cast<PVOID>(&RawBuffer));
+    const LONG r = DetourTransactionCommit();
+    GanchoMensagens();
+    // que entrada o jogo usa (o mouse por GameInput nao passa pela entrada bruta)
+    RAWINPUTDEVICE d[16];
+    UINT n = 16;
+    std::string reg;
+    const UINT k = GetRegisteredRawInputDevices(d, &n, sizeof(RAWINPUTDEVICE));
+    for (UINT i = 0; i < k && k != UINT(-1); ++i)
+        reg += " " + std::to_string(d[i].usUsagePage) + "/" + std::to_string(d[i].usUsage) + " flags 0x" +
+               [](DWORD f) { char b[16]; sprintf_s(b, "%lx", f); return std::string(b); }(d[i].dwFlags);
+    Log("ganchos de entrada: bruta %s; entrada bruta registrada pelo jogo:%s; GameInput %s",
+        r == NO_ERROR ? "ok" : "falhou", reg.empty() ? " (nenhuma ainda)" : reg.c_str(),
+        GetModuleHandleW(L"GameInput.dll") || GetModuleHandleW(L"GameInputRedist.dll") ? "carregado" : "ausente");
+}
 
 D3D12_RESOURCE_STATES Estado(uint32_t s)
 {
@@ -200,6 +367,20 @@ ffxReturnCode_t Despacha(ffxContext* ctx, const ffxDispatchDescHeader* desc)
     e.hdr = conhecidas ? (flags & FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE) != 0 : Float(cor->GetDesc().Format);
     if (g_cli.Quadro(lista, e))
         g_lista = lista;
+    {
+        // diagnostico do mouse: quantos eventos brutos o jogo leu (e quantos foram para o painel)
+        static ULONGLONG ultimo = 0;
+        static LONG vistos = 0;
+        const ULONGLONG agora = GetTickCount64();
+        dlss5ov::Cabecalho* cb = g_cli.Cab();
+        if (cb && agora - ultimo > 5000 && (g_rawVistos != vistos || cb->painelAberto))
+        {
+            Log("mouse: %ld eventos brutos lidos pelo jogo em 5 s; painel %s; %lu para o painel no total",
+                g_rawVistos - vistos, cb->painelAberto ? "aberto" : "fechado", (unsigned long)cb->mouseEventos);
+            vistos = g_rawVistos;
+            ultimo = agora;
+        }
+    }
     static bool primeiro = true;
     if (primeiro)
     {
@@ -216,9 +397,12 @@ ffxReturnCode_t Despacha(ffxContext* ctx, const ffxDispatchDescHeader* desc)
 // procura a DLL do upscaler do jogo (pode carregar depois: o jogo so carrega o FSR quando ele e escolhido no menu)
 DWORD WINAPI Instala(void*)
 {
+    // entrada primeiro: o painel do overlay pode abrir antes de o jogo usar o FSR
+    GanchosEntrada();
     const wchar_t* candidatos[] = {L"amd_fidelityfx_upscaler_dx12.dll", L"amd_fidelityfx_dx12.dll"};
     for (int volta = 0;; ++volta)
     {
+        GanchoMensagens(); // a janela do jogo pode aparecer depois
         for (const wchar_t* n : candidatos)
             if (HMODULE m = GetModuleHandleW(n))
             {
