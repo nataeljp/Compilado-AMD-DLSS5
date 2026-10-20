@@ -17,6 +17,8 @@ Para rodar basta a pasta **`bin`**: `DLSS5Overlay.exe` e `runtime\` (runtime HIP
 4. **Perfil por jogo**: *Salvar perfil* grava os ajustes em `perfis\<exe>.json`, que carrega sozinho quando o overlay
    liga no mesmo exe. *Redefinir* volta aos padrões; *Salvar como padrão* grava `config.json` (jogos sem perfil). Ao
    sair, os ajustes vão para o perfil ativo (ou para `config.json`).
+5. O programa fica na **bandeja do sistema** (ícones ocultos da barra de tarefas): clique no ícone mostra/esconde o
+   painel; botão direito → **Sair** fecha. Fechar o painel (×, Esc) só esconde.
 
 | Atalho | Ação |
 |---|---|

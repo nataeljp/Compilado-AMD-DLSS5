@@ -936,6 +936,7 @@ struct App
             e.fracaoRede = fracaoRede;
         }
         e.exe = Utf8(exeAlvo);
+        painel.DicaBandeja(cap.Ativa() && !exeAlvo.empty() ? L"DLSS 5 Overlay - " + exeAlvo : L"DLSS 5 Overlay - sem jogo");
         e.perfilExiste = PerfilExiste();
         e.perfilCarregado = perfilCarregado;
         const AcoesPainel a = painel.Quadro(cfg, e);

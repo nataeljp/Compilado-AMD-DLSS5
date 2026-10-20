@@ -6,6 +6,8 @@
 #include <cmath>
 #include <dwmapi.h>
 #include <psapi.h>
+#include <shellapi.h>
+#include <windowsx.h>
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -14,6 +16,13 @@ namespace ov {
 namespace {
 UINT g_pendW = 0, g_pendH = 0;
 bool g_fechar = false;
+// bandeja do sistema: o que o usuario pediu pelo icone (lido no laco principal, mesmo com o painel escondido)
+constexpr UINT kMsgBandeja = WM_APP + 7;
+enum { kBandejaNada, kBandejaAlterna, kBandejaDesliga, kBandejaSair };
+int g_bandeja = kBandejaNada;
+bool g_capturando = false; // habilita "Desligar overlay" no menu
+UINT g_msgTaskbarCreated = 0;
+bool g_recriaBandeja = false;
 DescriptorHeapAllocator g_srvAlloc;
 ImFont* g_texto = nullptr;  // Bahnschrift (a mais proxima da fonte da NVIDIA que vem no Windows)
 ImFont* g_secao = nullptr;  // Segoe UI Semibold, maiusculas espacadas
@@ -45,11 +54,39 @@ LRESULT CALLBACK ProcPainel(HWND h, UINT m, WPARAM w, LPARAM l)
     case WM_CLOSE:
         g_fechar = true;
         return 0;
+    case kMsgBandeja:
+        switch (LOWORD(l))
+        {
+        case NIN_SELECT:
+        case NIN_KEYSELECT:
+            g_bandeja = kBandejaAlterna;
+            return 0;
+        case WM_CONTEXTMENU:
+        {
+            HMENU m = CreatePopupMenu();
+            AppendMenuW(m, MF_STRING, kBandejaAlterna, L"Mostrar / esconder painel\tCtrl+Shift+P");
+            AppendMenuW(m, MF_STRING | (g_capturando ? 0 : MF_GRAYED), kBandejaDesliga, L"Desligar overlay\tCtrl+Shift+D");
+            AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+            AppendMenuW(m, MF_STRING, kBandejaSair, L"Sair\tCtrl+Shift+Q");
+            SetMenuDefaultItem(m, kBandejaAlterna, FALSE);
+            SetForegroundWindow(h); // sem isso o menu nao fecha ao clicar fora
+            const int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_RIGHTALIGN,
+                                           GET_X_LPARAM(w), GET_Y_LPARAM(w), 0, h, nullptr);
+            PostMessageW(h, WM_NULL, 0, 0);
+            DestroyMenu(m);
+            if (cmd)
+                g_bandeja = cmd;
+            return 0;
+        }
+        }
+        return 0;
     case WM_SYSCOMMAND:
         if ((w & 0xfff0) == SC_KEYMENU)
             return 0;
         break;
     }
+    if (g_msgTaskbarCreated && m == g_msgTaskbarCreated)
+        g_recriaBandeja = true; // o Explorer reiniciou: o icone some e precisa voltar
     return DefWindowProcW(h, m, w, l);
 }
 
@@ -383,15 +420,53 @@ bool Painel::Cria(Gpu& g, HINSTANCE inst, const std::wstring& pastaIni)
     ii.SrvDescriptorFreeFn = [](ImGui_ImplDX12_InitInfo*, D3D12_CPU_DESCRIPTOR_HANDLE c,
                                 D3D12_GPU_DESCRIPTOR_HANDLE gp) { g_srvAlloc.Free(c, gp); };
     ImGui_ImplDX12_Init(&ii);
+    g_msgTaskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
+    CriaBandeja();
     Aplica();
     AtualizaJanelas();
     return true;
+}
+
+void Painel::CriaBandeja()
+{
+    NOTIFYICONDATAW n{sizeof n};
+    n.hWnd = hwnd;
+    n.uID = 1;
+    n.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
+    n.uCallbackMessage = kMsgBandeja;
+    n.hIcon = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1), IMAGE_ICON,
+                                            GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0));
+    wcsncpy_s(n.szTip, dicaBandeja.empty() ? L"DLSS 5 Overlay" : dicaBandeja.c_str(), _TRUNCATE);
+    Shell_NotifyIconW(NIM_DELETE, &n);
+    if (!Shell_NotifyIconW(NIM_ADD, &n))
+        Log("painel", Fmt("icone da bandeja nao foi criado (%lu)", GetLastError()));
+    else
+        Log("painel", "icone na bandeja");
+    n.uVersion = NOTIFYICON_VERSION_4;
+    Shell_NotifyIconW(NIM_SETVERSION, &n);
+}
+
+void Painel::DicaBandeja(const std::wstring& dica)
+{
+    if (!hwnd || dica == dicaBandeja)
+        return;
+    dicaBandeja = dica;
+    NOTIFYICONDATAW n{sizeof n};
+    n.hWnd = hwnd;
+    n.uID = 1;
+    n.uFlags = NIF_TIP | NIF_SHOWTIP;
+    wcsncpy_s(n.szTip, dica.c_str(), _TRUNCATE);
+    Shell_NotifyIconW(NIM_MODIFY, &n);
 }
 
 void Painel::Destroi()
 {
     if (!hwnd)
         return;
+    NOTIFYICONDATAW n{sizeof n};
+    n.hWnd = hwnd;
+    n.uID = 1;
+    Shell_NotifyIconW(NIM_DELETE, &n);
     gpu->Espera();
     ImGui_ImplDX12_Shutdown();
     ImGui_ImplWin32_Shutdown();
@@ -455,6 +530,7 @@ void Painel::Alterna()
         return;
     }
     usuarioQuer = true;
+    autoOculto = false; // pedido explicito (atalho, bandeja): vale mesmo com o foco fora do jogo
     Aplica();
     Foca(hwnd);
     // o jogo prende o cursor na janela dele (ClipCursor) enquanto tem o foco; sem o foco, solta: garante
@@ -465,6 +541,19 @@ void Painel::Esconde(bool devolveFoco)
 {
     usuarioQuer = false;
     Aplica();
+    if (!avisouBandeja && devolveFoco)
+    {
+        avisouBandeja = true;
+        NOTIFYICONDATAW n{sizeof n};
+        n.hWnd = hwnd;
+        n.uID = 1;
+        n.uFlags = NIF_INFO;
+        n.dwInfoFlags = NIIF_INFO | NIIF_RESPECT_QUIET_TIME;
+        wcsncpy_s(n.szInfoTitle, L"DLSS 5 continua rodando", _TRUNCATE);
+        wcsncpy_s(n.szInfo, L"Painel: Ctrl+Shift+P ou o icone na bandeja. Para fechar: botao direito no icone > Sair.",
+                  _TRUNCATE);
+        Shell_NotifyIconW(NIM_MODIFY, &n);
+    }
     if (devolveFoco && jogo && IsWindow(jogo) && !IsIconic(jogo))
         Foca(jogo);
 }
@@ -522,10 +611,27 @@ void Painel::AtualizaJanelas()
 AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
 {
     AcoesPainel a;
+    g_capturando = !e.alvo.empty();
+    if (g_recriaBandeja)
+    {
+        g_recriaBandeja = false;
+        CriaBandeja();
+    }
+    if (g_bandeja != kBandejaNada)
+    {
+        const int b = g_bandeja;
+        g_bandeja = kBandejaNada;
+        if (b == kBandejaAlterna)
+            Alterna();
+        a.desligar = b == kBandejaDesliga;
+        a.sair = b == kBandejaSair;
+        if (a.desligar || a.sair)
+            return a;
+    }
     if (g_fechar)
     {
         g_fechar = false;
-        Esconde(true); // fechar so esconde (Ctrl+Shift+P volta); sair e no botao
+        Esconde(true); // fechar so esconde (Ctrl+Shift+P ou o icone da bandeja volta); sair e no menu da bandeja
         return a;
     }
     if (IsIconic(hwnd) || !IsWindowVisible(hwnd))

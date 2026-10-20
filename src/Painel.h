@@ -49,10 +49,15 @@ class Painel
     void DefineJogo(HWND j) { jogo = j; }
     void DefineAutoOculto(bool sim);  // some enquanto o jogo esta fora de foco (Alt+Tab, minimizado)
     void Ancora(HWND alvo);           // encosta na direita do monitor de `alvo` (ou do principal)
+    // icone na bandeja do sistema: clique esquerdo mostra/esconde o painel; direito abre o menu (Sair fecha o app)
+    void DicaBandeja(const std::wstring& dica);
 
   private:
     void Redimensiona(UINT w, UINT h);
     void Aplica();
+    void CriaBandeja();
+    std::wstring dicaBandeja;
+    bool avisouBandeja = false;
     Gpu* gpu = nullptr;
     HWND hwnd = nullptr;
     HWND jogo = nullptr;
