@@ -3,6 +3,7 @@
 #pragma once
 #include "Comum.h"
 #include "Config.h"
+#include "Gancho.h"
 
 struct ImFont;
 
@@ -42,8 +43,9 @@ class Painel
     // desenha e apresenta; devolve o que o usuario pediu
     AcoesPainel Quadro(Config& cfg, const EstadoPainel& e);
     HWND Janela() const { return hwnd; }
-    // Ctrl+Shift+P: escondido ou sem foco -> aparece com foco e o cursor livre (o jogo solta o mouse, como na Game
-    // Bar); aberto e em uso -> fecha e devolve o foco (e o mouse) ao jogo
+    // Ctrl+Shift+P: com o jogo em primeiro plano, abre SEM tirar o foco dele (o jogo nao pausa no menu e a rede
+    // continua visivel): o mouse fica com o painel (Gancho) ate Esc ou Ctrl+Shift+P. Fora do jogo (bandeja, area de
+    // trabalho) abre com foco, como antes. Aberto -> fecha e devolve o mouse ao jogo.
     void Alterna();
     void Esconde(bool devolveFoco = true);
     void DefineJogo(HWND j) { jogo = j; }
@@ -55,6 +57,9 @@ class Painel
   private:
     void Redimensiona(UINT w, UINT h);
     void Aplica();
+    bool JogoNaFrente() const;
+    Gancho gancho;
+    bool semFoco = false; // aberto sobre o jogo sem tirar o foco dele (mouse pelo gancho)
     void CriaBandeja();
     std::wstring dicaBandeja;
     bool avisouBandeja = false;

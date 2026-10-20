@@ -27,7 +27,7 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
 | Ctrl+Shift+D | liga/desliga no jogo em primeiro plano |
 | Ctrl+Shift+N | modo: rede → original → comparação → só a edição → movimento |
 | Ctrl+Shift+S | estilo 0 → 1 → 2 |
-| Ctrl+Shift+P | mostra/esconde o painel |
+| Ctrl+Shift+P | mostra/esconde o painel (sobre o jogo, abre **sem tirar o foco**: o jogo não pausa e o mouse fica no painel até Esc) |
 | Ctrl+Shift+G | grava os próximos quadros em bruto (`bin\gravacoes\`), para análise |
 | Ctrl+Shift+Q | sai |
 

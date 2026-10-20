@@ -497,11 +497,49 @@ void Painel::Aplica()
     if (!hwnd)
         return;
     const bool v = usuarioQuer && !autoOculto;
-    if (v == (IsWindowVisible(hwnd) != FALSE))
-        return;
-    ShowWindow(hwnd, v ? SW_SHOWNOACTIVATE : SW_HIDE);
-    if (v)
-        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    if (v != (IsWindowVisible(hwnd) != FALSE))
+    {
+        ShowWindow(hwnd, v ? SW_SHOWNOACTIVATE : SW_HIDE);
+        if (v)
+            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+    // o mouse so fica com o painel enquanto ele esta na tela sobre o jogo (Alt+Tab o esconde e solta o mouse)
+    const bool querGancho = v && semFoco;
+    if (querGancho && !gancho.Ligado())
+    {
+        RECT r{};
+        GetWindowRect(hwnd, &r);
+        gancho.Liga(r);
+    }
+    else if (!querGancho && gancho.Ligado())
+        gancho.Desliga();
+}
+
+// a janela em primeiro plano e o jogo (ou, sem jogo ligado, um programa qualquer que nao seja a area de trabalho, a
+// barra de tarefas ou o proprio overlay): abrir o painel nao pode tirar o foco dela
+bool Painel::JogoNaFrente() const
+{
+    HWND fg = GetForegroundWindow();
+    if (!fg || fg == hwnd)
+        return false;
+    DWORD pf = 0;
+    GetWindowThreadProcessId(fg, &pf);
+    if (pf == GetCurrentProcessId())
+        return false;
+    if (jogo && IsWindow(jogo))
+    {
+        DWORD pj = 0;
+        GetWindowThreadProcessId(jogo, &pj);
+        if (pj == pf)
+            return true;
+    }
+    wchar_t c[96] = {};
+    GetClassNameW(fg, c, 96);
+    for (const wchar_t* s : {L"Progman", L"WorkerW", L"Shell_TrayWnd", L"Shell_SecondaryTrayWnd", L"NotifyIconOverflowWindow",
+                             L"TopLevelWindowForOverflowXamlIsland", L"Windows.UI.Core.CoreWindow", L"XamlExplorerHostIslandWindow"})
+        if (!wcscmp(c, s))
+            return false;
+    return true;
 }
 
 // Traz `h` para o primeiro plano mesmo com outro processo (o jogo) em foco: o Windows recusa SetForegroundWindow de
@@ -524,14 +562,20 @@ void Painel::Alterna()
 {
     if (!hwnd)
         return;
-    if (IsWindowVisible(hwnd) && GetForegroundWindow() == hwnd)
+    if (IsWindowVisible(hwnd) && (GetForegroundWindow() == hwnd || semFoco))
     {
         Esconde(true);
         return;
     }
     usuarioQuer = true;
     autoOculto = false; // pedido explicito (atalho, bandeja): vale mesmo com o foco fora do jogo
+    semFoco = JogoNaFrente();
     Aplica();
+    if (semFoco)
+    {
+        Log("painel", "aberto sem tirar o foco do jogo (mouse no painel; Esc ou Ctrl+Shift+P devolve)");
+        return;
+    }
     Foca(hwnd);
     // o jogo prende o cursor na janela dele (ClipCursor) enquanto tem o foco; sem o foco, solta: garante
     ClipCursor(nullptr);
@@ -541,6 +585,8 @@ void Painel::Esconde(bool devolveFoco)
 {
     usuarioQuer = false;
     Aplica();
+    const bool estavaSemFoco = semFoco;
+    semFoco = false;
     if (!avisouBandeja && devolveFoco)
     {
         avisouBandeja = true;
@@ -554,7 +600,7 @@ void Painel::Esconde(bool devolveFoco)
                   _TRUNCATE);
         Shell_NotifyIconW(NIM_MODIFY, &n);
     }
-    if (devolveFoco && jogo && IsWindow(jogo) && !IsIconic(jogo))
+    if (devolveFoco && !estavaSemFoco && jogo && IsWindow(jogo) && !IsIconic(jogo))
         Foca(jogo);
 }
 
@@ -642,6 +688,37 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
 
     ImGui_ImplDX12_NewFrame();
     ImGui_ImplWin32_NewFrame();
+    {
+        // aberto sobre o jogo: o mouse vem do gancho (o jogo nao ve) e o cursor e desenhado pelo proprio painel
+        ImGuiIO& io = ImGui::GetIO();
+        io.MouseDrawCursor = gancho.Ligado();
+        if (gancho.Ligado())
+        {
+            RECT r{};
+            GetWindowRect(hwnd, &r);
+            gancho.Area(r);
+            POINT cur{};
+            bool esc = false;
+            for (const EventoMouse& m : gancho.Coleta(cur, esc))
+            {
+                if (m.tipo == EventoMouse::Move)
+                    io.AddMousePosEvent(float(m.x - r.left), float(m.y - r.top));
+                else if (m.tipo == EventoMouse::Botao)
+                {
+                    io.AddMouseButtonEvent(m.botao, m.desce);
+                    if (m.desce)
+                        Log("painel", Fmt("clique (botao %d) em %ld,%ld do painel", m.botao, cur.x - r.left, cur.y - r.top));
+                }
+                else
+                    io.AddMouseWheelEvent(m.rodaH, m.roda);
+            }
+            if (esc)
+            {
+                Esconde(true);
+                return a;
+            }
+        }
+    }
     ImGui::NewFrame();
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos);
@@ -672,6 +749,13 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         dl->AddLine(ImVec2(c.x - 6 * g_e, c.y - 6 * g_e), ImVec2(c.x + 6 * g_e, c.y + 6 * g_e), cx, 1.8f * g_e);
         dl->AddLine(ImVec2(c.x - 6 * g_e, c.y + 6 * g_e), ImVec2(c.x + 6 * g_e, c.y - 6 * g_e), cx, 1.8f * g_e);
         Dica("Esconde o painel e devolve o jogo (Esc; Ctrl+Shift+P mostra de novo)");
+        if (gancho.Ligado())
+        {
+            // aviso discreto ao lado do titulo: o jogo continua em foco e o mouse esta no painel
+            const char* t = "jogo em foco  ·  Esc devolve o mouse";
+            const float tw2 = g_texto->CalcTextSizeA(g_tSecao, FLT_MAX, 0, t).x;
+            dl->AddText(g_texto, g_tSecao, ImVec2(p.x + larg - 36 * g_e - tw2, p.y + g_tTitulo - g_tSecao - 4 * g_e), kVerde, t);
+        }
         ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + g_tTitulo + 10 * g_e));
         ImGui::Dummy(ImVec2(0, 0));
         if (e.alvo.empty())
