@@ -1,5 +1,6 @@
 // DLSS5 Overlay: captura a janela do jogo (Windows Graphics Capture), roda a rede DLSS 5 (lmxxf, MIT) sobre a imagem e
-// mostra o resultado num overlay por cima da janela. Nada e injetado no jogo.
+// mostra o resultado num overlay por cima da janela. Nada e injetado no jogo. Opcional (Modo de Rede = captura de
+// buffer): a DLSS5Buffer.dll no jogo aberto entrega cor sem HUD, profundidade e movimento do upscaler dele (FSR).
 //
 // Atalhos:  Ctrl+Shift+D  liga/desliga no jogo em primeiro plano
 //           Ctrl+Shift+N  modo: rede -> original -> comparacao -> so a edicao
@@ -87,6 +88,7 @@ struct App
     std::string estadoBuffer;   // linha de estado no painel
     int fonteLigada = 0;        // a fonte com que ligou (trocar no painel religa)
     uint64_t quadroJogo = 0;    // numero do quadro do jogo em processamento (gravacao: alinha com o jogo)
+    bool invertidaUsada = true; // Z invertido em uso (do jogo, ou medido quando ele nao diz)
     bool Ligado() const { return cap.Ativa() || buffer; }
     HWND Alvo() const { return buffer ? alvoBuffer : cap.Alvo(); }
     Tex inteiro, orig, fed, saida, fedAnt, saidaAnt; // orig: quadro no tamanho da rede; fed: o proxy dele
@@ -786,7 +788,9 @@ struct App
             cam.corH = float(q.h);
             cam.perto = qb.perto;
             cam.longe = qb.longe;
-            cam.invertida = qb.profInvertida;
+            cam.invertida = qb.profInvertidaConhecida ? qb.profInvertida : fluxo.InvertidaMedida();
+            invertidaUsada = cam.invertida;
+            fb.DefineInvertida(invertidaUsada); // o jogo reprojeta a edicao com a mesma conta de distancia
             cam.infinita = qb.profInfinita;
             cam.reset = qb.reset;
             fluxo.DoJogo(c, desc, gpu.dev.Get(), *qb.mov, *qb.prof, cam);
@@ -922,7 +926,7 @@ struct App
                 UINT w, h, profW, profH;
                 float perto, longe;
                 UINT invertida, infinita;
-            } ke{saida.w, saida.h, qb.prof->w, qb.prof->h, qb.perto, qb.longe, qb.profInvertida ? 1u : 0u,
+            } ke{saida.w, saida.h, qb.prof->w, qb.prof->h, qb.perto, qb.longe, invertidaUsada ? 1u : 0u,
                  qb.profInfinita ? 1u : 0u};
             pExporta.Roda(c, desc, gpu.dev.Get(),
                           {{qb.cor->r.Get(), qb.cor->fmt}, {saida.r.Get(), saida.fmt}, {qb.prof->r.Get(), qb.prof->fmt}},

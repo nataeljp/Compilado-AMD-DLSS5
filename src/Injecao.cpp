@@ -1,5 +1,6 @@
 #include "Injecao.h"
 #include <psapi.h>
+#include <tlhelp32.h>
 #include <algorithm>
 #include <cwctype>
 #include <vector>
@@ -49,6 +50,28 @@ std::wstring AntiCheatNaPasta(std::wstring pasta)
     }
     return {};
 }
+// servico/processo de anti-cheat rodando agora
+std::wstring AntiCheatRodando()
+{
+    std::wstring achou;
+    HANDLE s = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (s == INVALID_HANDLE_VALUE)
+        return achou;
+    PROCESSENTRY32W e{sizeof e};
+    for (BOOL ok = Process32FirstW(s, &e); ok && achou.empty(); ok = Process32NextW(s, &e))
+    {
+        const std::wstring n = Minusculo(e.szExeFile);
+        for (const wchar_t* a : {L"easyanticheat", L"beservice", L"bedaisy", L"eaanticheat", L"vgc.exe", L"faceit",
+                                 L"gamemon", L"xxd-0.xem", L"ricochet", L"mhyprot"})
+            if (n.find(a) != std::wstring::npos)
+            {
+                achou = e.szExeFile;
+                break;
+            }
+    }
+    CloseHandle(s);
+    return achou;
+}
 } // namespace
 
 ResultadoInjecao InjetaBuffer(DWORD pid, const std::wstring& dll)
@@ -91,14 +114,20 @@ ResultadoInjecao InjetaBuffer(DWORD pid, const std::wstring& dll)
             ac = a;
             break;
         }
-    if (ac.empty() && !exe.empty())
-        ac = AntiCheatNaPasta(exe.substr(0, exe.find_last_of(L"\\/")));
+    // anti-cheat rodando (o servico/processo dele sobe junto com o jogo protegido): o risco de banimento e esse
+    if (ac.empty())
+        ac = AntiCheatRodando();
     if (!ac.empty())
     {
-        r.motivo = "o jogo tem anti-cheat (" + Utf8(ac) + "): colocar codigo nele pode dar banimento. Use a captura de video";
+        r.motivo = "o anti-cheat esta ativo (" + Utf8(ac) + "): colocar codigo no jogo pode dar banimento. Use a captura "
+                   "de video";
         CloseHandle(p);
         return r;
     }
+    // instalado na pasta, mas nada dele rodando (o jogo foi aberto sem ele, modo offline): conecta, com aviso
+    std::wstring acPasta;
+    if (!exe.empty())
+        acPasta = AntiCheatNaPasta(exe.substr(0, exe.find_last_of(L"\\/")));
     if (wow)
     {
         r.motivo = "o jogo e 32 bits (so 64 bits)";
@@ -126,6 +155,9 @@ ResultadoInjecao InjetaBuffer(DWORD pid, const std::wstring& dll)
             r.motivo = "aviso: o OptiScaler esta instalado na pasta do jogo e assume o upscaler; se nao conectar, tire o "
                        "dxgi.dll dele de la";
     }
+    if (!acPasta.empty())
+        r.motivo += std::string(r.motivo.empty() ? "" : " | ") + "aviso: o jogo tem anti-cheat instalado (" + Utf8(acPasta) +
+                    "), inativo agora: use a captura de buffer so offline";
     if (tem(L"dlss5buffer.dll"))
     {
         r.ok = true; // ja esta no jogo (ligou de novo)

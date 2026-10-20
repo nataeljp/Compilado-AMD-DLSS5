@@ -20,6 +20,7 @@ class FonteBuffer
     DWORD Pid() const { return pid; }
     // a cada volta do laco: o jogo so exporta e aplica com o batimento do overlay
     void Batimento(bool querQuadros, bool aplica);
+    void DefineInvertida(bool inv) { if (cab) cab->profInvertidaUsada = inv ? 1u : 0u; }
     bool JogoVivo() const;
     // evento que dispara quando a GPU do jogo terminar o proximo quadro (para o laco dormir ate ele)
     HANDLE Evento();
@@ -31,6 +32,7 @@ class FonteBuffer
         Tex* mov = nullptr;  // RG16F, pixels da cor, do atual ao anterior
         Tex* prof = nullptr; // R32F
         bool reset = false, profInvertida = false, profInfinita = false;
+        bool profInvertidaConhecida = true; // false: medir (Fluxo::InvertidaMedida)
         float perto = 0, longe = 0, fovY = 0;
     };
     // o quadro mais novo que a GPU do jogo ja terminou e o overlay ainda nao pegou

@@ -150,7 +150,8 @@ bool FonteBuffer::Pega(Quadro& q)
     q.prof = &prof[s];
     q.reset = e.reset != 0;
     q.perto = e.perto, q.longe = e.longe, q.fovY = e.fovY;
-    q.profInvertida = cab->profInvertida != 0;
+    q.profInvertida = cab->profInvertida == 1;
+    q.profInvertidaConhecida = cab->profInvertida != 2;
     q.profInfinita = cab->profInfinita != 0;
     // quadros que o overlay pulou (o jogo foi mais rapido) tambem liberam os slots deles
     ultimoPego = q.n;

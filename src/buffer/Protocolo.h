@@ -61,7 +61,7 @@ struct Cabecalho
     uint32_t pidJogo;
     volatile uint32_t geracao; // texturas e cercas desta geracao; 0 = ainda sem
     uint32_t corW, corH, movW, movH, profW, profH;
-    uint32_t profInvertida; // perto = 1 (Z invertido, o padrao do UE5)
+    uint32_t profInvertida; // perto = 1 (Z invertido, o padrao do UE5); 2 = o jogo nao disse (o overlay mede)
     uint32_t profInfinita;  // plano distante no infinito
     uint32_t hdr;           // NGX IsHDR (cor linear com realce acima de 1)
     char exe[64];           // nome do executavel do jogo (perfil)
@@ -73,6 +73,8 @@ struct Cabecalho
     volatile uint64_t lido[kSlotsEdicao]; // ultimo quadro do jogo que gravou leitura do slot de edicao k
     volatile uint64_t quadroJogo;         // ultimo quadro gravado pelo jogo
     volatile uint64_t quadroAplicado;     // ultimo quadro em que o jogo somou uma edicao (diagnostico)
+    volatile uint32_t profInvertidaUsada; // a convencao que o overlay usou na distancia (alfa) da edicao
+    uint32_t pad0;
     SlotEntrada entrada[kSlotsEntrada];
     SlotEdicao edicao[kSlotsEdicao];
 };

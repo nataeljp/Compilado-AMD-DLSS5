@@ -1,8 +1,10 @@
 # DLSS5 Overlay
 
 A rede **DLSS 5 (neural rendering)** rodando em placas AMD RDNA 4 sobre **qualquer jogo**, por captura de vídeo: o
-programa captura a janela do jogo, passa a imagem pela rede e mostra o resultado num overlay por cima. **Nada é
-injetado no jogo** (sem OptiScaler, sem AMDNR, sem DLL no processo do jogo).
+programa captura a janela do jogo, passa a imagem pela rede e mostra o resultado num overlay por cima. Na captura de
+vídeo (o padrão) **nada é injetado no jogo** (sem OptiScaler, sem AMDNR, sem DLL no processo do jogo). A captura de
+buffer, opcional, coloca um módulo pequeno no jogo aberto para pegar cor sem HUD, profundidade e movimento do upscaler
+dele (ver *Modo de Rede*).
 
 ## Como usar
 
@@ -21,6 +23,24 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
    sair, os ajustes vão para o perfil ativo (ou para `config.json`).
 5. O programa fica na **bandeja do sistema** (ícones ocultos da barra de tarefas): clique no ícone mostra/esconde o
    painel; botão direito → **Sair** fecha. Fechar o painel (×, Esc) só esconde.
+
+### Modo de Rede: captura de vídeo ou de buffer
+
+- **Captura de vídeo** (padrão): lê a janela como o OBS. Funciona em qualquer jogo, inclusive online; a rede vê o HUD
+  e o movimento é estimado por fluxo óptico.
+- **Captura de buffer**: com o jogo aberto, Ctrl+Shift+D coloca o módulo `captura\DLSS5Buffer.dll` no processo do jogo
+  (nada é gravado na pasta dele, nada para instalar). O módulo pega o que o jogo entrega ao upscaler dele (FSR 3.1+):
+  a cor **sem HUD**, a **profundidade** e o **movimento exato**; a rede e toda a cadeia continuam no overlay, e a
+  edição volta para o próprio jogo, que a soma no quadro seguinte (antes do tonemap e do HUD). Com movimento e
+  profundidade de verdade, o acúmulo descarta só onde há oclusão, a grade separa as camadas pela distância e a edição
+  só é reprojetada para a mesma superfície. Medido numa sequência com objeto em primeiro plano, contra a captura de
+  vídeo: cintilação −45% (0,110 → 0,061), −86% no objeto em movimento, fundo 2,4× mais estável.
+  - Requisitos: jogo DirectX 12 com **FSR ligado no menu gráfico**; o painel mostra o estado (conectado, esperando o
+    FSR, recusado).
+  - **Anti-cheat**: com o anti-cheat ativo (EasyAntiCheat, BattlEye, EA AntiCheat, Vanguard...) a conexão é recusada
+    (colocar código no jogo pode dar banimento). Jogo com anti-cheat instalado mas aberto sem ele: conecta, com aviso —
+    use só offline.
+  - OptiScaler instalado na pasta do jogo assume o upscaler: tire o `dxgi.dll` dele para a captura de buffer.
 
 | Atalho | Ação |
 |---|---|
@@ -81,8 +101,9 @@ Os parâmetros do DLSS 5 seguem os nomes que a NVIDIA expõe no NGX (os mesmos d
 
 ## Online e anti-cheat
 
-O programa não injeta código no jogo: ele lê a janela pelo mesmo caminho que o OBS e a Barra de Jogo usam e desenha
-numa janela própria. Não há como garantir a política de cada jogo; quem decide é o anti-cheat de cada um.
+Na captura de vídeo o programa não injeta código no jogo: ele lê a janela pelo mesmo caminho que o OBS e a Barra de
+Jogo usam e desenha numa janela própria. Não há como garantir a política de cada jogo; quem decide é o anti-cheat de cada
+um. A captura de buffer coloca código no jogo e por isso é recusada com anti-cheat ativo; use-a só offline.
 
 ## Compilar
 

@@ -34,6 +34,7 @@ struct EntradasJogo
     float jitterX = 0, jitterY = 0;
     float perto = 0, longe = 0, fovY = 0;
     bool reset = false, profInvertida = false, profInfinita = false, hdr = true;
+    bool profInvertidaConhecida = true; // false: o modulo chegou depois de o jogo dizer (o overlay mede)
 };
 
 class ClienteBuffer

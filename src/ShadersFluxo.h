@@ -393,6 +393,7 @@ Texture2D<float> zAnt : register(t2);     // distancia do quadro anterior (w x h
 RWTexture2D<float2> mov : register(u0);   // pixels da rede
 RWTexture2D<float> conf : register(u1);
 RWTexture2D<float> zAtual : register(u2);
+RWByteAddressBuffer contagem : register(u3); // [0] pixels com profundidade < 0,5, [4] pixels (amostra 1 em 16x16)
 SamplerState s : register(s0);
 
 static const float CEU = 1e6;
@@ -429,7 +430,13 @@ float Dist(float d)
             const float z = Dist(profJogo.Load(int3(q, 0)));
             if (z < zMin) { zMin = z; perto3 = q; }
         }
-    const float zc = Dist(profJogo.Load(int3(pp, 0)));
+    const float dc = profJogo.Load(int3(pp, 0));
+    if ((p.x & 15) == 0 && (p.y & 15) == 0 && isfinite(dc))
+    {
+        contagem.InterlockedAdd(0, dc < 0.5 ? 1u : 0u);
+        contagem.InterlockedAdd(4, 1u);
+    }
+    const float zc = Dist(dc);
     const float2 uvM = (perto3 + 0.5) / float2(profW, profH);
     const int2 pm = clamp(int2(uvM * float2(movW, movH)), 0, int2(movW, movH) - 1);
     float2 m = movJogo.Load(int3(pm, 0)) * float2(float(w) / corW, float(h) / corH);

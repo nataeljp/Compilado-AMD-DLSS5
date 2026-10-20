@@ -7,6 +7,9 @@ $pasta = Join-Path $saida "DLSS5-Overlay-v$Versao"
 if (Test-Path $pasta) { python -c "import shutil,sys; shutil.rmtree(sys.argv[1])" $pasta }
 New-Item -ItemType Directory -Force $pasta | Out-Null
 Copy-Item "$raiz\bin\DLSS5Overlay.exe" $pasta
+# captura de buffer: o modulo que o overlay coloca no jogo aberto
+New-Item -ItemType Directory -Force "$pasta\captura" | Out-Null
+Copy-Item "$raiz\bin\captura\DLSS5Buffer.dll" "$pasta\captura"
 Copy-Item "$raiz\README.md" $pasta
 Copy-Item "$raiz\licencas" "$pasta\licencas" -Recurse
 # runtime sem logs nem caches (as variantes e a pasta montada da rede pequena sao refeitas pelo programa)

@@ -35,6 +35,8 @@ class Fluxo
     void DoJogo(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, Tex& movJogo, Tex& profJogo,
                 const Camera& cam);
     Tex* DistanciaAtual() { return zValido ? &z[zAtual ^ 1] : nullptr; } // R32F, a do ultimo DoJogo
+    // Z invertido medido (a maioria dos pixels com profundidade < 0,5): quando o jogo nao disse; vale do quadro anterior
+    bool InvertidaMedida();
     Tex& Movimento() { return mov; }   // RG16F, w x h, pixels (atual -> anterior)
     Tex& Confianca() { return conf; }  // R16F, w x h, 1 = ida e volta batem
 
@@ -60,6 +62,8 @@ class Fluxo
     Tex z[2];          // distancia da camera do quadro atual/anterior (captura de buffer)
     UINT zAtual = 0;
     bool zValido = false;
+    ComPtr<ID3D12Resource> bufInv, bufInvLeitura;
+    bool invGravada = false, invMedida = true;
     Passe pLuma, pReduzLuma, pBusca, pMediana, pAmplia, pConfianca, pEstat, pGradiente, pRefina, pGlobal;
     Tex modeloIda, modeloVolta; // movimento global (afim) de cada sentido, 2x1 RGBA32F
     UINT nivelGlobal = 0;       // nivel em que o modelo global e ajustado (o primeiro com ate 320 px de largura)

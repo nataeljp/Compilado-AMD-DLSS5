@@ -39,7 +39,7 @@ void Fluxo::Cria(ID3D12Device* d)
     pEstat.Cria(d, hlsl::Estatisticas, "CSEstatisticas", 4, 1, 8, "fluxo estatisticas");
     pGradiente.Cria(d, hlsl::Gradiente, "CSGradiente", 1, 1, 8, "fluxo gradiente");
     pRefina.Cria(d, hlsl::Refina, "CSRefina", 4, 1, 8, "fluxo refina");
-    pDoJogo.Cria(d, hlsl::DoJogo, "CSDoJogo", 3, 3, 16, "movimento do jogo");
+    pDoJogo.Cria(d, hlsl::DoJogo, "CSDoJogo", 3, 4, 16, "movimento do jogo");
     auto buf = [&](D3D12_HEAP_TYPE t, D3D12_RESOURCE_STATES e, D3D12_RESOURCE_FLAGS f, ComPtr<ID3D12Resource>& r) {
         D3D12_HEAP_PROPERTIES hp{};
         hp.Type = t;
@@ -285,6 +285,26 @@ void Fluxo::DoJogo(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device
     mov.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     conf.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     z[a].Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    if (!bufInv)
+    {
+        auto buf = [&](D3D12_HEAP_TYPE t, D3D12_RESOURCE_STATES e, D3D12_RESOURCE_FLAGS f, ComPtr<ID3D12Resource>& r) {
+            D3D12_HEAP_PROPERTIES hp{};
+            hp.Type = t;
+            D3D12_RESOURCE_DESC rd{};
+            rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+            rd.Width = 256;
+            rd.Height = rd.DepthOrArraySize = rd.MipLevels = 1;
+            rd.SampleDesc.Count = 1;
+            rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+            rd.Flags = f;
+            Ck(d->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, e, nullptr, IID_PPV_ARGS(&r)), "buffer(inversao)");
+        };
+        buf(D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, bufInv);
+        buf(D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_FLAG_NONE, bufInvLeitura);
+    }
+    Barreira(c, bufInv.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+    c->CopyBufferRegion(bufInv.Get(), 0, bufZero.Get(), 0, 16);
+    Barreira(c, bufInv.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     struct
     {
         UINT w, h, movW, movH, profW, profH, temAnt, invertida;
@@ -293,7 +313,12 @@ void Fluxo::DoJogo(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device
     } k{w, h, movJogo.w, movJogo.h, profJogo.w, profJogo.h, zValido ? 1u : 0u, cam.invertida ? 1u : 0u,
         cam.corW, cam.corH, cam.perto, cam.longe, cam.infinita ? 1u : 0u, 0, 0, 0};
     pDoJogo.Roda(c, desc, d, {{movJogo.r.Get(), movJogo.fmt}, {profJogo.r.Get(), profJogo.fmt}, {z[p].r.Get(), z[p].fmt}},
-                 {{mov.r.Get(), mov.fmt}, {conf.r.Get(), conf.fmt}, {z[a].r.Get(), z[a].fmt}}, &k, (w + 7) / 8, (h + 7) / 8);
+                 {{mov.r.Get(), mov.fmt}, {conf.r.Get(), conf.fmt}, {z[a].r.Get(), z[a].fmt}, {bufInv.Get(), DXGI_FORMAT_UNKNOWN}},
+                 &k, (w + 7) / 8, (h + 7) / 8);
+    Barreira(c, bufInv.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    c->CopyBufferRegion(bufInvLeitura.Get(), 0, bufInv.Get(), 0, 8);
+    Barreira(c, bufInv.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
+    invGravada = true;
     mov.Para(c, SRV);
     conf.Para(c, SRV);
     z[a].Para(c, SRV);
@@ -303,6 +328,24 @@ void Fluxo::DoJogo(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device
     zAtual = p;
     zValido = true;
     temAnterior = false; // o fluxo optico recomeca se voltar para a captura de video
+}
+
+bool Fluxo::InvertidaMedida()
+{
+    if (invGravada && bufInvLeitura)
+    {
+        invGravada = false;
+        uint32_t* v = nullptr;
+        D3D12_RANGE r{0, 8};
+        if (SUCCEEDED(bufInvLeitura->Map(0, &r, (void**)&v)))
+        {
+            if (v[1] > 64)
+                invMedida = v[0] * 2 > v[1];
+            D3D12_RANGE nada{0, 0};
+            bufInvLeitura->Unmap(0, &nada);
+        }
+    }
+    return invMedida;
 }
 
 } // namespace ov
