@@ -9,6 +9,7 @@
 // Teste:    DLSS5Overlay.exe --alvo "titulo" --quadros N --grava saida.rgba
 #include <DirectXPackedVector.h>
 #include "Comum.h"
+#include "Abertura.h"
 #include "Captura.h"
 #include "Config.h"
 #include "Fluxo.h"
@@ -108,13 +109,26 @@ struct App
     int quadrosTeste = 0;
     std::wstring gravaArquivo;
 
+    Abertura* abertura = nullptr; // tela de abertura (so no uso normal; nos testes fica nula)
+    void Etapa(const wchar_t* t)
+    {
+        if (abertura)
+            abertura->Etapa(t);
+    }
     void Inicia()
     {
+        const auto t0 = std::chrono::steady_clock::now();
+        auto marca = [&](const char* o) {
+            Log("app", Fmt("%s em %.1f s", o, std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count()));
+        };
         pasta = PastaDoExe();
         LogAbre(pasta);
+        Etapa(L"Iniciando a GPU...");
         cfg.Carrega(configArq.empty() ? pasta + L"\\config.json" : configArq);
         gpu.Cria();
         desc.Cria(gpu.dev.Get(), 512);
+        marca("GPU pronta");
+        Etapa(L"Compilando os shaders...");
         for (int i = 0; i < 2; ++i)
         {
             Ck(gpu.dev->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&al[i])), "allocator");
@@ -129,6 +143,7 @@ struct App
         pCompoe.Cria(gpu.dev.Get(), compoe.c_str(), "CSCompoe", 4, 1, 24, "compoe");
         fluxo.Cria(gpu.dev.Get());
         temporal.Cria(gpu.dev.Get());
+        EsperaPasses();
         if (cfg.temporalRede > 0)
         {
             // historico temporal da propria rede (o runtime le o ambiente que copiou ao carregar: tem de vir antes)
@@ -145,7 +160,11 @@ struct App
             SetEnvironmentVariableW(L"DLSS5_HIP_GRAPH", L"0");
             SetEnvironmentVariableW(L"DLSS5_HIP_VIT_BYTE_STREAM", L"0");
         }
+        marca("shaders prontos");
+        Etapa(cfg.redePequena ? L"Carregando a rede DLSS 5 (pequena)..." : L"Carregando a rede DLSS 5...");
         redeOk = rede.Inicia(gpu, PastaRede(), cfg.redePequena);
+        marca(redeOk ? "rede carregada" : "rede falhou");
+        Etapa(L"Preparando a captura e o painel...");
         redePequenaAtiva = cfg.redePequena;
         if (!redeOk)
             Log("app", "a rede nao subiu: o overlay mostra o quadro original");
@@ -1251,12 +1270,23 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         app.comPainel = false;
     // imagem e reproducao: sincrono (deterministico) salvo --atraso; ao vivo a resposta entra quando fica pronta
     app.atraso = atrasoArg >= -1 ? atrasoArg : (!imagemArq.empty() || !app.pastaReproducao.empty()) ? 0 : -1;
+    // tela de abertura ja (a rede leva de 2 a 30 s para carregar); fora dos modos de teste
+    Abertura abertura;
+    if (imagemArq.empty() && app.pastaReproducao.empty() && app.quadrosTeste == 0)
+    {
+        abertura.Mostra(GetModuleHandleW(nullptr));
+        app.abertura = &abertura;
+    }
     try
     {
         app.Inicia();
+        app.abertura = nullptr;
+        abertura.Fecha();
     }
     catch (const std::exception& e)
     {
+        app.abertura = nullptr;
+        abertura.Fecha();
         Log("erro", e.what());
         // modos de teste (imagem, reproducao, --quadros): so o log e o codigo de saida, nunca uma janela modal que
         // prende o processo e aparece na tela de quem esta usando o PC

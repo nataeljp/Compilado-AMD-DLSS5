@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 #include <stdexcept>
+#include <future>
 
 using Microsoft::WRL::ComPtr;
 
@@ -82,14 +83,26 @@ bool MonitorHdr(Gpu& g, HWND janela, float& escalaSdr);
 
 // passe compute: raiz = constantes (b0, ate 32 dwords) + tabela de SRVs (t0..) + tabela de UAVs (u0..) +
 // amostrador linear clamp (s0)
+// espera todos os passes criados ate aqui; relanca o primeiro erro de compilacao
+void EsperaPasses();
+
 struct Passe
 {
     ComPtr<ID3D12RootSignature> raiz;
     ComPtr<ID3D12PipelineState> pso;
     UINT nSrv = 0, nUav = 0, nConst = 0;
     std::string nome;
+    std::shared_future<void> pronto; // compila numa thread propria (os passes compilam em paralelo)
+    // o bytecode fica em cache\shaders ao lado do exe (chave = hash do codigo): so a primeira abertura compila
     void Cria(ID3D12Device* d, const char* hlsl, const char* entrada, UINT srvs, UINT uavs, UINT constantes,
               const char* nome_);
+    void Espera();
+
+  private:
+    void Monta(ID3D12Device* d, const std::string& hlsl, const std::string& entrada, UINT srvs, UINT uavs,
+               UINT constantes);
+
+  public:
     // grava o despacho; srvs/uavs ja devem estar nos estados certos
     void Roda(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d,
               const std::vector<std::pair<ID3D12Resource*, DXGI_FORMAT>>& srvs,

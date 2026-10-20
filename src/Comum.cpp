@@ -263,18 +263,151 @@ void Tex::Para(ID3D12GraphicsCommandList* c, D3D12_RESOURCE_STATES s)
 }
 
 // ---------------- Passe ----------------
+namespace {
+std::mutex g_mxPasses;
+std::vector<std::shared_future<void>> g_passes;
+constexpr UINT kFlagsShader = D3DCOMPILE_OPTIMIZATION_LEVEL3;
+
+const std::wstring& PastaCacheShaders()
+{
+    static const std::wstring pasta = [] {
+        wchar_t m[MAX_PATH]{};
+        GetModuleFileNameW(nullptr, m, MAX_PATH);
+        std::wstring s = m;
+        s = s.substr(0, s.find_last_of(L"\\/")) + L"\\cache";
+        CreateDirectoryW(s.c_str(), nullptr);
+        s += L"\\shaders";
+        CreateDirectoryW(s.c_str(), nullptr);
+        return s;
+    }();
+    return pasta;
+}
+
+uint64_t Fnv(uint64_t h, const void* p, size_t n)
+{
+    for (size_t i = 0; i < n; ++i)
+    {
+        h ^= static_cast<const uint8_t*>(p)[i];
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+
+std::wstring ArquivoCache(const std::string& hlsl, const std::string& entrada)
+{
+    static const char kVersao[] = "dlss5ov-cs_5_1-v1";
+    uint64_t h = Fnv(14695981039346656037ull, kVersao, sizeof kVersao);
+    h = Fnv(h, hlsl.data(), hlsl.size() + 1);
+    h = Fnv(h, entrada.data(), entrada.size() + 1);
+    h = Fnv(h, &kFlagsShader, sizeof kFlagsShader);
+    wchar_t n[32];
+    swprintf_s(n, L"%016llx.cso", static_cast<unsigned long long>(h));
+    return PastaCacheShaders() + L"\\" + n;
+}
+
+bool LeCache(const std::wstring& arq, std::vector<char>& b)
+{
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, arq.c_str(), L"rb") || !f)
+        return false;
+    fseek(f, 0, SEEK_END);
+    const long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    b.resize(n > 0 ? size_t(n) : 0);
+    const bool ok = n > 4 && fread(b.data(), 1, b.size(), f) == b.size() && memcmp(b.data(), "DXBC", 4) == 0;
+    fclose(f);
+    return ok;
+}
+
+void GravaCache(const std::wstring& arq, const std::vector<char>& b)
+{
+    const std::wstring tmp = arq + L"." + std::to_wstring(GetCurrentThreadId()) + L".tmp";
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, tmp.c_str(), L"wb") || !f)
+        return;
+    const bool ok = fwrite(b.data(), 1, b.size(), f) == b.size();
+    fclose(f);
+    if (!ok || !MoveFileExW(tmp.c_str(), arq.c_str(), MOVEFILE_REPLACE_EXISTING))
+        DeleteFileW(tmp.c_str());
+}
+
+std::vector<char> Compila(const std::string& hlsl, const std::string& entrada, const std::string& nome)
+{
+    const auto t0 = std::chrono::steady_clock::now();
+    ComPtr<ID3DBlob> cs, erro;
+    const HRESULT hr = D3DCompile(hlsl.data(), hlsl.size(), nome.c_str(), nullptr, nullptr, entrada.c_str(), "cs_5_1",
+                                  kFlagsShader, 0, &cs, &erro);
+    if (FAILED(hr))
+        throw std::runtime_error(Fmt("shader %s: %s", nome.c_str(), erro ? (const char*)erro->GetBufferPointer() : "?"));
+    Log("shader", Fmt("%s compilado em %.2f s", nome.c_str(),
+                      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count()));
+    const char* p = static_cast<const char*>(cs->GetBufferPointer());
+    return std::vector<char>(p, p + cs->GetBufferSize());
+}
+} // namespace
+
+void EsperaPasses()
+{
+    std::vector<std::shared_future<void>> v;
+    {
+        std::lock_guard<std::mutex> l(g_mxPasses);
+        v.swap(g_passes);
+    }
+    std::exception_ptr erro;
+    for (auto& f : v)
+    {
+        try
+        {
+            f.get();
+        }
+        catch (...)
+        {
+            if (!erro)
+                erro = std::current_exception();
+        }
+    }
+    if (erro)
+        std::rethrow_exception(erro);
+}
+
+void Passe::Espera()
+{
+    if (pronto.valid())
+    {
+        auto f = std::move(pronto);
+        pronto = {};
+        f.get();
+    }
+}
+
 void Passe::Cria(ID3D12Device* d, const char* hlsl, const char* entrada, UINT srvs, UINT uavs, UINT constantes,
                  const char* nome_)
 {
+    Espera();
     nome = nome_;
     nSrv = srvs;
     nUav = uavs;
     nConst = constantes;
-    ComPtr<ID3DBlob> cs, erro;
-    const HRESULT hr = D3DCompile(hlsl, strlen(hlsl), nome_, nullptr, nullptr, entrada, "cs_5_1",
-                                  D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &cs, &erro);
-    if (FAILED(hr))
-        throw std::runtime_error(Fmt("shader %s: %s", nome_, erro ? (const char*)erro->GetBufferPointer() : "?"));
+    // o texto vem de temporarios do chamador: copia antes de ir para a thread
+    pronto = std::async(std::launch::async, [this, d, codigo = std::string(hlsl), ent = std::string(entrada), srvs,
+                                             uavs, constantes] { Monta(d, codigo, ent, srvs, uavs, constantes); })
+                 .share();
+    std::lock_guard<std::mutex> l(g_mxPasses);
+    g_passes.push_back(pronto);
+}
+
+void Passe::Monta(ID3D12Device* d, const std::string& hlsl, const std::string& entrada, UINT srvs, UINT uavs,
+                  UINT constantes)
+{
+    const std::wstring arq = ArquivoCache(hlsl, entrada);
+    std::vector<char> cs;
+    const bool doCache = LeCache(arq, cs);
+    if (!doCache)
+    {
+        cs = Compila(hlsl, entrada, nome);
+        GravaCache(arq, cs);
+    }
+    ComPtr<ID3DBlob> erro;
 
     D3D12_DESCRIPTOR_RANGE r[2]{};
     D3D12_ROOT_PARAMETER p[3]{};
@@ -311,8 +444,19 @@ void Passe::Cria(ID3D12Device* d, const char* hlsl, const char* entrada, UINT sr
        "CreateRootSignature");
     D3D12_COMPUTE_PIPELINE_STATE_DESC pd{};
     pd.pRootSignature = raiz.Get();
-    pd.CS = {cs->GetBufferPointer(), cs->GetBufferSize()};
-    Ck(d->CreateComputePipelineState(&pd, IID_PPV_ARGS(&pso)), "CreateComputePipelineState");
+    pd.CS = {cs.data(), cs.size()};
+    const HRESULT hp = d->CreateComputePipelineState(&pd, IID_PPV_ARGS(&pso));
+    if (FAILED(hp) && doCache)
+    {
+        // cache estragado: compila de novo
+        Log("shader", Fmt("%s: cache recusado, recompilando", nome.c_str()));
+        cs = Compila(hlsl, entrada, nome);
+        GravaCache(arq, cs);
+        pd.CS = {cs.data(), cs.size()};
+        Ck(d->CreateComputePipelineState(&pd, IID_PPV_ARGS(&pso)), "CreateComputePipelineState");
+    }
+    else
+        Ck(hp, "CreateComputePipelineState");
 }
 
 void Passe::Roda(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d,
@@ -320,6 +464,7 @@ void Passe::Roda(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* 
                  const std::vector<std::pair<ID3D12Resource*, DXGI_FORMAT>>& uavs, const void* constantes, UINT gx,
                  UINT gy)
 {
+    Espera();
     if (srvs.size() != nSrv || uavs.size() != nUav)
         throw std::runtime_error("passe " + nome + ": numero de recursos errado");
     const UINT base = desc.Reserva(nSrv + nUav);

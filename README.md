@@ -8,6 +8,8 @@ injetado no jogo** (sem OptiScaler, sem AMDNR, sem DLL no processo do jogo).
 
 Para rodar basta a pasta **`bin`**: `DLSS5Overlay.exe` e `runtime\` (runtime HIP v3 do lmxxf + adaptador + pesos);
 `config.json`, `painel.ini` e `overlay.jsonl` (log) são criados ao lado do exe. O resto do projeto é fonte e ferramentas.
+Ao abrir aparece na hora a tela "NR" com a barra de carregamento. A primeira abertura depois de cada atualização compila
+os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as aberturas seguintes leem do cache.
 
 1. Rode o jogo em **janela** ou **tela cheia sem borda** (tela cheia exclusiva não pode ter overlay por cima).
 2. Abra `DLSS5Overlay.exe`. O painel (no estilo do *DLSS 5 Developer Controls* da NVIDIA) fica encostado na direita da
