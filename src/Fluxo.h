@@ -59,8 +59,9 @@ class Fluxo
     // busca do grosso ao fino de `de` contra `para` (indices da piramide), resultado em `saida` (tamanho da rede)
     void Busca(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, UINT de, UINT para, Tex* campos,
                Tex* tmps, Tex& saida, Tex& modelo);
-    Passe pDoJogo;
+    Passe pDoJogo, pLimpaRecon, pConfJogo;
     Tex z[2];          // distancia da camera do quadro atual/anterior (captura de buffer)
+    Tex recon;         // R32_UINT: a menor distancia deste quadro que cai em cada pixel do anterior (oclusao, como o FSR)
     UINT zAtual = 0;
     bool zValido = false;
     ComPtr<ID3D12Resource> bufInv, bufInvLeitura;

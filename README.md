@@ -58,6 +58,13 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
     conteúdo que entra pela borda num giro fica com o quadro original até a rede responder (antes: faixas esticadas).
     Medido numa sequência com a câmera girando em 3D até ~300 px/quadro sobre um quadro HDR do Gears
     (`gera_sintetico_buffer.py --giro`): pixels com ciano espúrio na imagem final 3,1% → 1,5%, sem faixas nem cópias.
+  - Oclusão como no FSR (profundidade reconstruída): cada ponto deste quadro marca, no lugar onde estava no quadro
+    anterior, a distância dele; o histórico de um pixel só cai se outro ponto **deste quadro**, mais perto da câmera,
+    estava lá (fundo que acabou de aparecer). Comparar com a distância do quadro anterior derrubava o personagem
+    inteiro: com a câmera andando em volta dele (2–3 m) a distância muda ~10% por quadro, o histórico saía e a edição
+    dele virava estimativa atrasada (o rastro em personagem e objetos). Contra o quadro anterior (e no jogo, com a
+    edição de 1–3 quadros atrás) só conta o que o movimento da câmera não explica. Medido com a câmera girando e
+    andando (`--giro --anda`): confiança no objeto perto 0,46 → 0,997; a faixa recém-descoberta segue 100% detectada.
   - Diagnóstico: `captura\DLSS5Buffer.log` registra a cada 5 s os despachos do FSR (por segundo), a resolução de render,
     resets, trocas de saída, jitter, e do lado do overlay quantos quadros foram exportados e receberam edição, com a
     idade média e máxima da edição em quadros.

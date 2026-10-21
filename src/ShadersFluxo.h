@@ -377,8 +377,8 @@ float LumaP(float3 c) { return pow(max(dot(c, float3(0.2126, 0.7152, 0.0722)), 0
 
 // Captura de buffer: movimento e profundidade do proprio jogo (o que ele entrega ao upscaler) no lugar do fluxo optico.
 // Movimento: o do vizinho mais perto da camera (3x3), como no TAA -- a borda do objeto da frente leva o movimento dele.
-// Confianca: a distancia do ponto reprojetado no quadro anterior bate com a deste (2x2, a melhor); se nao bate, ali
-// havia outra superficie (oclusao) e o historico do pixel cai.
+// Cada ponto deste quadro tambem espalha a distancia dele para onde estava no quadro anterior (recon, a mais perto
+// vence): a confianca (ConfJogo) compara so distancias DESTE quadro, como a profundidade reconstruida do FSR.
 inline const char* DoJogo = R"(
 cbuffer K : register(b0)
 {
@@ -389,12 +389,10 @@ cbuffer K : register(b0)
 };
 Texture2D<float2> movJogo : register(t0); // pixels da cor, do atual ao anterior
 Texture2D<float> profJogo : register(t1);
-Texture2D<float> zAnt : register(t2);     // distancia do quadro anterior (w x h)
 RWTexture2D<float2> mov : register(u0);   // pixels da rede
-RWTexture2D<float> conf : register(u1);
-RWTexture2D<float> zAtual : register(u2);
-RWByteAddressBuffer contagem : register(u3); // [0] pixels com profundidade < 0,5, [4] pixels (amostra 1 em 16x16)
-SamplerState s : register(s0);
+RWTexture2D<float> zAtual : register(u1);
+RWByteAddressBuffer contagem : register(u2); // [0] pixels com profundidade < 0,5, [4] pixels (amostra 1 em 16x16)
+RWTexture2D<uint> recon : register(u3);   // por pixel do quadro anterior: a menor distancia deste quadro que cai nele
 
 static const float CEU = 1e6;
 // profundidade do jogo -> distancia da camera (linear com perto/longe do FSR; sem camera, proporcional a ela)
@@ -452,17 +450,86 @@ float Radial(float z, float2 uv)
     m = all(isfinite(m)) ? m : 0;
     mov[p] = m;
     zAtual[p] = zc;
-    float c = 0.0;
+    // os 4 pixels do quadro anterior em volta de onde este ponto estava (distancia positiva: a ordem de asuint e a do float)
+    const int2 b = int2(floor(p + m));
+    [unroll] for (int j = 0; j < 2; ++j)
+        [unroll] for (int i = 0; i < 2; ++i)
+        {
+            const int2 q = b + int2(i, j);
+            if (all(q >= 0) && all(q < int2(w, h)))
+                InterlockedMin(recon[q], asuint(zc));
+        }
+}
+)";
+
+// zera a profundidade reconstruida (nenhum ponto deste quadro caiu ali = nada na frente)
+inline const char* LimpaRecon = R"(
+cbuffer K : register(b0) { uint w; uint h; };
+RWTexture2D<uint> recon : register(u0);
+[numthreads(8, 8, 1)] void CSLimpaRecon(uint2 p : SV_DispatchThreadID)
+{
+    if (p.x < w && p.y < h) recon[p] = 0xFFFFFFFFu;
+}
+)";
+
+// Confianca da captura de buffer: o historico deste pixel (o que estava em p + mov no quadro anterior) ainda e desta
+// superficie? Antes comparava a distancia deste quadro com a do anterior: com a camera andando em volta do personagem
+// (Gears, 2-3 m), a distancia dele muda 8-10% por quadro -- a confianca caia no corpo todo, o historico saia e a edicao
+// dele virava estimativa atrasada (o rastro). Agora, como no FSR: ha um ponto DESTE quadro, mais perto da camera, que
+// estava naquele lugar do quadro anterior? Entao este fundo acabou de aparecer. As duas distancias sao deste quadro;
+// a camera andando nao entra. Contra o quadro anterior fica so diferenca grande (o oclusor que saiu de vista).
+inline const char* ConfJogo = R"(
+cbuffer K : register(b0) { uint w; uint h; uint temAnt; uint pad0; };
+Texture2D<float2> mov : register(t0);   // pixels da rede, do atual ao anterior
+Texture2D<float> zAtual : register(t1); // distancia radial deste quadro
+Texture2D<float> zAnt : register(t2);   // a do quadro anterior
+Texture2D<uint> recon : register(t3);   // DoJogo: a menor distancia deste quadro que cai em cada pixel do anterior
+RWTexture2D<float> conf : register(u0);
+SamplerState s : register(s0);
+static const float CEU = 1e6;
+
+[numthreads(8, 8, 1)] void CSConfJogo(uint2 p : SV_DispatchThreadID)
+{
+    if (p.x >= w || p.y >= h) return;
+    const float2 m = mov.Load(int3(p, 0));
+    const float zc = zAtual.Load(int3(p, 0));
     const float2 pa = p + 0.5 + m;
+    float c = 0.0;
     if (temAnt && all(pa >= 0.0) && all(pa <= float2(w, h)))
     {
+        // 1) oclusao so com distancias deste quadro: o mais perto que caiu nos mesmos 4 pixels (este ponto tambem caiu)
+        const int2 b = int2(floor(pa - 0.5));
+        float zmin = CEU * 4.0;
+        [unroll] for (int j = 0; j < 2; ++j)
+            [unroll] for (int i = 0; i < 2; ++i)
+            {
+                const uint v = recon.Load(int3(clamp(b + int2(i, j), 0, int2(w, h) - 1), 0));
+                if (v != 0xFFFFFFFFu) zmin = min(zmin, asfloat(v));
+            }
+        // folga da inclinacao: num chao rasante, o vizinho de 1 pixel ja esta alguns % mais perto (mesma superficie)
+        float g = 0.0;
+        [unroll] for (int k = 0; k < 4; ++k)
+        {
+            const int2 o = int2(k == 0 ? 1 : k == 1 ? -1 : 0, k == 2 ? 1 : k == 3 ? -1 : 0);
+            const float zv = zAtual.Load(int3(clamp(int2(p) + o, 0, int2(w, h) - 1), 0));
+            if (zv < CEU * 0.5 && zc < CEU * 0.5) g = max(g, abs(zv - zc) / max(zc, 1e-6));
+        }
+        float oc = 0.0;
+        if (zmin < CEU * 2.0)
+            oc = zc >= CEU * 0.5 ? (zmin < CEU * 0.5 ? 1e9 : 0.0) : max(zc - zmin, 0.0) / max(zmin, 1e-6);
+        c = 1.0 - smoothstep(0.05 + 2.0 * g, 0.15 + 2.0 * g, oc);
+        // 2) contra o quadro anterior, so o que a camera andando nao explica: antes mais perto (oclusao) a partir de
+        //    15-35%; antes mais longe (a camera chegou perto, ou o objeto) so a partir de 40-80%
         const float4 za = zAnt.GatherRed(s, pa / float2(w, h));
-        float r = 1e9;
+        float pior = 1.0;
         [unroll] for (int i = 0; i < 4; ++i)
-            r = min(r, abs(za[i] - zc) / max(min(za[i], zc), 1e-6));
-        if (zc >= CEU * 0.5 && max(max(za.x, za.y), max(za.z, za.w)) >= CEU * 0.5)
-            r = 0.0; // ceu dos dois lados
-        c = 1.0 - smoothstep(0.04, 0.15, r);
+        {
+            const float rn = max(zc - za[i], 0.0) / max(za[i], 1e-6);
+            const float rf = max(za[i] - zc, 0.0) / max(zc, 1e-6);
+            const bool ceu = zc >= CEU * 0.5 && za[i] >= CEU * 0.5;
+            pior = min(pior, ceu ? 0.0 : max(smoothstep(0.15, 0.35, rn), smoothstep(0.4, 0.8, rf)));
+        }
+        c *= 1.0 - pior;
     }
     conf[p] = c;
 }

@@ -1258,7 +1258,7 @@ struct App
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
         UINT64 total = 0;
     };
-    Leitura leituras[7];
+    Leitura leituras[8];
 
     void IniciaGravacao()
     {
@@ -1267,7 +1267,7 @@ struct App
             Log("gravacao", gravando > 0 ? "ja gravando" : "nada para gravar (ligue o overlay no jogo)");
             return;
         }
-        const double porQuadro = double(fed.w) * fed.h * (8 + 8 + 8 + 4 + 2);
+        const double porQuadro = double(fed.w) * fed.h * (8 + 8 + 8 + 4 + 2 + (buffer ? 4 : 0));
         gravando = std::clamp(int(6e9 / porQuadro), 8, 240);
         gravados = 0;
         SYSTEMTIME st;
@@ -1283,9 +1283,10 @@ struct App
             fprintf(metaGravacao,
                     "{\"rede_w\":%u,\"rede_h\":%u,\"janela_w\":%u,\"janela_h\":%u,\"hdr\":%d,\"escala\":%.4f,"
                     "\"arquivos\":{\"orig\":\"RGBA16F\",\"crua\":\"RGBA16F\",\"edicao\":\"RGBA16F\",\"mov\":\"RG16F\","
-                    "\"conf\":\"R16F\"%s},\"quadros\":%d}\n",
+                    "\"conf\":\"R16F\"%s%s},\"quadros\":%d}\n",
                     fed.w, fed.h, inteiro.w, inteiro.h, hdr ? 1 : 0, escalaUsada,
-                    MascaraAtiva() ? ",\"mascara\":\"RGBA16F\",\"mascara_sabe\":\"R8\"" : "", gravando);
+                    MascaraAtiva() ? ",\"mascara\":\"RGBA16F\",\"mascara_sabe\":\"R8\"" : "",
+                    buffer ? ",\"dist\":\"R32F\"" : "", gravando);
         if (!escritor.joinable())
             escritor = std::thread([this] {
                 for (;;)
@@ -1319,14 +1320,20 @@ struct App
         // com a mascara de desenvolvedor: o estado dela neste quadro (rgba = pele, cabelo, personagem, objeto)
         Tex* m = MascaraAtiva() ? mascara.Estado() : nullptr;
         Tex* ms = MascaraAtiva() ? mascara.Sabe() : nullptr;
-        Tex* tex[7] = {&orig, &temporal.Crua(), edicaoExibida ? edicaoExibida : &temporal.Crua(), &fluxo.Movimento(),
-                       &fluxo.Confianca(), m ? m : &orig, ms ? ms : &fluxo.Confianca()};
-        const UINT bpp[7] = {8, 8, 8, 4, 2, 8, 1};
-        const wchar_t* nomes[7] = {L"orig", L"crua", L"edicao", L"mov", L"conf", L"mascara", L"mascara_sabe"};
-        const int n = MascaraAtiva() ? 7 : 5;
+        // captura de buffer: a distancia radial do jogo (R32F) para medir oclusao e rastro fora do jogo
+        Tex* zt = buffer ? fluxo.DistanciaAtual() : nullptr;
+        Tex* tex[8] = {&orig, &temporal.Crua(), edicaoExibida ? edicaoExibida : &temporal.Crua(), &fluxo.Movimento(),
+                       &fluxo.Confianca(), m ? m : &orig, ms ? ms : &fluxo.Confianca(), zt ? zt : &fluxo.Confianca()};
+        const UINT bpp[8] = {8, 8, 8, 4, 2, 8, 1, 4};
+        const wchar_t* nomes[8] = {L"orig", L"crua", L"edicao", L"mov", L"conf", L"mascara", L"mascara_sabe", L"dist"};
+        std::vector<int> quais = {0, 1, 2, 3, 4};
+        if (MascaraAtiva())
+            quais.insert(quais.end(), {5, 6});
+        if (zt)
+            quais.push_back(7);
         Ck(al[0]->Reset(), "reset");
         Ck(cl[0]->Reset(al[0].Get(), nullptr), "list");
-        for (int i = 0; i < n; ++i)
+        for (const int i : quais)
         {
             Leitura& L = leituras[i];
             const auto d = tex[i]->r->GetDesc();
@@ -1360,7 +1367,7 @@ struct App
         ID3D12CommandList* l[] = {cl[0].Get()};
         gpu.fila->ExecuteCommandLists(1, l);
         gpu.Espera();
-        for (int i = 0; i < n; ++i)
+        for (const int i : quais)
         {
             Leitura& L = leituras[i];
             std::vector<unsigned char> b(size_t(tex[i]->w) * tex[i]->h * bpp[i]);

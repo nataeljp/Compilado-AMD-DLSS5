@@ -42,6 +42,17 @@ LACO = '--laco' in sys.argv
 #   jogo entrega na profundidade) muda fora do centro a cada giro -- o caso do Gears girando rapido, que a panoramica 2D
 #   (Z constante) nao reproduz. Guinada ate ~300 px/quadro no centro.
 GIRO = '--giro' in sys.argv
+# --anda: a camera tambem anda (como em volta do personagem no Gears): a distancia do objeto perto dela varia ate ~12% por
+#   quadro e a do fundo ~2% -- a mesma superficie com outra distancia, que a confianca nao pode tomar por oclusao
+ANDA = '--anda' in sys.argv
+
+
+def z_obj(i):
+    return Z_OBJ * (1 + 0.15 * math.sin(2 * math.pi * i / 8)) if ANDA else Z_OBJ
+
+
+def z_fundo(i):
+    return Z_FUNDO * (1 + 0.04 * math.sin(2 * math.pi * i / 12)) if ANDA else Z_FUNDO
 TAN_X = 1.0
 TAN_Y = TAN_X * H / W
 RAD_PX = 2 * TAN_X / W  # radianos por pixel no centro da tela (a foto tem a mesma resolucao angular)
@@ -100,7 +111,7 @@ with open(pasta / 'meta.jsonl', 'w') as m:
             mvx = ((c[..., 0] / c[..., 2]) / TAN_X + 1) * W / 2 - 0.5 - xs
             mvy = (1 - (c[..., 1] / c[..., 2]) / TAN_Y) * H / 2 - 0.5 - ys
             # esfera de raio Z_FUNDO: o Z da camera e o raio vezes o cosseno do angulo fora do eixo
-            prof = (PERTO / (Z_FUNDO * raio[..., 2])).astype(np.float32)
+            prof = (PERTO / (z_fundo(i) * raio[..., 2])).astype(np.float32)
             A = giro(i)
         else:
             A = camera(i)
@@ -125,7 +136,7 @@ with open(pasta / 'meta.jsonl', 'w') as m:
         dentro = mascara[..., 0] > 0.5
         mvx[dentro] = op[0] - o[0]
         mvy[dentro] = op[1] - o[1]
-        prof[dentro] = PERTO / Z_OBJ
+        prof[dentro] = PERTO / z_obj(i)
         if i == 0 and not LACO:
             mvx[:] = 0
             mvy[:] = 0

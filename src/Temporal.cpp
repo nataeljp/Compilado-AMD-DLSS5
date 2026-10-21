@@ -349,7 +349,12 @@ float3 FatiaDentro(float2 pos, float z01, float3 cp, float lz)
         // lida no lugar errado) ou o pixel acabou de entrar pela borda (dentro = 0): nenhuma informacao da rede ali. Fica
         // o original ate a proxima resposta -- os vizinhos em aneis de raio dobrado viravam faixas verticais na borda.
         if (exata && (dg.w < 0.5 || !dentro))
-            eg = 0;
+        {
+            // a edicao da borda do quadro anterior (historico) some em ~48 px: sem degrau entre o editado e o original
+            const float2 qa = float2(p) + 0.5 + v;
+            const float2 f = max(max(-qa, qa - tam), 0.0);
+            eg = temHist ? CatmullRomT(histAnt, clamp(qa, 0.5, tam - 0.5) / tam, tam) * exp(-dot(f, f) / (48.0 * 48.0)) : 0;
+        }
         else
             eg = Fatia(float2(p) + 0.5 + dg.xy, Guia(o), CorP(o), exata ? log2(max(zAgora.Load(int3(p, 0)), 1e-6)) : 0.0);
         if (exata && dentro && temConf && conf.Load(int3(p, 0)) < 0.5)

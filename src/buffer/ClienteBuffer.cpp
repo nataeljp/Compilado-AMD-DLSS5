@@ -70,6 +70,17 @@ float Mesma(float za, float zb)
     if (za >= CEU * 0.5 && zb >= CEU * 0.5) return 1.0;
     return 1.0 - smoothstep(0.04, 0.15, abs(za - zb) / max(min(za, zb), 1e-6));
 }
+// a mesma superficie entre o quadro da edicao (1-3 quadros atras) e este: a camera andando em volta do personagem muda
+// a distancia dele ~10% nesse tempo (com Mesma, a edicao do personagem caia e vinha dos vizinhos: rastro). So descarta
+// o que o movimento nao explica: a origem mais PERTO (o que estava na frente) a partir de 15-35%, mais longe a partir
+// de 40-80%.
+float MesmaAntes(float zOrigem, float zAgora)
+{
+    if (zOrigem >= CEU * 0.5 && zAgora >= CEU * 0.5) return 1.0;
+    const float rn = max(zAgora - zOrigem, 0.0) / max(zOrigem, 1e-6);
+    const float rf = max(zOrigem - zAgora, 0.0) / max(zAgora, 1e-6);
+    return 1.0 - max(smoothstep(0.15, 0.35, rn), smoothstep(0.4, 0.8, rf));
+}
 // Z da camera -> distancia RADIAL (a do alfa da edicao, Shaders.h/Exporta): o Z de um ponto fora do centro muda quando a
 // camera gira; com o Z, girando rapido quase toda a tela parecia outra superficie e a edicao vinha dos vizinhos
 float Radial(float z, float2 uv)
@@ -145,15 +156,16 @@ float Exposicao()
     {
         const int2 o = int2(k & 1, k >> 1);
         const float4 v = edicao.Load(int3(clamp(i0 + o, 0, lim), 0));
-        const float wv = (o.x ? fr.x : 1.0 - fr.x) * (o.y ? fr.y : 1.0 - fr.y) * Mesma(exp2(v.a), zc);
+        const float wv = (o.x ? fr.x : 1.0 - fr.x) * (o.y ? fr.y : 1.0 - fr.y) * MesmaAntes(exp2(v.a), zc);
         ed += v.rgb * wv;
         soma += wv;
     }
     if (fora)
     {
         // entrou pela borda (no quadro da edicao o ponto estava fora da imagem): nao ha edicao para ele. A da borda
-        // (mesma superficie) some em ~48 px; os vizinhos em aneis de raio dobrado viravam faixas verticais
-        const float2 dentroQ = max(max(-q0, q0 - float2(corW, corH)), 0.0);
+        // (mesma superficie) some em ~48 px de 1080p (escala com a saida); os vizinhos em aneis de raio dobrado viravam
+        // faixas verticais
+        const float2 dentroQ = max(max(-q0, q0 - float2(corW, corH)), 0.0) * (1080.0 / max(float(corH), 1.0));
         ed = soma > 1e-4 ? ed / soma * exp(-dot(dentroQ, dentroQ) / (48.0 * 48.0)) : 0;
         soma = 1.0;
     }
@@ -184,7 +196,7 @@ float Exposicao()
                 if (any(qf < 0.0) || any(qf > tamC)) continue; // o vizinho tambem veio de fora do quadro
                 const int2 qt = clamp(int2(qf), 0, lim);
                 const float4 v = edicao.Load(int3(qt, 0));
-                const float wv = wz * Mesma(exp2(v.a), zt) / r;
+                const float wv = wz * MesmaAntes(exp2(v.a), zt) / r;
                 ed += v.rgb * wv;
                 s1 += wv;
             }
