@@ -54,5 +54,7 @@ Set-Content -Path "$pasta\config.json" -Encoding ascii -Value @'
 $zip = Join-Path $saida "DLSS5-Overlay-v$Versao.zip"
 if (Test-Path $zip) { python -c "import os,sys; os.remove(sys.argv[1])" $zip }
 Compress-Archive -Path $pasta -DestinationPath $zip -CompressionLevel Optimal
+# a pasta montada era so para compactar: fica o zip (a copia descompactada duplicava 660 MB)
+python -c "import shutil,sys; shutil.rmtree(sys.argv[1])" $pasta
 $h = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
 "{0}: {1:N1} MB, sha256 {2}" -f $zip, ((Get-Item $zip).Length / 1MB), $h
