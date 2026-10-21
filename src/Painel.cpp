@@ -189,12 +189,14 @@ void Dica(const char* d)
         ImGui::SetTooltip("%s", d);
 }
 
-// rotulo | trilho verde com botao redondo | valor; duplo clique volta ao padrao
+// rotulo | trilho verde com botao redondo | valor; duplo clique volta ao padrao.
+// Ajuste fino: Shift + arrastar anda 1/10 do normal; a roda do mouse sobre o trilho soma um passo (a penultima casa do
+// formato, ex. 0,01 em "%.3f") e, com Shift, a ultima (0,001)
 bool Deslizador(const char* rot, float* v, float a, float b, const char* fmt, const char* dica, float padrao = NAN)
 {
     ImGui::PushID(rot);
     const float larg = ImGui::GetContentRegionAvail().x;
-    const float colRot = larg * 0.40f, colVal = 46 * g_e, raio = 9 * g_e, alt = 26 * g_e;
+    const float colRot = larg * 0.40f, colVal = 56 * g_e, raio = 9 * g_e, alt = 26 * g_e;
     const float trilho = larg - colRot - colVal - 6 * g_e;
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -203,12 +205,29 @@ bool Deslizador(const char* rot, float* v, float a, float b, const char* fmt, co
     dl->AddText(g_texto, g_tTexto, ImVec2(p0.x, p0.y + (alt - g_tTexto) * 0.5f), alfa(kTexto2), rot);
     ImGui::SetCursorScreenPos(ImVec2(p0.x + colRot, p0.y));
     ImGui::InvisibleButton("##t", ImVec2(trilho, alt));
+    ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY); // a roda sobre o trilho ajusta o valor, nao rola o painel
     const float x0 = p0.x + colRot + raio, x1 = p0.x + colRot + trilho - raio;
+    const ImGuiIO& io = ImGui::GetIO();
+    // casas decimais do formato ("%.3f" -> 3, "%+.2f" -> 2, "%.0f" -> 0)
+    int casas = 0;
+    if (const char* ponto = strchr(fmt, '.'))
+        casas = std::max(0, atoi(ponto + 1));
     bool mudou = false;
     if (ImGui::IsItemActive())
     {
-        const float t = std::clamp((ImGui::GetIO().MousePos.x - x0) / std::max(x1 - x0, 1.f), 0.f, 1.f);
-        const float nv = a + t * (b - a);
+        float nv;
+        if (io.KeyShift)
+            nv = std::clamp(*v + io.MouseDelta.x / std::max(x1 - x0, 1.f) * (b - a) * 0.1f, a, b);
+        else
+            nv = a + std::clamp((io.MousePos.x - x0) / std::max(x1 - x0, 1.f), 0.f, 1.f) * (b - a);
+        if (nv != *v)
+            *v = nv, mudou = true;
+    }
+    else if (ImGui::IsItemHovered() && io.MouseWheel != 0.f)
+    {
+        const float passo = casas > 0 ? std::pow(10.f, -float(io.KeyShift ? casas : casas - 1)) : 1.f;
+        const float q = std::pow(10.f, float(casas));
+        const float nv = std::clamp(std::round((*v + io.MouseWheel * passo) * q) / q, a, b);
         if (nv != *v)
             *v = nv, mudou = true;
     }
@@ -972,13 +991,13 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
 
     // ---- controles globais (os da NVIDIA) ----
     Secao("CONTROLES GLOBAIS");
-    mc |= Deslizador("Estrutura", &cfg.ngx.estruturaLocal, -1.f, 2.f, "%.2f",
+    mc |= Deslizador("Estrutura", &cfg.ngx.estruturaLocal, -2.f, 4.f, "%.3f",
                      "DLSSNR.LocalStructureStrength: detalhe e forma locais. Duplo clique: 1.", 1.f);
-    mc |= Deslizador("Tom", &cfg.ngx.tomLocal, 0.f, 1.f, "%.2f",
+    mc |= Deslizador("Tom", &cfg.ngx.tomLocal, 0.f, 2.f, "%.3f",
                      "DLSSNR.LocalToneStrength: luz e cor em grande escala; tambem escala a gradacao do modelo.", 1.f);
-    Deslizador("Intensidade", &cfg.ngx.intensidade, 0.f, 2.f, "%.2f",
+    Deslizador("Intensidade", &cfg.ngx.intensidade, 0.f, 4.f, "%.3f",
                "DLSSNR.Intensity: quanto da resposta da rede entra (acima de 1 reforca a luz).", 1.f);
-    Deslizador("Força da edição", &cfg.forca, 0.f, 2.f, "%.2f", "Quanto da mudanca da rede entra no quadro (1 = a da rede).", 1.f);
+    Deslizador("Força da edição", &cfg.forca, 0.f, 4.f, "%.3f", "Quanto da mudanca da rede entra no quadro (1 = a da rede).", 1.f);
 
     {
         const char* modelos[] = {"Model A", "Model B", "Model C"};
@@ -1011,8 +1030,8 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         for (int g = 0; g < 4; ++g)
         {
             ImGui::PushID(100 + g);
-            Deslizador(grupos[g], &cfg.dev.grupo[g].dlss, 0.f, 1.f, "%.2f",
-                       (std::string(dicas[g]) + " 1 = o efeito inteiro da rede, 0 = o quadro original.").c_str(), 1.f);
+            Deslizador(grupos[g], &cfg.dev.grupo[g].dlss, 0.f, 2.f, "%.3f",
+                       (std::string(dicas[g]) + " 1 = o efeito inteiro da rede, 0 = o quadro original, 2 = o dobro.").c_str(), 1.f);
             ImGui::PopID();
         }
         Marca("Mostrar máscara", &cfg.dev.mostra,
@@ -1093,7 +1112,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                     "DLSSNR.UseAutoMask: a propria rede separa personagem e cena (sem classificador). Desligada, os\n"
                     "canais de pele e cena vao a -1. Padrao: ligada.");
         ImGui::BeginDisabled(!cfg.ngx.mascara);
-        mc |= Deslizador("Estrutura do personagem", &cfg.ngx.estruturaPele, -1.f, 2.f, "%.2f",
+        mc |= Deslizador("Estrutura do personagem", &cfg.ngx.estruturaPele, -2.f, 4.f, "%.3f",
                          "DLSSNR.SkinStructureStrength: o canal de personagem da rede (efeito pequeno; padrao 1).", 1.f);
         ImGui::EndDisabled();
         // ajustes por grupo DENTRO da rede: os canais de controle da primeira camada por pixel (nosso, nao e da NVIDIA)
@@ -1134,9 +1153,9 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                 GrupoMascara& G = cfg.dev.grupo[g];
                 ImGui::PushID(g);
                 Secao(nomes[g], false);
-                mc |= Deslizador("Estrutura", &G.estrutura, -1.f, 1.f, "%+.2f",
+                mc |= Deslizador("Estrutura", &G.estrutura, -2.f, 2.f, "%+.3f",
                                  "Mais (+) ou menos (-) estrutura que o global, so neste grupo. 0 = igual ao global.", 0.f);
-                mc |= Deslizador("Tom", &G.tom, -1.f, 1.f, "%+.2f",
+                mc |= Deslizador("Tom", &G.tom, -2.f, 2.f, "%+.3f",
                                  "Mais (+) ou menos (-) tom que o global, so neste grupo. 0 = igual ao global.", 0.f);
                 int m = G.modelo + 1;
                 if (Segmentos("modelo", modelos, 4, &m))
@@ -1153,7 +1172,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         ImGui::SetNextItemWidth(lc);
         ImGui::Combo("##comp", &cfg.temporal.composicao, comps, 2);
         ImGui::BeginDisabled(cfg.temporal.composicao == 0);
-        Deslizador("Cor", &cfg.temporal.cor, 0.f, 1.f, "%.2f", "0 = cores do jogo na luz da rede, 1 = cores da rede (padrao).", 1.f);
+        Deslizador("Cor", &cfg.temporal.cor, 0.f, 2.f, "%.3f", "0 = cores do jogo na luz da rede, 1 = cores da rede (padrao).", 1.f);
         Deslizador("Proteção de luz", &cfg.temporal.guarda, 1.f, 16.f, "%.1fx",
                    "A luz de cada ponto muda no maximo esse fator. 16 = desligada (padrao): medido contra a NVIDIA,\n"
                    "2,0 afastava 1,5-2 dB.", 16.f);
@@ -1175,14 +1194,14 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                    "Branco de papel do jogo em HDR (0 = o branco SDR do Windows, o certo para a rede).", 0.f);
 
         Secao("ANTES DA REDE: LUZES E SOMBRAS");
-        mc |= Deslizador("Luzes", &cfg.preLuz, 0.f, 4.f, "%.2f",
+        mc |= Deslizador("Luzes", &cfg.preLuz, 0.f, 8.f, "%.3f",
                          "Ganho das areas acima do limiar antes da rede (ideia do Shadow-Light-Scattering.fx).", 0.f);
-        mc |= Deslizador("Sombras", &cfg.preSombra, -1.f, 1.f, "%.2f",
+        mc |= Deslizador("Sombras", &cfg.preSombra, -2.f, 2.f, "%.3f",
                          "Acima de 0 escurece as areas abaixo do limiar antes da rede; abaixo de 0 levanta.", 0.f);
-        mc |= Deslizador("Limiar luzes", &cfg.preLimiar, 0.05f, 0.95f, "%.2f", "Luma de tela a partir da qual as luzes sobem.", 0.5f);
-        mc |= Deslizador("Limiar sombras", &cfg.preLimiarSombra, 0.02f, 0.6f, "%.2f",
+        mc |= Deslizador("Limiar luzes", &cfg.preLimiar, 0.05f, 0.95f, "%.3f", "Luma de tela a partir da qual as luzes sobem.", 0.5f);
+        mc |= Deslizador("Limiar sombras", &cfg.preLimiarSombra, 0.02f, 0.6f, "%.3f",
                          "Luma de tela abaixo da qual as sombras descem.", 0.2f);
-        mc |= Deslizador("Saturação", &cfg.preCor, -0.5f, 1.f, "%.2f",
+        mc |= Deslizador("Saturação", &cfg.preCor, -1.f, 2.f, "%.3f",
                          "Saturacao antes da rede: a rede ve e devolve a cena mais (ou menos) colorida.", 0.f);
 
         Secao("EXECUÇÃO DA REDE");
@@ -1209,6 +1228,10 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         ImGui::BeginDisabled(!cfg.movimento);
         DeslizadorInt("Estabilidade", &cfg.temporal.maxQuadros, 1, 16, "%d",
                       "Quantos quadros a edicao da rede acumula (menos cintilacao; 1 = sem acumulo).");
+        Deslizador("Média em movimento", &cfg.temporal.pxEstab, 0.f, 32.f, "%.1f px",
+                   "Captura de buffer: a media temporal cai pela metade a cada tantos pixels de movimento por quadro.\n"
+                   "Menor = menos rastro em movimento (a edicao acompanha a cena), um pouco mais de cintilacao so em\n"
+                   "movimento; parado vale a Estabilidade inteira. 0 = media fixa. Padrao 8.", 8.f);
         Deslizador("Rejeição", &cfg.temporal.rejeicao, 2.f, 40.f, "%.1f",
                    "Quao rapido uma mudanca de cor derruba o acumulo (mais alto = menos fantasma).", 12.f);
         Marca("Descartar onde o movimento não confere", &cfg.usaConfianca,

@@ -10,7 +10,7 @@ ParamsRede Config::Rede() const
 {
     ParamsRede r = rede;
     r.estilo = float(std::clamp(ngx.modelo, 0, 2)); // o controle de estilo da rede: Model A/B/C = 0, 1, 2 (x 1/128)
-    r.tom = std::clamp(ngx.tomLocal, 0.f, 1.f);
+    r.tom = std::clamp(ngx.tomLocal, 0.f, 2.f);
     r.estrutura = ngx.estruturaLocal;
     r.pele = ngx.mascara ? ngx.estruturaPele : -1.f;
     r.outro = ngx.mascara ? ngx.estruturaLocal : -1.f;
@@ -55,10 +55,10 @@ void Config::TabelaMascara(float t[40]) const
             const GrupoMascara& G = dev.grupo[g - 1];
             if (G.Neutro())
                 continue;
-            l[0] = std::clamp(std::clamp(ngx.tomLocal, 0.f, 1.f) + kRegiao * G.tom, -1.f, 2.f);
-            l[1] = std::clamp(ngx.estruturaLocal + kRegiao * G.estrutura, -1.f, 4.f);
+            l[0] = std::clamp(std::clamp(ngx.tomLocal, 0.f, 2.f) + kRegiao * G.tom, -2.f, 4.f);
+            l[1] = std::clamp(ngx.estruturaLocal + kRegiao * G.estrutura, -2.f, 8.f);
             if (g <= 3)
-                l[2] = std::clamp(ngx.estruturaPele + kRegiao * G.estrutura, -1.f, 4.f);
+                l[2] = std::clamp(ngx.estruturaPele + kRegiao * G.estrutura, -2.f, 8.f);
             if (dev.explicita != 2 || g == 4)
                 l[3] = l[1];
             if (G.modelo >= 0)
@@ -71,13 +71,13 @@ void Config::TabelaMascara(float t[40]) const
             continue;
         float* l = t + g * 8;
         const float est = ngx.estruturaLocal + kRegiao * G.estrutura;
-        l[0] = std::clamp(std::clamp(ngx.tomLocal, 0.f, 1.f) + kRegiao * G.tom, -1.f, 2.f);
+        l[0] = std::clamp(std::clamp(ngx.tomLocal, 0.f, 2.f) + kRegiao * G.tom, -2.f, 4.f);
         l[1] = std::clamp(est, -1.f, 4.f);
         if (ngx.mascara)
         {
             l[3] = l[1];
             if (g <= 3) // pele, cabelo e personagem: o canal de pele (o do personagem) leva a estrutura do grupo
-                l[2] = std::clamp(ngx.estruturaPele + kRegiao * G.estrutura, -1.f, 4.f);
+                l[2] = std::clamp(ngx.estruturaPele + kRegiao * G.estrutura, -2.f, 8.f);
         }
         if (G.modelo >= 0)
             l[4] = float(std::clamp(G.modelo, 0, 2)) / 128.f;
@@ -174,6 +174,7 @@ void Config::Carrega(const std::wstring& arquivo)
     I("profundidadeMax", profundidadeMax);
     F("realceTemporal", realceTemporal);
     I("estabilidade", temporal.maxQuadros);
+    F("mediaMovimento", temporal.pxEstab);
     F("rejeicao", temporal.rejeicao);
     F("divisao", divisao);
     I("fpsMax", fpsMax);
@@ -233,6 +234,7 @@ void Config::Salva(const std::wstring& arquivo) const
     f << "  \"profundidadeMax\": " << profundidadeMax << ",\n";
     f << "  \"realceTemporal\": " << realceTemporal << ",\n";
     f << "  \"estabilidade\": " << temporal.maxQuadros << ",\n";
+    f << "  \"mediaMovimento\": " << temporal.pxEstab << ",\n";
     f << "  \"rejeicao\": " << temporal.rejeicao << ",\n";
     f << "  \"divisao\": " << divisao << ",\n";
     f << "  \"fpsMax\": " << fpsMax << ",\n";

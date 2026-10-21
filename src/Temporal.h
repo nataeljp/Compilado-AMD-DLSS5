@@ -13,6 +13,8 @@ namespace ov {
 struct ParamsTemporal
 {
     int maxQuadros = 8;       // quantos quadros a edicao acumula no maximo (1 = sem acumulo)
+    float pxEstab = 8.f;      // captura de buffer: a media cai pela metade a cada pxEstab px/quadro de movimento (0 = fixa).
+                              // Medido no Gears contra a edicao ideal: 16 px 0,020, 8 px 0,015, sem 0,041 (cintila mais)
     float rejeicao = 12.f;    // quao rapido uma divergencia de cor entre os quadros derruba o historico
     float folga = 0.02f;      // folga do limite pela vizinhanca da edicao atual
     int composicao = 1;       // 0 crua (resposta - proxy), 1 referencia NVIDIA/RenoDX

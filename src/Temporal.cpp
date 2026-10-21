@@ -7,14 +7,11 @@ namespace ov {
 
 namespace {
 // captura de buffer: movimento (px da rede por quadro) em que a media temporal cai pela metade; 0 desliga.
-// DLSS5_ESTAB_PX sobrepoe (medida)
-float PxEstabilidade()
+// O do config ("mediaMovimento"); DLSS5_ESTAB_PX sobrepoe (medidas)
+float PxEstabilidade(float doConfig)
 {
-    static const float v = [] {
-        const char* e = std::getenv("DLSS5_ESTAB_PX");
-        return e ? float(std::atof(e)) : 16.f;
-    }();
-    return v;
+    static const char* e = std::getenv("DLSS5_ESTAB_PX");
+    return e ? float(std::atof(e)) : doConfig;
 }
 
 // edicao da resposta no espaco do quadro que a rede viu (t0): composicao de referencia - original
@@ -521,8 +518,8 @@ void Temporal::Edicao(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Dev
     KEdicao k{crua.w,
               crua.h,
               (UINT)std::clamp(p.composicao, 0, 1),
-              std::clamp(p.intensidade, 0.f, 2.f),
-              std::clamp(p.cor, 0.f, 1.f),
+              std::clamp(p.intensidade, 0.f, 4.f),
+              std::clamp(p.cor, 0.f, 2.f),
               std::clamp(p.guarda, 1.f, 16.f),
               std::max(p.exposicao, 1e-3f),
               0};
@@ -652,7 +649,7 @@ Tex* Temporal::Roda(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Devic
         gh,
         deslGAgora ? 1u : 0u,
         ((zAgora && zGradeValida) ? 1u : 0u) | (getenv("DLSS5_DEBUG_FAIXA") ? 2u : 0u),
-        PxEstabilidade(),
+        PxEstabilidade(p.pxEstab),
         0,
         0,
         0};

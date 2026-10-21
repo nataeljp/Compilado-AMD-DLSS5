@@ -10,7 +10,7 @@ namespace ov {
 struct ParamsNgx
 {
     int modelo = 0;             // DLSSNR.Style: 0 Model A (padrao), 1 Model B (natural), 2 Model C (cinematico)
-    float intensidade = 1.f;    // DLSSNR.Intensity: quanto da resposta entra (0..2; acima de 1 reforca a luz)
+    float intensidade = 1.f;    // DLSSNR.Intensity: quanto da resposta entra (0..4; acima de 1 reforca a luz)
     float tomLocal = 1.f;       // DLSSNR.LocalToneStrength (0..1): luz e cor em grande escala; escala a gradacao
     float estruturaLocal = 1.f; // DLSSNR.LocalStructureStrength
     float estruturaPele = 1.f;  // DLSSNR.SkinStructureStrength
@@ -69,14 +69,14 @@ struct Config
     ParamsTemporal temporal;
     int alturaRede = 1080;  // altura em que a rede roda (720..2160); a largura segue a proporcao da janela
     bool redePequena = false; // a rede pequena da 310.9.16 (31 blocos, mais rapida) no lugar da grande (71 blocos)
-    float forca = 1.f;      // quanto da edicao final entra no quadro (0..2)
+    float forca = 1.f;      // quanto da edicao final entra no quadro (0..4)
     int ponte = -1;         // ponte do quadro para a rede: -1 auto (SDR direto, HDR SoftKnee), 0 direto, 1 SoftKnee, 2 ACES
     float brancoNits = 0.f; // branco de papel em nits (0 = o branco SDR do Windows)
     float preLuz = 0.f;     // antes da rede: ganho das luzes acima do limiar (ideia do Shadow-Light-Scattering.fx)
     float preSombra = 0.f;  // antes da rede: escurece (>0) ou levanta (<0) as sombras abaixo do limiar
     float preLimiar = 0.5f; // limiar em luma de tela (0..1) a partir do qual as luzes sobem
     float preLimiarSombra = 0.2f; // abaixo dele as sombras descem (preSombra > 0) ou sobem (< 0)
-    float preCor = 0.f;     // antes da rede: saturacao (-0,5..1)
+    float preCor = 0.f;     // antes da rede: saturacao (-1..2)
     int modo = 0;           // 0 rede, 1 original, 2 comparacao, 3 so a edicao, 4 movimento
     int fonte = 0;          // Modo de Rede: 0 captura de video (WGC), 1 captura de buffer (cor sem HUD, profundidade e
                             // movimento do upscaler do proprio jogo, pela DLSS5Buffer.dll colocada no jogo aberto)

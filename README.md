@@ -151,14 +151,14 @@ Os parâmetros do DLSS 5 seguem os nomes que a NVIDIA expõe no NGX (os mesmos d
 | Chave | Faixa | NGX / o que faz |
 |---|---|---|
 | `modelo` | 0/1/2 | `DLSSNR.Style`: Model A (padrão), B (natural), C (cinemático) — controle de estilo da rede + gradação final da NVIDIA |
-| `intensidade` | 0..2 | `DLSSNR.Intensity`: quanto da resposta entra (acima de 1 reforça a luz) |
-| `tomLocal` | 0..1 | `DLSSNR.LocalToneStrength`: luz e cor em grande escala; também escala a gradação do modelo |
-| `estruturaLocal` | −1..2 | `DLSSNR.LocalStructureStrength` |
-| `estruturaPele` | −1..2 | `DLSSNR.SkinStructureStrength` (com a máscara ligada) |
+| `intensidade` | 0..4 | `DLSSNR.Intensity`: quanto da resposta entra (acima de 1 reforça a luz) |
+| `tomLocal` | 0..2 | `DLSSNR.LocalToneStrength`: luz e cor em grande escala; também escala a gradação do modelo (acima de 1 extrapola o que a NVIDIA expõe) |
+| `estruturaLocal` | −2..4 | `DLSSNR.LocalStructureStrength` |
+| `estruturaPele` | −2..4 | `DLSSNR.SkinStructureStrength` (com a máscara ligada) |
 | `mascara` | true/false | `DLSSNR.UseAutoMask`: separa personagem e cena |
 | `gradacao` | true/false | aplica a gradação do Model B/C (exposição, contraste, saturação do kernel da NVIDIA) |
 | `composicao` | 0/1 | 0 crua (resposta − proxy), 1 referência NVIDIA/RenoDX (razão de luz em dois ramos, piso 1/512, proteção, cor) |
-| `corComposicao`, `protecao` | 0..1, 1..8 | mistura de cor e proteção bilateral de luz da composição (padrão 1 e 2,0) |
+| `corComposicao`, `protecao` | 0..2, 1..16 | mistura de cor e proteção bilateral de luz da composição (padrão 1 e 16 = desligada) |
 | `ponte` | −1..2 | quadro → proxy da rede: −1 automática (SDR direta, HDR SoftKnee), 0 direta, 1 SoftKnee, 2 ACES (RRT+ODT, RenoDX) |
 | `brancoNits` | 0..400 | branco de papel do HDR (0 = o branco SDR do Windows) |
 | `alturaRede` | 720..2160 | altura em que a rede roda (limitada pela janela) |
@@ -166,13 +166,18 @@ Os parâmetros do DLSS 5 seguem os nomes que a NVIDIA expõe no NGX (os mesmos d
 | `passes` | 1..3 | quantas vezes a rede inteira roda por quadro (1 = normal) |
 | `movimento`, `usaConfianca` | true/false | movimento simulado por fluxo óptico; descartar o acúmulo onde ida e volta não conferem |
 | `estabilidade`, `rejeicao` | 1..16, 2..40 | quadros que a edição acumula; quão rápido mudança de cor derruba o acúmulo |
+| `mediaMovimento` | 0..32 px | captura de buffer: a média cai pela metade a cada tantos px/quadro de movimento (padrão 8; 0 = fixa) |
 | `ritmo` | 1..4 | 1 = a rede recomeça assim que termina; N = no máximo uma vez a cada N quadros (libera GPU para o jogo) |
 | `reusoVit` | true/false | reuso adaptativo do ViT do runtime lmxxf (vale ao reabrir) |
-| `forca`, `modo`, `fpsMax`, `ocultaDeGravacoes` | | força da edição final, modo de exibição, teto de FPS, esconder de prints/OBS |
+| `forca` | 0..4 | força da edição final (1 = a da rede) |
+| `modo`, `fpsMax`, `ocultaDeGravacoes` | | modo de exibição, teto de FPS, esconder de prints/OBS |
 | `mascaraDev`, `mostraMascara`, `taxaMascara` | | pele e objetos: liga, pinta os grupos (Show Masks), classificações por segundo (2..15) |
-| `grupoNDlss` | 0..1, N = 1..4 | pele, cabelo, personagem, objetos: quanto do DLSS 5 entra no grupo (o ControlMask da NVIDIA) |
+| `grupoNDlss` | 0..2, N = 1..4 | pele, cabelo, personagem, objetos: quanto do DLSS 5 entra no grupo (o ControlMask da NVIDIA) |
 | `grupoNEstrutura`, `grupoNTom`, `grupoNModelo` | N = 1..4 | experimental, dentro da rede: estrutura e tom a mais/menos que o global; modelo −1 = global, 0/1/2 = A/B/C |
 | `mascaraExplicita` | 0/1/2 | 0 = a rede acha a pele sozinha (padrão, o da NVIDIA); 1/2 = o personagem marcado por pixel (medido pior) |
+
+No painel os ajustes finos têm três casas decimais: Shift + arrastar anda 1/10 do normal, e a roda do mouse sobre o
+deslizador soma 0,01 (0,001 com Shift). Duplo clique volta ao padrão.
 
 ## Online e anti-cheat
 

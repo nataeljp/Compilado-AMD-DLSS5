@@ -288,8 +288,8 @@ bool Rede::Prepara(ID3D12GraphicsCommandList* c, const ParamsRede& p)
             memcpy(tabelaAplicada, p.tabela, sizeof tabelaAplicada);
         }
     }
-    fi.control_tone = porPixel ? 1.f : std::clamp(p.tom, -1.f, 4.f);
-    fi.control_structure = porPixel ? 1.f : std::clamp(p.estrutura, -1.f, 4.f);
+    fi.control_tone = porPixel ? 1.f : std::clamp(p.tom, -2.f, 8.f);
+    fi.control_structure = porPixel ? 1.f : std::clamp(p.estrutura, -2.f, 8.f);
     fi.control_skin = porPixel ? 1.f : std::clamp(p.pele, -1.f, 4.f);
     fi.control_other = porPixel ? 1.f : std::clamp(p.outro, -1.f, 4.f);
     fi.control_style = porPixel ? 1.f : std::clamp(p.estilo, -1.f, 4.f);

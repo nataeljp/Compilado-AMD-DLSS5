@@ -1004,7 +1004,7 @@ struct App
             CopiaParaRede(c);
         }
         // gradacao do Model B/C (constantes do kernel da NVIDIA), escalada pelo tom local
-        const float tg = std::clamp(cfg.ngx.tomLocal, 0.f, 1.f);
+        const float tg = std::clamp(cfg.ngx.tomLocal, 0.f, 2.f);
         float kExp = 0, kCon = 0, kSat = 0;
         if (cfg.ngx.modelo == 1)
             kExp = -0.10f * tg, kCon = -0.25f * tg, kSat = -0.10f * tg;
@@ -1033,7 +1033,7 @@ struct App
         // pele e objetos separados: quanto do DLSS 5 entra em cada grupo (o ControlMask da NVIDIA)
         Tex* estMascara = MascaraAtiva() && cfg.dev.PorIntensidade() ? mascara.Estado() : nullptr;
         for (int g = 0; g < 4; ++g)
-            kc.dlssGrupo[g] = std::clamp(cfg.dev.grupo[g].dlss, 0.f, 1.f);
+            kc.dlssGrupo[g] = std::clamp(cfg.dev.grupo[g].dlss, 0.f, 2.f);
         kc.usaMascara = estMascara ? 1u : 0u;
         if (estMascara)
             estMascara->Para(c, SRV);
