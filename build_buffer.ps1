@@ -4,7 +4,8 @@ param([string]$Saida = '')
 $ErrorActionPreference = 'Stop'
 $raiz = $PSScriptRoot
 if (-not $Saida) { $Saida = "$raiz\bin\captura" }
-$vs = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat'
+$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+$vs = Join-Path (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath) 'VC\Auxiliary\Build\vcvars64.bat'
 New-Item -ItemType Directory -Force $Saida, "$raiz\obj\buffer" | Out-Null
 $flags = '/nologo /std:c++20 /EHsc /O2 /MT /W3 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOMINMAX /permissive- /Zc:__cplusplus /utf-8'
 $cli = "`"$raiz\src\buffer\ClienteBuffer.cpp`""

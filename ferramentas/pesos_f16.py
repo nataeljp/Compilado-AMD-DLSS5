@@ -33,7 +33,11 @@ for raiz, pastas, arqs in os.walk(orig):
                 f16ok = True
         if not f16ok:
             if not os.path.exists(d):
+                # so pesos (.f32, nunca reescritos) vao por hardlink; DLLs, modulos HIP e shaders sao copiados, porque o
+                # monta_runtime troca alguns deles e escrever num hardlink altera tambem o pacote de origem
                 try:
+                    if not a.endswith('.f32'):
+                        raise OSError
                     os.link(s, d)
                 except OSError:
                     shutil.copy2(s, d)

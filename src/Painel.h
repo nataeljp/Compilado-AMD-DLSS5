@@ -23,6 +23,7 @@ struct EstadoPainel
     double fracaoRede = 1; // fracao dos quadros com resposta nova da rede
     int fonte = 0;               // Modo de Rede: 0 captura de video, 1 captura de buffer
     std::string estadoBuffer;    // estado da captura de buffer
+    std::string estadoMascara;   // classificador da mascara de desenvolvedor
 };
 
 struct AcoesPainel

@@ -19,6 +19,10 @@ struct ParamsRede
     int passes = 1;         // 1..3 (cada passe roda a rede inteira de novo)
     bool redeCompleta = true; // os 71 blocos (sem pular 42/43/46)
     float suaviza = 0.f;    // suavizacao temporal da saida (precisa de movimento), 0..0,8
+    // mascara de desenvolvedor (runtime v4): os controles vao por pixel (o alfa da entrada leva grupo e peso) e esta
+    // tabela diz os de cada grupo; g = 0 e o cenario, em tabela[g*8 + k], k = tom, estrutura, pele, outro, estilo/128
+    bool mascaraPixel = false;
+    float tabela[40] = {};
 };
 
 // A rede roda numa fila D3D12 so dela (a da sessao do runtime): a ponte do runtime faz a fila da sessao esperar o HIP
@@ -53,6 +57,7 @@ class Rede
     // profundidade dinamica (runtime v3): blocos residuais pulados a partir do proximo quadro; false = recusado/ausente
     bool DefineProfundidade(const std::vector<uint32_t>& blocos);
     bool TemProfundidade() const { return setSkip != nullptr; }
+    bool TemMascara() const { return setMask != nullptr; } // runtime v4: controles por pixel
     std::string Status();
     std::string UltimoErro();
 
@@ -69,6 +74,9 @@ class Rede
     Tex entrada, resposta;
     HMODULE mod = nullptr;
     int32_t (*setSkip)(void*, const uint32_t*, uint32_t) = nullptr;
+    int32_t (*setMask)(void*, uint32_t, const float*, uint32_t) = nullptr;
+    bool mascaraLigada = false;
+    float tabelaAplicada[40] = {};
     LmxxfNrApi api{};
     void* ctx = nullptr;
     LmxxfNrJob job{};

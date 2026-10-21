@@ -1,7 +1,10 @@
-// Jogo de teste da captura de buffer: faz o papel do jogo com o mesmo ClienteBuffer que vai dentro dele (sem ganchos).
+﻿// Jogo de teste da captura de buffer: faz o papel do jogo com o mesmo ClienteBuffer que vai dentro dele (sem ganchos).
 // Le uma sequencia de gera_sintetico_buffer.py (cor, movimento e profundidade exatos), entrega cada quadro ao cliente
 // como o upscaler do jogo entregaria e grava a cor que sai (com a edicao do overlay somada).
-// uso: JogoTeste.exe <sequencia> <saida> [--voltas N] [--fps F]   (grava so a ultima volta)
+// uso: JogoTeste.exe <sequencia> <saida> [--voltas N] [--fps F] [--laco]   (grava so a ultima volta)
+// --laco: a sequencia e um laco (gera_sintetico_buffer.py --laco): so o primeiro quadro avisa corte de cena
+// --render R: como o Gears (UE5 + FSR): movimento e profundidade na resolucao de render (R x a da cor), o movimento em
+//   unidade de tela (uv) com a escala = tamanho de render -- o que o FSR recebe de um jogo com escala de resolucao
 #include "../../src/buffer/ClienteBuffer.h"
 #include <d3d12.h>
 #include <dxgi1_6.h>
@@ -68,7 +71,8 @@ int wmain(int argc, wchar_t** argv)
     }
     const std::wstring seq = argv[1], saida = argv[2];
     int voltas = 3, fps = 30;
-    bool raw = false;
+    float render = 1.f;
+    bool raw = false, laco = false;
     std::wstring modulo;
     for (int i = 3; i + 1 < argc; ++i)
     {
@@ -78,9 +82,14 @@ int wmain(int argc, wchar_t** argv)
             fps = _wtoi(argv[i + 1]);
         if (!wcscmp(argv[i], L"--modulo"))
             modulo = argv[i + 1];
+        if (!wcscmp(argv[i], L"--render"))
+            render = std::clamp(float(_wtof(argv[i + 1])), 0.25f, 1.f);
     }
     for (int i = 3; i < argc; ++i)
+    {
         raw |= !wcscmp(argv[i], L"--raw");
+        laco |= !wcscmp(argv[i], L"--laco");
+    }
     CreateDirectoryW(saida.c_str(), nullptr);
     // tamanho e quadros: meta.jsonl
     FILE* f = nullptr;
@@ -96,7 +105,9 @@ int wmain(int argc, wchar_t** argv)
     };
     const UINT W = UINT(num("\"rede_w\":")), H = UINT(num("\"rede_h\":")), N = UINT(num("\"quadros\":"));
     const float perto = float(num("\"perto\":"));
-    printf("sequencia %ux%u, %u quadros, %d voltas a %d fps\n", W, H, N, voltas, fps);
+    const UINT RW = render < 1.f ? UINT(W * render + 0.5f) : W, RH = render < 1.f ? UINT(H * render + 0.5f) : H;
+    printf("sequencia %ux%u, %u quadros, %d voltas a %d fps; movimento e profundidade %ux%u%s\n", W, H, N, voltas, fps, RW,
+           RH, render < 1.f ? " (uv, como o UE5)" : "");
 
     WNDCLASSW wc{};
     wc.lpfnWndProc = Proc;
@@ -129,12 +140,12 @@ int wmain(int argc, wchar_t** argv)
     Ck(dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&cerca)), "cerca");
     HANDLE ev = CreateEventW(nullptr, FALSE, FALSE, nullptr);
 
-    auto cria = [&](Tex& t, DXGI_FORMAT fmt, UINT bpp, bool uav) {
+    auto cria = [&](Tex& t, DXGI_FORMAT fmt, UINT bpp, bool uav, UINT tw, UINT th) {
         D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
         D3D12_RESOURCE_DESC rd{};
         rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        rd.Width = W;
-        rd.Height = H;
+        rd.Width = tw;
+        rd.Height = th;
         rd.DepthOrArraySize = rd.MipLevels = 1;
         rd.Format = fmt;
         rd.SampleDesc.Count = 1;
@@ -145,12 +156,12 @@ int wmain(int argc, wchar_t** argv)
         t.bpp = bpp;
     };
     Tex cor, mov, prof;
-    cria(cor, DXGI_FORMAT_R16G16B16A16_FLOAT, 8, true);
-    cria(mov, DXGI_FORMAT_R32G32_FLOAT, 8, false);
-    cria(prof, DXGI_FORMAT_R32_FLOAT, 4, false);
+    cria(cor, DXGI_FORMAT_R16G16B16A16_FLOAT, 8, true, W, H);
+    cria(mov, DXGI_FORMAT_R32G32_FLOAT, 8, false, RW, RH);
+    cria(prof, DXGI_FORMAT_R32_FLOAT, 4, false, RW, RH);
     // um buffer de upload para os tres e um de leitura para a saida
-    const UINT64 tc = UINT64(cor.fp.Footprint.RowPitch) * H, tm = UINT64(mov.fp.Footprint.RowPitch) * H,
-                 tp = UINT64(prof.fp.Footprint.RowPitch) * H;
+    const UINT64 tc = UINT64(cor.fp.Footprint.RowPitch) * H, tm = UINT64(mov.fp.Footprint.RowPitch) * RH,
+                 tp = UINT64(prof.fp.Footprint.RowPitch) * RH;
     auto buf = [&](D3D12_HEAP_TYPE tipo, UINT64 tam, D3D12_RESOURCE_STATES e, ComPtr<ID3D12Resource>& b) {
         D3D12_HEAP_PROPERTIES hp{tipo};
         D3D12_RESOURCE_DESC rd{};
@@ -221,8 +232,34 @@ int wmain(int argc, wchar_t** argv)
             unsigned char* m = nullptr;
             up->Map(0, nullptr, (void**)&m);
             le_arquivo(L"orig", i, m, 8, cor.fp.Footprint.RowPitch);
-            le_arquivo(L"mv", i, m + tc, 8, mov.fp.Footprint.RowPitch);
-            le_arquivo(L"prof", i, m + tc + tm, 4, prof.fp.Footprint.RowPitch);
+            if (render < 1.f)
+            {
+                // resolucao de render: o ponto mais proximo; o movimento vira uv (o FSR multiplica pela escala)
+                static std::vector<float> mvc, pfc;
+                mvc.resize(size_t(W) * H * 2);
+                pfc.resize(size_t(W) * H);
+                le_arquivo(L"mv", i, reinterpret_cast<unsigned char*>(mvc.data()), 8, W * 8);
+                le_arquivo(L"prof", i, reinterpret_cast<unsigned char*>(pfc.data()), 4, W * 4);
+                for (UINT y = 0; y < RH; ++y)
+                {
+                    float* dm = reinterpret_cast<float*>(m + tc + size_t(y) * mov.fp.Footprint.RowPitch);
+                    float* dp = reinterpret_cast<float*>(m + tc + tm + size_t(y) * prof.fp.Footprint.RowPitch);
+                    const UINT sy = std::min(UINT((y + 0.5f) * H / RH), H - 1);
+                    for (UINT x = 0; x < RW; ++x)
+                    {
+                        const UINT sx = std::min(UINT((x + 0.5f) * W / RW), W - 1);
+                        const size_t k = size_t(sy) * W + sx;
+                        dm[2 * x] = mvc[2 * k] / float(W);
+                        dm[2 * x + 1] = mvc[2 * k + 1] / float(H);
+                        dp[x] = pfc[k];
+                    }
+                }
+            }
+            else
+            {
+                le_arquivo(L"mv", i, m + tc, 8, mov.fp.Footprint.RowPitch);
+                le_arquivo(L"prof", i, m + tc + tm, 4, prof.fp.Footprint.RowPitch);
+            }
             up->Unmap(0, nullptr);
             Ck(al->Reset(), "reset");
             Ck(cl->Reset(al.Get(), nullptr), "list");
@@ -235,7 +272,7 @@ int wmain(int argc, wchar_t** argv)
                 s.PlacedFootprint = t->fp;
                 s.PlacedFootprint.Offset = base;
                 cl->CopyTextureRegion(&d, 0, 0, 0, &s, nullptr);
-                base += UINT64(t->fp.Footprint.RowPitch) * H;
+                base += UINT64(t->fp.Footprint.RowPitch) * t->fp.Footprint.Height;
             }
             // como o upscaler deixaria: a saida em UAV, as entradas para leitura
             barreira(cor.r.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -246,10 +283,12 @@ int wmain(int argc, wchar_t** argv)
             e.corEstado = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
             e.mov = mov.r.Get();
             e.prof = prof.r.Get();
-            e.movEspacoW = W, e.movEspacoH = H;
+            e.movEspacoW = RW, e.movEspacoH = RH;
+            if (render < 1.f)
+                e.movEscalaX = float(RW), e.movEscalaY = float(RH); // uv -> pixels de render, como o UE5 passa ao FSR
             e.perto = perto;
             e.profInvertida = e.profInfinita = true;
-            e.reset = i == 0;
+            e.reset = i == 0 && (!laco || v == 0);
             const uint64_t n = cli.Quadro(cl.Get(), e);
             if (mapa && n)
                 fprintf(mapa, "{\"jogo\":%llu,\"seq\":%u,\"volta\":%d}\n", (unsigned long long)n, i, v);

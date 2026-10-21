@@ -1,0 +1,7 @@
+# o patch do lmxxf e aplicado byte a byte: sem conversao de fim de linha
+*.patch -text
+*.lib binary
+*.ico binary
+*.png binary
+*.onnx binary
+*.dll binary

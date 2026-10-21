@@ -70,9 +70,13 @@ static bool MontaAssetsPequena(const std::wstring& pasta, std::wstring& saida)
             fs::copy_file(it->path(), alvo, fs::copy_options::overwrite_existing, ec);
         }
     }
+    // remove antes de copiar: se o destino for um hardlink da grande, sobrescrever alteraria a grande tambem
     for (auto& e : fs::directory_iterator(peq, ec))
         if (e.is_regular_file())
+        {
+            fs::remove(dst / e.path().filename(), ec);
             fs::copy_file(e.path(), dst / e.path().filename(), fs::copy_options::overwrite_existing, ec);
+        }
     fs::last_write_time(marca, fs::last_write_time(peq / L"network-layout.txt", ec), ec);
     Log("rede", "assets da rede pequena montados: " + Utf8(saida));
     return fs::exists(marca);
@@ -103,6 +107,10 @@ bool Rede::Inicia(Gpu& g, const std::wstring& pasta, bool pequena)
                         cap.max_input_height, cap.hip_ready, cap.gfx1201_target));
     setSkip = reinterpret_cast<int32_t (*)(void*, const uint32_t*, uint32_t)>(GetProcAddress(mod, "LmxxfNrSetDynamicSkip"));
     Log("rede", setSkip ? "profundidade dinamica disponivel (runtime v3)" : "runtime sem profundidade dinamica");
+    setMask = reinterpret_cast<int32_t (*)(void*, uint32_t, const float*, uint32_t)>(GetProcAddress(mod, "LmxxfNrSetMask"));
+    Log("rede", setMask ? "controles por pixel disponiveis (runtime v4, mascara de desenvolvedor)"
+                        : "runtime sem controles por pixel (anterior ao v4)");
+    mascaraLigada = false;
     assets = pasta + L"\\native-game-tiled-assets";
     if (pequena && !MontaAssetsPequena(pasta, assets))
     {
@@ -270,11 +278,21 @@ bool Rede::Prepara(ID3D12GraphicsCommandList* c, const ParamsRede& p)
     fi.passes = (uint32_t)std::clamp(p.passes, 1, 3);
     if (p.redeCompleta)
         fi.flags |= LMXXF_NR_FRAME_FLAG_FULL_NETWORK;
-    fi.control_tone = std::clamp(p.tom, -1.f, 4.f);
-    fi.control_structure = std::clamp(p.estrutura, -1.f, 4.f);
-    fi.control_skin = std::clamp(p.pele, -1.f, 4.f);
-    fi.control_other = std::clamp(p.outro, -1.f, 4.f);
-    fi.control_style = std::clamp(p.estilo, -1.f, 4.f);
+    // mascara de desenvolvedor: os controles saem da tabela, por pixel (os pesos do bloco 0 ficam os de fabrica)
+    const bool porPixel = p.mascaraPixel && setMask;
+    if (porPixel != mascaraLigada || (porPixel && memcmp(p.tabela, tabelaAplicada, sizeof tabelaAplicada) != 0))
+    {
+        if (setMask && setMask(ctx, porPixel ? 1u : 0u, porPixel ? p.tabela : nullptr, porPixel ? 40u : 0u) == LMXXF_NR_OK)
+        {
+            mascaraLigada = porPixel;
+            memcpy(tabelaAplicada, p.tabela, sizeof tabelaAplicada);
+        }
+    }
+    fi.control_tone = porPixel ? 1.f : std::clamp(p.tom, -1.f, 4.f);
+    fi.control_structure = porPixel ? 1.f : std::clamp(p.estrutura, -1.f, 4.f);
+    fi.control_skin = porPixel ? 1.f : std::clamp(p.pele, -1.f, 4.f);
+    fi.control_other = porPixel ? 1.f : std::clamp(p.outro, -1.f, 4.f);
+    fi.control_style = porPixel ? 1.f : std::clamp(p.estilo, -1.f, 4.f);
     if (fi.control_tone != 1.f || fi.control_structure != 1.f || fi.control_skin != 1.f || fi.control_other != 1.f ||
         fi.control_style != 1.f)
         fi.flags |= LMXXF_NR_FRAME_FLAG_CONTROLS;

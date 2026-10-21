@@ -8,8 +8,10 @@ dele (ver *Modo de Rede*).
 
 ## Como usar
 
-Para rodar basta a pasta **`bin`**: `DLSS5Overlay.exe` e `runtime\` (runtime HIP v3 do lmxxf + adaptador + pesos);
-`config.json`, `painel.ini` e `overlay.jsonl` (log) são criados ao lado do exe. O resto do projeto é fonte e ferramentas.
+O pacote pronto fica na aba **Releases** (zip). Para rodar basta a pasta dele (ou `bin\` depois de compilar):
+`DLSS5Overlay.exe`, `runtime\` (runtime HIP v4 do lmxxf + adaptador + pesos), `captura\DLSS5Buffer.dll` (captura de
+buffer) e `ml\` (classificador da máscara). `config.json`, `painel.ini` e `overlay.jsonl` (log) são criados ao lado do
+exe. O resto do repositório é fonte e ferramentas.
 Ao abrir aparece na hora a tela "NR" com a barra de carregamento. A primeira abertura depois de cada atualização compila
 os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as aberturas seguintes leem do cache.
 
@@ -49,6 +51,43 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
     cópia de 50% do objeto dá 0,98).
   - Painel sobre o jogo: jogos que leem o mouse por entrada bruta (Unreal) travam o cursor do Windows; o módulo pega o
     movimento bruto antes do jogo, manda ao painel e entrega zero ao jogo (a mira não mexe, o jogo não pausa).
+  - Diagnóstico: `captura\DLSS5Buffer.log` registra a cada 5 s os despachos do FSR (por segundo), a resolução de render,
+    resets, trocas de saída, jitter, e do lado do overlay quantos quadros foram exportados e receberam edição, com a
+    idade média e máxima da edição em quadros.
+
+### Pele e objetos (máscara)
+
+Como o *Developer Masking* + *Show Masks* do painel da NVIDIA. Painel → **PELE E OBJETOS (MÁSCARA)**: *Separar pele e
+objetos* liga o classificador, e cada grupo (pele, cabelo, personagem, objetos) recebe **quanto do DLSS 5 entra nele**
+(1 = o efeito inteiro da rede, 0 = o quadro original). É o *ControlMask* do binário da NVIDIA: o último passo mistura,
+por pixel, o quadro e a resposta da rede (`lerp(original, rede, máscara)`), com a rede rodando uma vez só.
+
+- **A rede já acha a pele sozinha.** O controle de personagem dentro da rede é o *UseAutoMask* da NVIDIA (Avançado →
+  Máscara interna da rede), e é por isso que a rede atua mais no personagem que no cenário — a NVIDIA faz igual. Medido
+  contra a saída real da NVIDIA (Lara, 1080p): rede achando a pele sozinha **45,8 dB** (45,5 no personagem); dizer à
+  rede, pixel a pixel, onde é personagem 44,1 dB (`mascaraExplicita` 1); e ainda tirar dele o canal de cenário 43,2 dB
+  (`mascaraExplicita` 2). Por isso a máscara não entra na rede por padrão: ela só decide quanto do efeito fica em cada
+  grupo.
+- Avançado → **Ajuste por grupo dentro da rede (experimental)**: nosso, não é da NVIDIA. Estrutura, tom e modelo
+  (A/B/C) próprios por grupo, nos canais de controle da primeira camada da rede (tom, estrutura, pele, outro, estilo),
+  que passam a valer por pixel (runtime v4, `LmxxfNrSetMask`). A rede mistura cada pixel com os vizinhos: numa região
+  pequena (a pele) o ajuste rende ~metade do que rende na tela inteira. "Pele realista" = Model C, estrutura 0 e
+  tom −0,5 na pele e no cabelo.
+- **O que é cada coisa** (classificador em `ml\`, ONNX Runtime + DirectML na mesma placa, numa thread própria — o
+  quadro nunca espera): um detector de pessoas (YOLOX-tiny) e a segmentação da cena (LR-ASPP) acham os personagens; no
+  recorte de cada um, um modelo de partes (MediaPipe multiclass) separa a silhueta, a pele do rosto e do corpo, o cabelo
+  e a roupa/armadura; objetos (veículos, móveis, plantas) vêm da cena. Nunca por cor.
+- **Rastreio**: a classificação chega alguns quadros depois e é trazida até o quadro atual pelo movimento acumulado
+  (exato na captura de buffer, fluxo óptico no vídeo); entre uma classificação e outra a máscara segue o movimento. A
+  borda segue a cor e a **profundidade** do quadro; fundo recém-descoberto volta a ser cenário; o que entra na tela herda
+  da mesma superfície (profundidade igual).
+- Medido com movimento extremo (câmera até 336 px/quadro, personagem recortado até 317 px/quadro,
+  `ferramentas\avalia_mascara.py`): personagem coberto (cobertura 1,00), rastro da máscara 0,04, IoU 0,85; a imagem
+  final segue sem fantasma (`fantasma_textura` −0,001, igual à máscara desligada).
+- Custo: ~1 ms por quadro na GPU; a classificação (~30 ms) roda numa thread, de 2 a 15 vezes por segundo
+  (*Classificações/s*, padrão 6).
+- Com todos os grupos em 1 e sem ajuste dentro da rede (ou a máscara desligada) a saída é idêntica byte a byte à de
+  antes.
 
 | Atalho | Ação |
 |---|---|
@@ -106,6 +145,10 @@ Os parâmetros do DLSS 5 seguem os nomes que a NVIDIA expõe no NGX (os mesmos d
 | `ritmo` | 1..4 | 1 = a rede recomeça assim que termina; N = no máximo uma vez a cada N quadros (libera GPU para o jogo) |
 | `reusoVit` | true/false | reuso adaptativo do ViT do runtime lmxxf (vale ao reabrir) |
 | `forca`, `modo`, `fpsMax`, `ocultaDeGravacoes` | | força da edição final, modo de exibição, teto de FPS, esconder de prints/OBS |
+| `mascaraDev`, `mostraMascara`, `taxaMascara` | | pele e objetos: liga, pinta os grupos (Show Masks), classificações por segundo (2..15) |
+| `grupoNDlss` | 0..1, N = 1..4 | pele, cabelo, personagem, objetos: quanto do DLSS 5 entra no grupo (o ControlMask da NVIDIA) |
+| `grupoNEstrutura`, `grupoNTom`, `grupoNModelo` | N = 1..4 | experimental, dentro da rede: estrutura e tom a mais/menos que o global; modelo −1 = global, 0/1/2 = A/B/C |
+| `mascaraExplicita` | 0/1/2 | 0 = a rede acha a pele sozinha (padrão, o da NVIDIA); 1/2 = o personagem marcado por pixel (medido pior) |
 
 ## Online e anti-cheat
 
@@ -115,21 +158,59 @@ um. A captura de buffer coloca código no jogo e por isso é recusada com anti-c
 
 ## Compilar
 
-`build.ps1` (Visual Studio 2022 Build Tools, Windows SDK 10.0.26100) gera `bin\DLSS5Overlay.exe` com o ícone de
-`recursos\` ("NR" em fundo vermelho); `monta_runtime.ps1` monta `bin\runtime` com o runtime v3 (pesos exatos em FP16
-gravados como `.f16`: metade do tamanho, saída idêntica bit a bit; pesos do histórico extraídos do `nvngx_dlssnr` 310.8);
-`empacota.ps1` gera o zip de distribuição. `ferramentas\compara_ref.py` mede o overlay contra a saída real da NVIDIA.
-Gravações do jogo (Ctrl+Shift+G) podem ser reproduzidas com `--reproduz <pasta> [--atraso N]` (N = a resposta da rede
-entra N quadros depois, para medir o modo assíncrono); `ferramentas\compara_atraso.py` e `cintilacao.py` medem o custo
-do atraso e a cintilação. `ferramentas\gera_sintetico.py` gera uma sequência com movimento exato conhecido e
-`avalia_sintetico.py` mede erro e cintilação contra a referência sem ruído (a média das respostas alinhadas).
+Precisa: Visual Studio 2022 com C++ (e Windows SDK 10.0.26100), git, Python 3 com numpy (pesos e ferramentas) e,
+para gerar o pacote de pesos, o `nvngx_dlssnr.dll` 310.8 da NVIDIA (vem com jogos que trazem o DLSS 5).
+
+```
+runtime\lmxxf\compilar.ps1 -Modulos   # lmxxf (commit a9b7a52) + patch -> LmxxfNrRuntime_v4.dll e os 7 modulos HIP da mascara
+runtime\adaptador\compilar.ps1        # adaptador LmxxfNrRuntime.dll (API do AMDNR por cima do lmxxf)
+build.ps1                             # bin\DLSS5Overlay.exe
+build_buffer.ps1                      # bin\captura\DLSS5Buffer.dll e obj\JogoTeste.exe
+monta_runtime.ps1 -Pesos <pasta DLSS5-AMD> -DllNvidia <nvngx_dlssnr.dll 310.8> [-DllPequena <nvngx_dlssnr.dll 310.9.16>]
+empacota.ps1 -Versao X                # zip para a aba Releases
+```
+
+- `monta_runtime.ps1` monta `bin\runtime`: os pesos do pacote DLSS5-AMD (a pasta com `native-game-tiled-assets`), com
+  os pesos exatos em FP16 gravados como `.f16` (metade do tamanho, saída idêntica bit a bit), o runtime v4, os pesos do
+  histórico extraídos do `nvngx_dlssnr` 310.8 e, com `-DllPequena`, a rede pequena da 310.9.16. Nada é escrito por cima
+  de hardlink: os pesos vão por hardlink e o resto é copiado.
+- `bin\ml`: `onnxruntime.dll` do pacote NuGet `Microsoft.ML.OnnxRuntime.DirectML` 1.24.4, `DirectML.dll` do
+  `Microsoft.AI.DirectML` 1.15.4, `deteccao.onnx` = `yolox_tiny.onnx` do release 0.1.1rc0 do YOLOX, e `cena.onnx` /
+  `partes.onnx` por `ferramentas\exporta_classificadores.py` (o `.tflite` é o `selfie_multiclass_256x256` do MediaPipe).
+
+Ferramentas de medida: `ferramentas\compara_ref.py` mede o overlay contra a saída real da NVIDIA. Gravações do jogo
+(Ctrl+Shift+G) podem ser reproduzidas com `--reproduz <pasta> [--atraso N]` (N = a resposta da rede entra N quadros
+depois, para medir o modo assíncrono); `compara_atraso.py` e `cintilacao.py` medem o custo do atraso e a cintilação.
+`gera_sintetico.py` gera uma sequência com movimento exato conhecido e `avalia_sintetico.py` mede erro e cintilação
+contra a referência sem ruído. Captura de buffer: `gera_sintetico_buffer.py` (`--pessoa`, `--laco`) e
+`obj\JogoTeste.exe` (um jogo D3D12 que chama o FSR 3.1 com a sequência; `--render 0.59` imita o UE5 com escala de
+resolução: movimento e profundidade na resolução de render, movimento em uv), com `fantasma_textura.py` e
+`avalia_mascara.py`.
+
+### Estrutura
+
+| Pasta | O que tem |
+|---|---|
+| `src\` | o overlay (captura, fluxo óptico, rede, composição, máscara, painel) |
+| `src\buffer\`, `src\jogo\` | protocolo da captura de buffer e o módulo `DLSS5Buffer.dll` (gancho do FSR 3.1 no jogo) |
+| `runtime\lmxxf\` | o patch das mudanças no runtime do lmxxf (sobre o commit a9b7a52) e o script que clona e compila |
+| `runtime\adaptador\` | o adaptador `LmxxfNrRuntime.dll` |
+| `ferramentas\` | pesos (FP16, histórico, rede pequena), medidas contra a NVIDIA, sequências sintéticas, jogo de teste |
+| `externo\` | Dear ImGui, Detours, cabeçalhos do FidelityFX, ONNX Runtime e DirectML, conversor de pesos do guentra |
+| `licencas\`, `recursos\` | licenças de terceiros; ícone |
 
 ## Créditos e licenças
 
+- Este projeto: GPL-3.0 (`LICENSE`). Os componentes de terceiros mantêm as licenças deles (abaixo e em `licencas\`).
 - Rede e runtime HIP: **lmxxf** (MIT) — `licencas/LICENSE.lmxxf`. Pesos da rede: NVIDIA (DLSS 5), convertidos do
   `nvngx_dlssnr.dll`.
-- Interface: **Dear ImGui** (MIT) — `licencas/LICENSE.imgui.txt`.
+- Conversor de pesos `externo/guentra/convert_dll.py`: **guentra/dlss5-amd-hip-linux** (MIT) — `licencas/LICENSE.guentra`.
+- Interface: **Dear ImGui** (MIT) — `licencas/LICENSE.imgui.txt`. Captura de buffer: **Microsoft Detours** (MIT) e
+  cabeçalhos do **FidelityFX SDK** (MIT) — `licencas/LICENSE.detours.txt`, `licencas/LICENSE.fidelityfx.md`.
 - Composição de referência e gradação dos Models B/C conforme a análise publicada em
   **zmodelerlover/dlss5-neural-amd** (MIT, `docs/nvidia-parity.md`, `docs/styles-model-abc.md`); ACES de Stephen Hill como
   no **RenoDX** de clshortfuse (MIT). Implementação própria.
 - Fluxo óptico inspirado no **iMMERSE Launchpad** (MartysMods): mesma ideia, nenhum código dele.
+- Máscara de desenvolvedor (`ml\`): **ONNX Runtime** (MIT) com **DirectML** (Microsoft); modelos **LR-ASPP** do
+  torchvision (BSD-3), **MediaPipe** Selfie Multiclass (Apache-2.0) e **YOLOX-tiny** (Apache-2.0) — `licencas/MODELOS_MASCARA.txt`.
+  `ferramentas\exporta_classificadores.py` refaz `cena.onnx` e `partes.onnx`; `deteccao.onnx` é o ONNX publicado pelo YOLOX.

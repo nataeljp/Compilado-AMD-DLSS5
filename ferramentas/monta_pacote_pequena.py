@@ -1,7 +1,7 @@
 # Pacote da rede pequena (310.9.16) para o runtime: so os arquivos que mudam em relacao a rede grande + network-layout.txt
 # (blocos ausentes e deslocamentos de janela medidos) + a cabeca de historico da propria pequena. O overlay monta a pasta
 # completa (hardlinks da grande + estes) na primeira vez que a rede pequena e escolhida.
-# uso: python monta_pacote_pequena.py <pasta de trabalho> <bin\runtime>
+# uso: python monta_pacote_pequena.py <pasta de trabalho> <bin\runtime> <nvngx_dlssnr.dll 310.9.16> <nvngx_dlssnr.dll 310.8>
 import json, re, shutil, subprocess, sys
 from pathlib import Path
 import numpy as np
@@ -12,7 +12,8 @@ trab, runtime = Path(sys.argv[1]), Path(sys.argv[2])
 # confirmada pela busca medida contra a NVIDIA, ferramentas/busca_deslocamentos.py)
 SHIFT = '3:0,4:3,7:0,8:3,13:0,14:3,21:0,22:3,29:0,30:3,40:1,41:2,48:1,49:2,56:1,57:2,62:1,63:2,66:1,69:2'
 
-subprocess.run([sys.executable, str(AQUI / 'monta_rede_pequena.py'), str(trab / 'mapa.json'), str(trab / 'saida')], check=True)
+subprocess.run([sys.executable, str(AQUI / 'monta_rede_pequena.py'), str(trab / 'mapa.json'), str(trab / 'saida'),
+                sys.argv[3], sys.argv[4]], check=True)
 mapa = json.loads((trab / 'mapa.json').read_text())
 mapeados = {int(v) for v in mapa['mapa_pequena_para_grande'].values()}
 base = runtime / 'native-game-tiled-assets'

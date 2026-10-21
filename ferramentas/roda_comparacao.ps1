@@ -1,8 +1,8 @@
 # Roda o overlay em modo imagem sobre a foto "off" da NVIDIA com um config e compara com a "on".
-# uso: roda_comparacao.ps1 -Nome x -Config '{ "alturaRede": 2160 }' [-Quadros 8] [-Runtime pasta]
+# -Off/-On: as fotos de comparacao da NVIDIA (ex.: nvidia-dlss-5-zorah-comparison-002-off.jpg / -on.jpg)
+# uso: roda_comparacao.ps1 -Nome x -Off foto_off.jpg -On foto_on.jpg -Config '{ "alturaRede": 2160 }' [-Quadros 8] [-Runtime pasta]
 param([Parameter(Mandatory)][string]$Nome, [string]$Config = '{}', [int]$Quadros = 8,
-      [string]$Off = 'C:\Users\natael\Downloads\nvidia-dlss-5-zorah-comparison-002-off.jpg',
-      [string]$On = 'C:\Users\natael\Downloads\nvidia-dlss-5-zorah-comparison-002-on.jpg',
+      [Parameter(Mandatory)][string]$Off, [Parameter(Mandatory)][string]$On,
       [string]$Runtime = '', [string]$Pula = '')
 $ErrorActionPreference = 'Stop'
 $raiz = Split-Path $PSScriptRoot

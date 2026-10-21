@@ -2,16 +2,17 @@
 # (WEIGHTS_HT, 71 blocos): cada bloco da pequena tem o formato exato de um bloco da grande; os pesos dela entram nas
 # posicoes equivalentes (codificador: os 2 ultimos de cada estagio, o ultimo reduz; decodificador: os 2 primeiros, o
 # primeiro amplia; ViT, entrada e saida iguais) e o runtime pula as posicoes que sobram. O arquivo hibrido passa pelo
-# conversor MIT do guentra sem mudanca. So leitura das DLLs (nada e executado).
+# conversor MIT do guentra (externo/guentra) sem mudanca. So leitura das DLLs (nada e executado).
 #
 # uso: python monta_rede_pequena.py <saida.json do mapa> <pasta de saida dos pesos convertidos>
+#                                   <nvngx_dlssnr.dll 310.9.16> <nvngx_dlssnr.dll 310.8> [--identidade]
 import hashlib, importlib.util, json, sys
 from pathlib import Path
 import pefile
 
-RAIZ = Path(r'D:\AI_Claude\dlssnr_rebuild')
-DLL_NOVA = RAIZ / 'nvidia/novo_310_9_16/nvngx_dlssnr.dll'
-DLL_310_8 = RAIZ / 'nvidia/nvngx_dlssnr_5b944399.dll'
+RAIZ = Path(__file__).resolve().parents[1]
+ARGS = [a for a in sys.argv[1:] if not a.startswith('--')]
+DLL_NOVA, DLL_310_8 = Path(ARGS[2]), Path(ARGS[3])
 
 # bloco da rede pequena -> posicao na grande
 MAPA = {0: 0, 1: 3, 2: 4, 3: 7, 4: 8, 5: 13, 6: 14, 7: 21, 8: 22, 9: 29, 10: 30,
@@ -48,7 +49,7 @@ def registros(blob, conv):
 
 
 def main():
-    spec = importlib.util.spec_from_file_location('conv', RAIZ / 'terceiros/guentra/linux_dlssnr_convert_dll.py')
+    spec = importlib.util.spec_from_file_location('conv', RAIZ / 'externo/guentra/convert_dll.py')
     conv = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(conv)
     ht = bytearray(recurso(DLL_NOVA, 'WEIGHTS_HT'))
@@ -71,13 +72,13 @@ def main():
     if conv._u64(base, ao) != len(ht):
         raise SystemExit('o arquivo de pesos da 310.8 nao tem o tamanho do hibrido')
     base[ao:ao + len(ht)] = ht
-    saida = Path(sys.argv[2])
+    saida = Path(ARGS[1])
     saida.mkdir(parents=True, exist_ok=True)
     dll_h = saida.parent / 'nvngx_dlssnr_hibrido.bin'
     dll_h.write_bytes(base)
     conv.KNOWN_NVIDIA_SHA = hashlib.sha256(base).hexdigest()
     cache = conv.convert_nvidia_dll(dll_h, saida / 'pesos', layout_mode='amd-consumer-derived')
-    Path(sys.argv[1]).write_text(json.dumps({'mapa_pequena_para_grande': MAPA, 'pulados': PULADOS,
+    Path(ARGS[0]).write_text(json.dumps({'mapa_pequena_para_grande': MAPA, 'pulados': PULADOS,
                                              'registros_trocados': len(trocados), 'pesos': str(cache)}, indent=1))
     print('registros trocados', len(trocados), 'de', len(rs), '| pulados:', ','.join(map(str, PULADOS)))
     print('pesos:', cache)

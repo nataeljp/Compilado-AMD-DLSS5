@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-RAIZ = Path(r'D:\AI_Claude\DLSS5-Overlay')
+RAIZ = Path(__file__).resolve().parents[1]
 ENT = RAIZ / 'referencia_nvidia/single-frame-inputs__1920x1080.png'
 NV = np.asarray(Image.open(RAIZ / 'referencia_nvidia/single-frame-outputs__1920x1080_nvidia.png').convert('RGB')).astype(float)
 CFG = RAIZ / 'comparacao/busca.config.json'

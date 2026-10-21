@@ -8,7 +8,7 @@ import numpy as np
 mapa = json.loads(Path(sys.argv[1]).read_text())
 mapeados = {int(v) for v in mapa['mapa_pequena_para_grande'].values()}
 pesos, rt = Path(sys.argv[2]), Path(sys.argv[3])
-orig = Path(r'D:\AI_Claude\DLSS5-Overlay\bin\runtime')
+orig = Path(__file__).resolve().parents[1] / 'bin' / 'runtime'
 if rt.exists():
     shutil.rmtree(rt)
 for raiz, _, arqs in os.walk(orig):

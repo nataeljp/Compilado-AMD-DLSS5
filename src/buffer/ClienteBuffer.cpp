@@ -581,10 +581,17 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
     }
     if (!exporta && k < 0 && !ativos)
         return 0;
+    ++diag.quadros;
+    if (exporta)
+        ++diag.exportados;
     if (k >= 0)
     {
         cab->lido[k] = n;
         cab->quadroAplicado = n;
+        const uint64_t idade = n - cab->edicao[k].quadro;
+        ++diag.aplicados;
+        diag.idadeSoma += idade;
+        diag.idadeMax = std::max(diag.idadeMax, idade);
     }
     if (exporta)
     {

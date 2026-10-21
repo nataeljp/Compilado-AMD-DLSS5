@@ -1,20 +1,22 @@
 # Extrai do nvngx_dlssnr.dll 310.8 os pesos da cabeca de historico da rede (post70-history-head.f16, 32 coeficientes) e
 # o escalar de mistura (post70-blend.f16), que o modo temporal 1 do runtime lmxxf exige. Mesma recuperacao do
 # lmxxf (Development/HIP/experiments/post-history-gate/extract_gate.py, MIT): a linha 6 da cabeca 16x32 do registro do
-# bloco 70 (21808 bytes, f16 a partir de 0x5130), sem ajuste nenhum. O arquivo de pesos e lido pelo parser do guentra (MIT).
+# bloco 70 (21808 bytes, f16 a partir de 0x5130), sem ajuste nenhum. O arquivo de pesos e lido pelo parser do guentra
+# (MIT, externo/guentra). Precisa do lmxxf clonado (runtime/lmxxf/compilar.ps1, ou LMXXF_FONTE=<pasta do lmxxf>).
 #
 # uso: python extrai_historico.py <nvngx_dlssnr.dll 310.8> <pasta native-game-tiled-assets>
-import hashlib, importlib.util, json, sys
+import hashlib, importlib.util, json, os, sys
 from pathlib import Path
 import numpy as np
 
-RAIZ = Path(r'D:\AI_Claude\dlssnr_rebuild')
+RAIZ = Path(__file__).resolve().parents[1]
+LMXXF = Path(os.environ.get('LMXXF_FONTE', RAIZ / 'runtime/lmxxf/fonte'))
 dll, saida = Path(sys.argv[1]), Path(sys.argv[2])
 
-spec = importlib.util.spec_from_file_location('conv', RAIZ / 'terceiros/guentra/linux_dlssnr_convert_dll.py')
+spec = importlib.util.spec_from_file_location('conv', RAIZ / 'externo/guentra/convert_dll.py')
 conv = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(conv)
-sys.path.insert(0, str(RAIZ / 'lmxxf/Development'))
+sys.path.insert(0, str(LMXXF / 'Development'))
 from native_split_reference import bits  # noqa: E402
 
 dados = dll.read_bytes()

@@ -1,4 +1,4 @@
-// DLSS5Buffer.dll: o modulo que o DLSS5 Overlay coloca no jogo aberto (Modo de Rede = captura de buffer).
+﻿// DLSS5Buffer.dll: o modulo que o DLSS5 Overlay coloca no jogo aberto (Modo de Rede = captura de buffer).
 // Nao roda rede nenhuma: so pega, depois do upscale, o que o jogo entrega ao FSR 3.1+ (cor sem HUD, profundidade,
 // movimento, exposicao, camera) e conversa com o overlay pelo ClienteBuffer (buffer/Protocolo.h). Ganchos:
 //   - ffxCreateContext / ffxDispatch da DLL do upscaler (amd_fidelityfx_upscaler_dx12.dll; FSR 3.1 antigo:
@@ -11,6 +11,8 @@
 #include "ffx_api.h"
 #include "ffx_upscale.h"
 #include <detours.h>
+#include <algorithm>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <mutex>
@@ -367,6 +369,40 @@ ffxReturnCode_t Despacha(ffxContext* ctx, const ffxDispatchDescHeader* desc)
     e.hdr = conhecidas ? (flags & FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE) != 0 : Float(cor->GetDesc().Format);
     if (g_cli.Quadro(lista, e))
         g_lista = lista;
+    {
+        // diagnostico (a cada 5 s): o que o jogo de verdade faz e o teste nao tem -- despachos por segundo, tamanho de render
+        // variando (resolucao dinamica), resets, jitter, a saida trocando de textura e a idade da edicao aplicada
+        static ULONGLONG marca = 0;
+        static uint64_t despachos = 0, resets = 0, trocasSaida = 0;
+        static uint32_t rwMin = ~0u, rwMax = 0, rhMin = ~0u, rhMax = 0;
+        static float jMax = 0.f;
+        static ID3D12Resource* ultimaSaida = nullptr;
+        ++despachos;
+        resets += e.reset ? 1 : 0;
+        trocasSaida += cor != ultimaSaida ? 1 : 0;
+        ultimaSaida = cor;
+        rwMin = std::min(rwMin, u->renderSize.width), rwMax = std::max(rwMax, u->renderSize.width);
+        rhMin = std::min(rhMin, u->renderSize.height), rhMax = std::max(rhMax, u->renderSize.height);
+        jMax = std::max(jMax, std::max(std::fabs(e.jitterX), std::fabs(e.jitterY)));
+        const ULONGLONG agora = GetTickCount64();
+        if (!marca)
+            marca = agora;
+        if (agora - marca >= 5000)
+        {
+            const auto& d = g_cli.diag;
+            Log("FSR em %.1f s: %llu despachos (%.0f/s), render %ux%u..%ux%u, resets %llu, saida trocou %llu vezes, jitter max "
+                "%.2f | cliente: %llu quadros, %llu exportados, %llu com edicao (idade media %.1f, max %llu quadros)",
+                (agora - marca) / 1000.0, (unsigned long long)despachos, despachos * 1000.0 / double(agora - marca), rwMin,
+                rhMin, rwMax, rhMax, (unsigned long long)resets, (unsigned long long)trocasSaida, jMax,
+                (unsigned long long)d.quadros, (unsigned long long)d.exportados, (unsigned long long)d.aplicados,
+                d.aplicados ? double(d.idadeSoma) / double(d.aplicados) : 0.0, (unsigned long long)d.idadeMax);
+            g_cli.diag = {};
+            despachos = resets = trocasSaida = 0;
+            rwMin = rhMin = ~0u, rwMax = rhMax = 0;
+            jMax = 0.f;
+            marca = agora;
+        }
+    }
     {
         // diagnostico do mouse: quantos eventos brutos o jogo leu (e quantos foram para o painel)
         static ULONGLONG ultimo = 0;

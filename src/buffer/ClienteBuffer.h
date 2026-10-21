@@ -45,6 +45,12 @@ class ClienteBuffer
     void Encerra();
     // grava os passes na lista `c` (que o jogo vai submeter); devolve o numero do quadro (0 = nada gravado)
     uint64_t Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo& e);
+    // contadores para o log do modulo (diagnostico do jogo de verdade): quadros, exportados, com edicao aplicada e a idade
+    // da edicao aplicada (quadros do jogo desde o quadro em que a rede a fez)
+    struct Diag
+    {
+        uint64_t quadros = 0, exportados = 0, aplicados = 0, idadeSoma = 0, idadeMax = 0;
+    } diag;
     // a lista do ultimo quadro ja foi submetida nesta fila: sinaliza a cerca do jogo (chamar depois do Execute/Present)
     void Submetido(ID3D12CommandQueue* q);
     bool OverlayVivo() const;

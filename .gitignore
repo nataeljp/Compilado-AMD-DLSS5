@@ -1,9 +1,19 @@
+# saidas de build e execucao
 bin/
 obj/
+bin_teste/
+__pycache__/
+*.pyc
+# dados de medida (grandes, refeitos pelas ferramentas)
 *.rgba
 *.f16
 *.raw
 comparacao/
 referencia_nvidia/
-bin_teste/
-bin/gravacoes/
+# runtime: o lmxxf clonado por runtime\lmxxf\compilar.ps1 e as saidas do adaptador
+runtime/lmxxf/fonte/
+runtime/adaptador/*.dll
+runtime/adaptador/*.obj
+runtime/adaptador/*.res
+runtime/adaptador/*.lib
+runtime/adaptador/*.exp
