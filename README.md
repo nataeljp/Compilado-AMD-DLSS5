@@ -51,6 +51,13 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
     cópia de 50% do objeto dá 0,98).
   - Painel sobre o jogo: jogos que leem o mouse por entrada bruta (Unreal) travam o cursor do Windows; o módulo pega o
     movimento bruto antes do jogo, manda ao painel e entrega zero ao jogo (a mira não mexe, o jogo não pausa).
+  - "Mesma superfície" é decidida pela **distância radial** da câmera (o Z do jogo convertido com o FOV que ele passa ao
+    FSR): o Z de um ponto fora do centro muda quando a câmera gira, e num giro rápido ~70% da tela parecia outra
+    superfície — a edição vinha dos vizinhos na mesma distância e o letreiro claro era pintado de ciano no carro escuro
+    (o verde/ciano e o rastro do Gears). Os vizinhos que preenchem fundo recém-descoberto precisam ter a mesma cor, e o
+    conteúdo que entra pela borda num giro fica com o quadro original até a rede responder (antes: faixas esticadas).
+    Medido numa sequência com a câmera girando em 3D até ~300 px/quadro sobre um quadro HDR do Gears
+    (`gera_sintetico_buffer.py --giro`): pixels com ciano espúrio na imagem final 3,1% → 1,5%, sem faixas nem cópias.
   - Diagnóstico: `captura\DLSS5Buffer.log` registra a cada 5 s os despachos do FSR (por segundo), a resolução de render,
     resets, trocas de saída, jitter, e do lado do overlay quantos quadros foram exportados e receberam edição, com a
     idade média e máxima da edição em quadros.

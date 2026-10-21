@@ -385,7 +385,7 @@ cbuffer K : register(b0)
     uint w; uint h; uint movW; uint movH;
     uint profW; uint profH; uint temAnt; uint invertida;
     float corW; float corH; float perto; float longe;
-    uint infinita; uint pad0; uint pad1; uint pad2;
+    uint infinita; float tanY; float aspecto; uint pad2;
 };
 Texture2D<float2> movJogo : register(t0); // pixels da cor, do atual ao anterior
 Texture2D<float> profJogo : register(t1);
@@ -414,6 +414,15 @@ float Dist(float d)
         z = invertida ? 1.0 / max(d, e) : 1.0 / max(1.0 - d, e);
     return min(z, CEU);
 }
+// Z da camera -> distancia RADIAL (do olho ao ponto) com o FOV do jogo: o Z de um ponto fora do centro muda quando a
+// camera gira (Z = distancia x cosseno do angulo); girando rapido, ~70% da tela perdia a confianca (Gears). A distancia
+// radial nao muda num giro. Sem FOV (0), fica o Z.
+float Radial(float z, float2 uv)
+{
+    if (tanY <= 0.0 || z >= CEU * 0.5) return z;
+    const float2 n = (uv * 2.0 - 1.0) * float2(tanY * aspecto, tanY);
+    return z * sqrt(1.0 + dot(n, n));
+}
 
 [numthreads(8, 8, 1)] void CSDoJogo(uint2 p : SV_DispatchThreadID)
 {
@@ -436,7 +445,7 @@ float Dist(float d)
         contagem.InterlockedAdd(0, dc < 0.5 ? 1u : 0u);
         contagem.InterlockedAdd(4, 1u);
     }
-    const float zc = Dist(dc);
+    const float zc = Radial(Dist(dc), uv);
     const float2 uvM = (perto3 + 0.5) / float2(profW, profH);
     const int2 pm = clamp(int2(uvM * float2(movW, movH)), 0, int2(movW, movH) - 1);
     float2 m = movJogo.Load(int3(pm, 0)) * float2(float(w) / corW, float(h) / corH);

@@ -171,7 +171,7 @@ struct App
         pInteiro.Cria(gpu.dev.Get(), prepara.c_str(), "CSInteiro", 1, 1, 16, "inteiro");
         pReduz.Cria(gpu.dev.Get(), prepara.c_str(), "CSReduz", 1, 2, 16, "reduz");
         pCompoe.Cria(gpu.dev.Get(), compoe.c_str(), "CSCompoe", 5, 1, 32, "compoe");
-        pExporta.Cria(gpu.dev.Get(), (std::string(hlsl::Comum) + hlsl::Exporta).c_str(), "CSExporta", 3, 1, 8,
+        pExporta.Cria(gpu.dev.Get(), (std::string(hlsl::Comum) + hlsl::Exporta).c_str(), "CSExporta", 3, 1, 12,
                       "edicao para o jogo");
         fluxo.Cria(gpu.dev.Get());
         temporal.Cria(gpu.dev.Get());
@@ -827,6 +827,7 @@ struct App
             cam.corH = float(q.h);
             cam.perto = qb.perto;
             cam.longe = qb.longe;
+            cam.fovY = qb.fovY;
             cam.invertida = qb.profInvertidaConhecida ? qb.profInvertida : fluxo.InvertidaMedida();
             invertidaUsada = cam.invertida;
             fb.DefineInvertida(invertidaUsada); // o jogo reprojeta a edicao com a mesma conta de distancia
@@ -983,8 +984,10 @@ struct App
                 UINT w, h, profW, profH;
                 float perto, longe;
                 UINT invertida, infinita;
+                float tanY, aspecto;
+                UINT pad0, pad1;
             } ke{saida.w, saida.h, qb.prof->w, qb.prof->h, qb.perto, qb.longe, invertidaUsada ? 1u : 0u,
-                 qb.profInfinita ? 1u : 0u};
+                 qb.profInfinita ? 1u : 0u, dlss5ov::TanMeioFov(qb.fovY), float(saida.w) / float(saida.h), 0, 0};
             pExporta.Roda(c, desc, gpu.dev.Get(),
                           {{qb.cor->r.Get(), qb.cor->fmt}, {saida.r.Get(), saida.fmt}, {qb.prof->r.Get(), qb.prof->fmt}},
                           {{edJogo->r.Get(), edJogo->fmt}}, &ke, (saida.w + 7) / 8, (saida.h + 7) / 8);

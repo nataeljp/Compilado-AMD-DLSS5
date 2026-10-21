@@ -16,10 +16,15 @@
 // Tudo e criado pelo JOGO (ele sabe tamanhos e formatos): a memoria compartilhada "Local\DLSS5Ov.Buffer.<pid>", as
 // cercas e as texturas, por nome (NomeRecurso). Quando muda tamanho ou formato, o jogo recria tudo com outra geracao.
 #pragma once
+#include <cmath>
 #include <cstdint>
 #include <cwchar>
 
 namespace dlss5ov {
+
+// tan(fovY / 2) para converter o Z da camera em distancia radial (overlay e jogo fazem a mesma conta); 0 = FOV
+// desconhecido ou absurdo (os shaders comparam o Z, como antes)
+inline float TanMeioFov(float fovY) { return fovY > 0.01f && fovY < 3.1f ? std::tan(0.5f * fovY) : 0.f; }
 
 constexpr uint32_t kVersao = 2; // 2: movimento RG32F acumulado ate a exportacao anterior
 constexpr uint32_t kSlotsEntrada = 2;

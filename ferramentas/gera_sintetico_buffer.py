@@ -10,14 +10,19 @@
 #   NNNN_gt.raw (R32F, a pessoa neste quadro) -- a verdade para medir a mascara de desenvolvedor em movimento
 #   --laco: o quadro 0 traz o movimento real desde o ultimo (o jogo de teste repete a sequencia; sem isso a volta e um
 #   quadro com movimento zero e a camera pulando)
+#   foto .npy: luz linear em float (HxWx3), sem passar por sRGB -- um quadro HDR de jogo (ex.: o orig de uma gravacao do
+#   overlay), com os realces acima de 1 que o PNG cortaria
 import json, sys, math
 from pathlib import Path
 import cv2
 import numpy as np
 foto, pasta, N = sys.argv[1], Path(sys.argv[2]), int(sys.argv[3])
 pasta.mkdir(parents=True, exist_ok=True)
-s = cv2.imread(foto, cv2.IMREAD_COLOR)[..., ::-1].astype(np.float32) / 255
-lin = np.where(s <= 0.04045, s / 12.92, ((s + 0.055) / 1.055) ** 2.4).astype(np.float32)
+if foto.endswith('.npy'):
+    lin = np.ascontiguousarray(np.load(foto)[..., :3].astype(np.float32))
+else:
+    s = cv2.imread(foto, cv2.IMREAD_COLOR)[..., ::-1].astype(np.float32) / 255
+    lin = np.where(s <= 0.04045, s / 12.92, ((s + 0.055) / 1.055) ** 2.4).astype(np.float32)
 W, H = 1920, 1080
 PERTO, Z_FUNDO, Z_OBJ = 0.1, 20.0, 2.0
 TAM = 360  # lado do objeto (pixels do quadro)
@@ -32,6 +37,22 @@ if PESSOA:
 
 RAPIDO = '--rapido' in sys.argv
 LACO = '--laco' in sys.argv
+# --giro: a camera GIRA em 3D (guinada e arfagem, como mirar no jogo), FOV horizontal de 90 graus. O fundo e uma esfera
+#   em volta dela (a foto em azimute/elevacao): a distancia radial de cada ponto nao muda, mas o Z da camera (o que o
+#   jogo entrega na profundidade) muda fora do centro a cada giro -- o caso do Gears girando rapido, que a panoramica 2D
+#   (Z constante) nao reproduz. Guinada ate ~300 px/quadro no centro.
+GIRO = '--giro' in sys.argv
+TAN_X = 1.0
+TAN_Y = TAN_X * H / W
+RAD_PX = 2 * TAN_X / W  # radianos por pixel no centro da tela (a foto tem a mesma resolucao angular)
+
+
+def giro(i):
+    g = math.radians(45) * math.sin(2 * math.pi * i / 16)
+    a = math.radians(8) * math.sin(2 * math.pi * i / 24)
+    Ry = np.array([[math.cos(g), 0, math.sin(g)], [0, 1, 0], [-math.sin(g), 0, math.cos(g)]])
+    Rx = np.array([[1, 0, 0], [0, math.cos(a), -math.sin(a)], [0, math.sin(a), math.cos(a)]])
+    return Ry @ Rx
 
 def camera(i):
     if RAPIDO:
@@ -55,23 +76,44 @@ def objeto(i):
 ys, xs = np.mgrid[0:H, 0:W].astype(np.float64)
 cache = {}
 transf, objs = [], []
+if GIRO:
+    # direcao de cada pixel no espaco da camera (raio unitario) e a foto com o desfoque de amostragem
+    raio = np.stack([((xs + 0.5) * 2 / W - 1) * TAN_X, (1 - (ys + 0.5) * 2 / H) * TAN_Y, np.ones_like(xs)], -1)
+    raio /= np.linalg.norm(raio, axis=-1, keepdims=True)
+    fotoG = cv2.GaussianBlur(lin, (0, 0), 0.5)
+    Hp, Wp = lin.shape[:2]
 with open(pasta / 'meta.jsonl', 'w') as m:
     m.write(json.dumps({'rede_w': W, 'rede_h': H, 'janela_w': W, 'janela_h': H, 'hdr': 0, 'escala': 1.0,
                         'arquivos': {'orig': 'RGBA16F', 'mv': 'RG32F', 'prof': 'R32F'}, 'quadros': N,
-                        'perto': PERTO, 'invertida': 1, 'infinita': 1}) + '\n')
+                        'perto': PERTO, 'invertida': 1, 'infinita': 1,
+                        **({'fovY': 2 * math.atan(TAN_Y)} if GIRO else {})}) + '\n')
     for i in range(N):
-        A = camera(i)
-        z = A[0, 0]
-        if z not in cache: cache.clear(); cache[z] = cv2.GaussianBlur(lin, (0, 0), 0.5 * z)
-        q = cv2.warpAffine(cache[z], A, (W, H), flags=cv2.INTER_CUBIC | cv2.WARP_INVERSE_MAP, borderMode=cv2.BORDER_REFLECT)
-        # movimento do fundo: o ponto da foto que este pixel ve, no quadro anterior
         ia = (i - 1) % N if LACO else max(i - 1, 0)
-        Ap = camera(ia)
-        X = A[0, 0] * xs + A[0, 2]
-        Y = A[1, 1] * ys + A[1, 2]
-        mvx = (X - Ap[0, 2]) / Ap[0, 0] - xs
-        mvy = (Y - Ap[1, 2]) / Ap[1, 1] - ys
-        prof = np.full((H, W), PERTO / Z_FUNDO, np.float32)
+        if GIRO:
+            mundo = raio @ giro(i).T
+            az = np.arctan2(mundo[..., 0], mundo[..., 2])
+            el = np.arcsin(np.clip(mundo[..., 1], -1, 1))
+            q = cv2.remap(fotoG, (Wp / 2 + az / RAD_PX - 0.5).astype(np.float32), (Hp / 2 - el / RAD_PX - 0.5).astype(np.float32),
+                          cv2.INTER_CUBIC, borderMode=cv2.BORDER_REFLECT)
+            # movimento: onde a mesma direcao do mundo caia na tela do quadro anterior
+            c = mundo @ giro(ia)
+            mvx = ((c[..., 0] / c[..., 2]) / TAN_X + 1) * W / 2 - 0.5 - xs
+            mvy = (1 - (c[..., 1] / c[..., 2]) / TAN_Y) * H / 2 - 0.5 - ys
+            # esfera de raio Z_FUNDO: o Z da camera e o raio vezes o cosseno do angulo fora do eixo
+            prof = (PERTO / (Z_FUNDO * raio[..., 2])).astype(np.float32)
+            A = giro(i)
+        else:
+            A = camera(i)
+            z = A[0, 0]
+            if z not in cache: cache.clear(); cache[z] = cv2.GaussianBlur(lin, (0, 0), 0.5 * z)
+            q = cv2.warpAffine(cache[z], A, (W, H), flags=cv2.INTER_CUBIC | cv2.WARP_INVERSE_MAP, borderMode=cv2.BORDER_REFLECT)
+            # movimento do fundo: o ponto da foto que este pixel ve, no quadro anterior
+            Ap = camera(ia)
+            X = A[0, 0] * xs + A[0, 2]
+            Y = A[1, 1] * ys + A[1, 2]
+            mvx = (X - Ap[0, 2]) / Ap[0, 0] - xs
+            mvy = (Y - Ap[1, 2]) / Ap[1, 1] - ys
+            prof = np.full((H, W), PERTO / Z_FUNDO, np.float32)
         # objeto em primeiro plano (posicao subpixel por interpolacao)
         o = objeto(i)
         op = objeto(ia)
@@ -98,6 +140,9 @@ with open(pasta / 'meta.jsonl', 'w') as m:
         m.write(json.dumps({'q': i, 'rede': 1, 'mov': 1, 't_ms': i * 16.7}) + '\n')
 json.dump(transf, open(pasta / 'transf.json', 'w'))
 json.dump({'tam': list(alfaObj.shape) if PESSOA else TAM, 'pos': objs}, open(pasta / 'objeto.json', 'w'))
-vc = [math.hypot(*(np.array(camera(i))[:, 2] - np.array(camera(i - 1))[:, 2])) for i in range(1, N)]
+if GIRO:  # o centro da tela: angulo entre os eixos oticos de dois quadros, em pixels do centro
+    vc = [math.acos(min(1.0, float(giro(i)[:, 2] @ giro(i - 1)[:, 2]))) / RAD_PX for i in range(1, N)]
+else:
+    vc = [math.hypot(*(np.array(camera(i))[:, 2] - np.array(camera(i - 1))[:, 2])) for i in range(1, N)]
 vo = [float(np.hypot(*(objeto(i) - objeto(i - 1)))) for i in range(1, N)]
 print('quadros', N, W, 'x', H, '| camera ate %.0f px/quadro (mediana %.0f), objeto ate %.0f px/quadro' % (max(vc), float(np.median(vc)), max(vo)))

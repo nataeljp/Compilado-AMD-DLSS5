@@ -1,5 +1,6 @@
 #include "Fluxo.h"
 #include "ShadersFluxo.h"
+#include "buffer/Protocolo.h"
 #include <algorithm>
 
 namespace ov {
@@ -309,9 +310,12 @@ void Fluxo::DoJogo(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device
     {
         UINT w, h, movW, movH, profW, profH, temAnt, invertida;
         float corW, corH, perto, longe;
-        UINT infinita, pad0, pad1, pad2;
+        UINT infinita;
+        float tanY, aspecto;
+        UINT pad2;
     } k{w, h, movJogo.w, movJogo.h, profJogo.w, profJogo.h, zValido ? 1u : 0u, cam.invertida ? 1u : 0u,
-        cam.corW, cam.corH, cam.perto, cam.longe, cam.infinita ? 1u : 0u, 0, 0, 0};
+        cam.corW, cam.corH, cam.perto, cam.longe, cam.infinita ? 1u : 0u, dlss5ov::TanMeioFov(cam.fovY),
+        cam.corH > 0.f ? cam.corW / cam.corH : 0.f, 0};
     pDoJogo.Roda(c, desc, d, {{movJogo.r.Get(), movJogo.fmt}, {profJogo.r.Get(), profJogo.fmt}, {z[p].r.Get(), z[p].fmt}},
                  {{mov.r.Get(), mov.fmt}, {conf.r.Get(), conf.fmt}, {z[a].r.Get(), z[a].fmt}, {bufInv.Get(), DXGI_FORMAT_UNKNOWN}},
                  &k, (w + 7) / 8, (h + 7) / 8);

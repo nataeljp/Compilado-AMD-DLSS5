@@ -25,7 +25,8 @@ cbuffer K : register(b0)
     float perto, longe;
     uint ativos, zera;  // acumuladores: os que seguem e os que comecam neste quadro (ancora = este quadro)
     uint jExporta;      // acumulador cujo deslocamento vai como movimento exportado (3 = so o deste quadro)
-    uint pad0, pad1, pad2;
+    float tanY, aspecto; // tan(fovY / 2) e largura / altura: distancia radial (0 = sem FOV: Z da camera)
+    uint pad2;
 };
 Texture2D<float2> movJogo : register(t0);
 Texture2D<float> profJogo : register(t1);
@@ -68,6 +69,14 @@ float Mesma(float za, float zb)
 {
     if (za >= CEU * 0.5 && zb >= CEU * 0.5) return 1.0;
     return 1.0 - smoothstep(0.04, 0.15, abs(za - zb) / max(min(za, zb), 1e-6));
+}
+// Z da camera -> distancia RADIAL (a do alfa da edicao, Shaders.h/Exporta): o Z de um ponto fora do centro muda quando a
+// camera gira; com o Z, girando rapido quase toda a tela parecia outra superficie e a edicao vinha dos vizinhos
+float Radial(float z, float2 uv)
+{
+    if (tanY <= 0.0 || z >= CEU * 0.5) return z;
+    const float2 n = (uv * 2.0 - 1.0) * float2(tanY * aspecto, tanY);
+    return z * sqrt(1.0 + dot(n, n));
 }
 
 float Exposicao()
@@ -120,7 +129,7 @@ float Exposicao()
     m = all(isfinite(m)) ? m : 0;
     // so a mesma superficie: a edicao leva no alfa log2 da distancia de cada pixel no quadro dela
     const uint2 pp = min(uint2((p + 0.5) * float2(profW, profH) / float2(corW, corH)), uint2(profW - 1, profH - 1));
-    const float zc = Dist(profJogo.Load(int3(pp, 0)));
+    const float zc = Radial(Dist(profJogo.Load(int3(pp, 0))), (p + 0.5) / float2(corW, corH));
     // fora do quadro (camera girando rapido: conteudo novo entrando pela borda) nao ha edicao para trazer: prender na
     // borda esticava a ultima coluna/linha (faixas). Vai para os vizinhos.
     const float2 q0 = p + 0.5 + m;
@@ -141,8 +150,14 @@ float Exposicao()
         soma += wv;
     }
     if (fora)
-        soma = 0;
-    if (soma < 0.05)
+    {
+        // entrou pela borda (no quadro da edicao o ponto estava fora da imagem): nao ha edicao para ele. A da borda
+        // (mesma superficie) some em ~48 px; os vizinhos em aneis de raio dobrado viravam faixas verticais
+        const float2 dentroQ = max(max(-q0, q0 - float2(corW, corH)), 0.0);
+        ed = soma > 1e-4 ? ed / soma * exp(-dot(dentroQ, dentroQ) / (48.0 * 48.0)) : 0;
+        soma = 1.0;
+    }
+    else if (soma < 0.05)
     {
         // fundo recem-descoberto (ali, no quadro da edicao, havia outra superficie): os VIZINHOS deste quadro na mesma
         // superficie, cada um com a edicao reprojetada dele (valida: a distancia bate). A faixa e estreita perto da
@@ -160,7 +175,7 @@ float Exposicao()
                 sincos(k * 0.3926991 + r * 0.29, dir.y, dir.x);
                 const int2 t = clamp(int2(float2(p) + 0.5 + dir * r), 0, lim);
                 const uint2 tp = min(uint2((t + 0.5) * float2(profW, profH) / tamC), uint2(profW - 1, profH - 1));
-                const float zt = Dist(profJogo.Load(int3(tp, 0)));
+                const float zt = Radial(Dist(profJogo.Load(int3(tp, 0))), (t + 0.5) / tamC);
                 const float wz = Mesma(zt, zc);
                 if (wz <= 0.0) continue;
                 float2 mt = accEd.SampleLevel(lin, (t + 0.5) / tamC, 0);
@@ -634,12 +649,14 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
         float movEscX, movEscY, preExp, escExp;
         UINT temExp, srgb, invertida, infinita;
         float perto, longe;
-        UINT ativos, zera, jExporta, pad0, pad1, pad2;
+        UINT ativos, zera, jExporta;
+        float tanY, aspecto;
+        UINT pad2;
     } k_{UINT(corW), corH, movW, movH, profW, profH, exporta ? 1u : 0u, k >= 0 ? 1u : 0u,
          e.movEscalaX * float(corW) / float(mw), e.movEscalaY * float(corH) / float(mh), e.preExposicao,
          e.escalaExposicao, e.exposicao ? 1u : 0u, Srgb(fmtCor) ? 1u : 0u,
          (e.profInvertidaConhecida ? e.profInvertida : cab->profInvertidaUsada != 0) ? 1u : 0u, infinita ? 1u : 0u, perto,
-         longe, ativos, zera, jExp >= 0 ? UINT(jExp) : 3u, 0, 0, 0};
+         longe, ativos, zera, jExp >= 0 ? UINT(jExp) : 3u, TanMeioFov(e.fovY), float(corW) / float(corH), 0};
 
     const D3D12_RESOURCE_STATES SRV = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     auto estado = [&](int j, UINT i, D3D12_RESOURCE_STATES para) {

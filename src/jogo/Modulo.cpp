@@ -423,8 +423,10 @@ ffxReturnCode_t Despacha(ffxContext* ctx, const ffxDispatchDescHeader* desc)
         primeiro = false;
         const auto dc = cor->GetDesc();
         Log("primeiro quadro: saida %llux%u fmt %d, render %ux%u, movimento escala %.3f,%.3f, perto %.3f longe %.3g, "
-            "flags %s 0x%x", (unsigned long long)dc.Width, dc.Height, (int)dc.Format, u->renderSize.width,
-            u->renderSize.height, u->motionVectorScale.x, u->motionVectorScale.y, u->cameraNear, u->cameraFar,
+            "fov vertical %.1f graus%s, flags %s 0x%x", (unsigned long long)dc.Width, dc.Height, (int)dc.Format,
+            u->renderSize.width, u->renderSize.height, u->motionVectorScale.x, u->motionVectorScale.y, u->cameraNear,
+            u->cameraFar, u->cameraFovAngleVertical * 57.29578f,
+            dlss5ov::TanMeioFov(u->cameraFovAngleVertical) > 0.f ? " (distancia radial)" : " (desconhecido: Z da camera)",
             conhecidas ? "conhecidas" : "desconhecidas (padrao do UE5)", flags & 0x7fffffffu);
     }
     return r;

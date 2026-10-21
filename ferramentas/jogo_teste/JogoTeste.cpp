@@ -105,6 +105,7 @@ int wmain(int argc, wchar_t** argv)
     };
     const UINT W = UINT(num("\"rede_w\":")), H = UINT(num("\"rede_h\":")), N = UINT(num("\"quadros\":"));
     const float perto = float(num("\"perto\":"));
+    const float fovY = float(num("\"fovY\":")); // so nas sequencias com a camera girando (gera_sintetico_buffer --giro)
     const UINT RW = render < 1.f ? UINT(W * render + 0.5f) : W, RH = render < 1.f ? UINT(H * render + 0.5f) : H;
     printf("sequencia %ux%u, %u quadros, %d voltas a %d fps; movimento e profundidade %ux%u%s\n", W, H, N, voltas, fps, RW,
            RH, render < 1.f ? " (uv, como o UE5)" : "");
@@ -287,6 +288,7 @@ int wmain(int argc, wchar_t** argv)
             if (render < 1.f)
                 e.movEscalaX = float(RW), e.movEscalaY = float(RH); // uv -> pixels de render, como o UE5 passa ao FSR
             e.perto = perto;
+            e.fovY = fovY;
             e.profInvertida = e.profInfinita = true;
             e.reset = i == 0 && (!laco || v == 0);
             const uint64_t n = cli.Quadro(cl.Get(), e);

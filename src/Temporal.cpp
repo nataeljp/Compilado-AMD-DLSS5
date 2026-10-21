@@ -140,9 +140,17 @@ float MesmaZ(float za, float zb)
     if (za >= CEU * 0.5 && zb >= CEU * 0.5) return 1.0;
     return 1.0 - smoothstep(0.04, 0.15, abs(za - zb) / max(min(za, zb), 1e-6));
 }
+// cor perceptual no espaco comprimido: a mesma diferenca relativa pesa igual no escuro e no realce HDR
+float3 CorP(float3 o) { o = max(o, 0.0); return pow(o / (1.0 + Lum(o)), 1.0 / 2.2); }
+// diferenca de cor (nao so de brilho): um pixel branco nao passa por um neon do mesmo brilho
+float DifCor(float3 a, float3 b) { float3 d = abs(CorP(a) - CorP(b)); return max(d.x, max(d.y, d.z)); }
+// peso de um vizinho pela cor: a mesma distancia da camera nao basta (o letreiro claro e o carro escuro estao na mesma
+// distancia; sem a cor, a edicao do letreiro era pintada no carro)
+float PesoCor(float3 a, float3 b) { const float s = DifCor(a, b) / 0.1; return exp(-s * s); }
+
 // Fundo recem-descoberto: os VIZINHOS deste quadro na mesma superficie cujo historico e valido (a faixa e estreita perto
 // da borda; com o objeto andando centenas de pixels, procurar em volta da posicao antiga caia dentro da area que ele
-// cobria e nao achava fundo). O valor e o historico reprojetado de cada vizinho, peso 1/r.
+// cobria e nao achava fundo). O valor e o historico reprojetado de cada vizinho, peso 1/r, so de cor parecida.
 float3 PreencheVizinhos(int2 p, float zc, out float achou)
 {
     float3 acc = 0;
@@ -150,6 +158,7 @@ float3 PreencheVizinhos(int2 p, float zc, out float achou)
     achou = 0;
     const int2 lim = int2(w, h) - 1;
     const float2 tam = float2(w, h);
+    const float3 fp = fed.Load(int3(p, 0)).rgb;
     [loop] for (float r = 3.0; r <= 384.0 && achou < 2.0; r *= 2.0)
     {
         float s1 = 0;
@@ -160,7 +169,7 @@ float3 PreencheVizinhos(int2 p, float zc, out float achou)
             const int2 t = clamp(int2(float2(p) + 0.5 + dir * r), 0, lim);
             const float ct = conf.Load(int3(t, 0));
             if (ct < 0.5) continue;
-            const float wv = MesmaZ(zAgora.Load(int3(t, 0)), zc) * ct / r;
+            const float wv = MesmaZ(zAgora.Load(int3(t, 0)), zc) * ct * PesoCor(fed.Load(int3(t, 0)).rgb, fp) / r;
             if (wv <= 0.0) continue;
             const float2 uvT = (float2(t) + 0.5 + mov.Load(int3(t, 0)).xy) / tam;
             acc += histAnt.SampleLevel(s, uvT, 0).rgb * wv;
@@ -173,12 +182,13 @@ float3 PreencheVizinhos(int2 p, float zc, out float achou)
     return ws > 1e-6 ? acc / ws : 0;
 }
 
-float3 PreencheMesma(float2 q, float zc, out float achou)
+float3 PreencheMesma(int2 p, float2 q, float zc, out float achou)
 {
     float3 acc = 0;
     float ws = 0;
     achou = 0;
     const int2 lim = int2(w, h) - 1;
+    const float3 fp = fed.Load(int3(p, 0)).rgb;
     [loop] for (float r = 2.0; r <= 128.0 && achou < 2.0; r *= 2.0)
     {
         float s1 = 0;
@@ -187,7 +197,8 @@ float3 PreencheMesma(float2 q, float zc, out float achou)
             float2 dir;
             sincos(k * 0.5235988 + r * 0.37, dir.y, dir.x);
             const int2 t = clamp(int2(q + dir * r), 0, lim);
-            const float wv = MesmaZ(zGrade.Load(int3(t, 0)), zc) / r;
+            // a cor de t0 so existe no quadro em que a resposta chega (o proxy dela ainda esta na entrada da rede)
+            const float wv = MesmaZ(zGrade.Load(int3(t, 0)), zc) * (temResp ? PesoCor(fedT0.Load(int3(t, 0)).rgb, fp) : 1.0) / r;
             acc += edT0.Load(int3(t, 0)).rgb * wv;
             s1 += wv;
         }
@@ -198,11 +209,8 @@ float3 PreencheMesma(float2 q, float zc, out float achou)
     return ws > 1e-5 ? acc / ws : 0;
 }
 
-// cor perceptual no espaco comprimido: a mesma diferenca relativa pesa igual no escuro e no realce HDR
-float3 CorP(float3 o) { o = max(o, 0.0); return pow(o / (1.0 + Lum(o)), 1.0 / 2.2); }
-// diferenca de cor (nao so de brilho): um pixel branco nao passa por um neon do mesmo brilho
-float DifCor(float3 a, float3 b) { float3 d = abs(CorP(a) - CorP(b)); return max(d.x, max(d.y, d.z)); }
-
+)" // o MSVC limita cada literal a ~16 KB: o shader segue no proximo pedaco
+R"(
 float3 CatmullRomT(Texture2D<float4> t, float2 uv, float2 tam)
 {
     float2 pos = uv * tam;
@@ -234,7 +242,21 @@ float Guia(float3 o) { float l = max(Lum(max(o, 0.0)), 0.0); return pow(l / (1.0
 // a edicao que a grade preve para um pixel de brilho z na posicao pos (pixels, espaco de t0 da grade); 0 sem dados.
 // lz: log2 da distancia do pixel (exata): so celulas da mesma camada (+-0,35 oitava) contam
 float PesoZ(float zc, float lz) { if (!exata) return 1.0; float d = (zc - lz) / 0.35; return exp(-d * d); }
+float3 FatiaDentro(float2 pos, float z01, float3 cp, float lz);
+// exata: o ponto ja estava FORA do quadro da resposta (camera girando rapido: conteudo entrando pela borda). A grade so
+// tem a borda; prender nela esticava as celulas de 16 px em faixas por centenas de pixels. Some em ~3 celulas.
 float3 Fatia(float2 pos, float z01, float3 cp, float lz)
+{
+    float some = 1.0;
+    if (exata)
+    {
+        const float2 f = max(max(-pos, pos - float2(w, h)), 0.0);
+        some = exp(-dot(f, f) / (48.0 * 48.0));
+        if (some < 1e-3) return 0;
+    }
+    return FatiaDentro(pos, z01, cp, lz) * some;
+}
+float3 FatiaDentro(float2 pos, float z01, float3 cp, float lz)
 {
     float2 g = pos / CELULA - 0.5;
     int2 g0 = int2(floor(g));
@@ -323,15 +345,21 @@ float3 Fatia(float2 pos, float z01, float3 cp, float lz)
     {
         float4 dg = temDeslG ? deslG.Load(int3(p, 0)) : float4(0, 0, 1, 1);
         float3 o = orig.Load(int3(p, 0)).rgb;
-        eg = Fatia(float2(p) + 0.5 + dg.xy, Guia(o), CorP(o), exata ? log2(max(zAgora.Load(int3(p, 0)), 1e-6)) : 0.0);
-        if (exata && temConf && conf.Load(int3(p, 0)) < 0.5)
+        // exata: o caminho ate o t0 da grade saiu da imagem (dg.w = 0; dg.xy fica so com o ultimo movimento, a grade era
+        // lida no lugar errado) ou o pixel acabou de entrar pela borda (dentro = 0): nenhuma informacao da rede ali. Fica
+        // o original ate a proxima resposta -- os vizinhos em aneis de raio dobrado viravam faixas verticais na borda.
+        if (exata && (dg.w < 0.5 || !dentro))
+            eg = 0;
+        else
+            eg = Fatia(float2(p) + 0.5 + dg.xy, Guia(o), CorP(o), exata ? log2(max(zAgora.Load(int3(p, 0)), 1e-6)) : 0.0);
+        if (exata && dentro && temConf && conf.Load(int3(p, 0)) < 0.5)
         {
             // fundo recem-descoberto (ou borda nova da tela): a ultima resposta, so da mesma superficie
             float achou;
             const float zp = zAgora.Load(int3(p, 0));
             float3 em = temHist ? PreencheVizinhos(p, zp, achou) : 0;
             if (achou <= 0.0)
-                em = PreencheMesma(float2(p) + 0.5 + dg.xy, zp, achou);
+                em = PreencheMesma(p, float2(p) + 0.5 + dg.xy, zp, achou);
             if (achou > 0.0)
                 eg = em;
             if (exata & 2u) // DLSS5_DEBUG_FAIXA: marca de vermelho onde o preenchimento atua (verde: nao achou vizinho)
@@ -370,12 +398,15 @@ float3 Fatia(float2 pos, float z01, float3 cp, float lz)
         {
             // a resposta entra inteira: reposicionada onde o quadro de t0 bate com o atual, pela grade onde nao bate
             e = lerp(eg, e, peso);
-            peso = 1.0;
+            // exata: o que veio da grade ou dos vizinhos e estimativa e conta pouco no historico -- a proxima resposta
+            // de verdade substitui quase tudo (contando 1, metade da estimativa ficava e o erro dela virava rastro)
+            peso = exata ? max(peso, 0.15) : 1.0;
         }
         // exata com historico valido: onde a resposta (de 1-2 quadros atras) nao viu esta superficie (o objeto estava na
         // frente), o historico do proprio fundo fica; misturar a grade ali trazia um pouco do objeto (fantasma)
         float nn = min(n + peso, maxN);
-        hr = lerp(hr, e, peso / max(nn, 1.0));
+        // media ponderada (historico n, amostra peso); sem historico a amostra entra inteira
+        hr = lerp(hr, e, exata ? peso / max(nn, max(peso, 1e-4)) : peso / max(nn, 1.0));
         n = nn;
     }
     else

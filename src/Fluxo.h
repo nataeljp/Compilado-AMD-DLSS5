@@ -30,6 +30,7 @@ class Fluxo
     {
         float corW = 0, corH = 0;   // tamanho da cor do jogo (o movimento vem em pixels dela)
         float perto = 0, longe = 0; // 0 = desconhecida
+        float fovY = 0;             // radianos (o que o jogo passa ao FSR); 0 = desconhecido: compara o Z da camera
         bool invertida = true, infinita = true, reset = false;
     };
     void DoJogo(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, Tex& movJogo, Tex& profJogo,
