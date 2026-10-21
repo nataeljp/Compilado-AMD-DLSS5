@@ -4,13 +4,17 @@
 # Runtime v4 (mascara de desenvolvedor): LmxxfNrSetMask no runtime e no adaptador, os 7 kernels de entrada da rede com os
 # controles por pixel (alfa = grupo + peso; desligados = saida identica) e o codificador que passa o alfa.
 # Antes: runtime\lmxxf\compilar.ps1 -Modulos e runtime\adaptador\compilar.ps1.
-# Uso: monta_runtime.ps1 -Pesos <pasta DLSS5-AMD> -DllNvidia <nvngx_dlssnr.dll 310.8> [-DllPequena <nvngx_dlssnr.dll 310.9.16>]
-param([Parameter(Mandatory)][string]$Pesos,
-      [Parameter(Mandatory)][string]$DllNvidia,
-      [string]$DllPequena = '',
+# Uso: monta_runtime.ps1 [-Pesos <pasta DLSS5-AMD>] [-DllNvidia <nvngx_dlssnr.dll 310.8>] [-DllPequena <nvngx_dlssnr.dll 310.9.16>]
+#   sem parametros usa dependencias\ (fora do git: pesos\DLSS5-AMD, nvidia\nvngx_dlssnr_310.8.dll e _310.9.16.dll)
+param([string]$Pesos = (Join-Path $PSScriptRoot 'dependencias\pesos\DLSS5-AMD'),
+      [string]$DllNvidia = (Join-Path $PSScriptRoot 'dependencias\nvidia\nvngx_dlssnr_310.8.dll'),
+      [string]$DllPequena = (Join-Path $PSScriptRoot 'dependencias\nvidia\nvngx_dlssnr_310.9.16.dll'),
       [string]$Lmxxf = (Join-Path $PSScriptRoot 'runtime\lmxxf\fonte'),
       [string]$Adaptador = (Join-Path $PSScriptRoot 'runtime\adaptador\LmxxfNrRuntime.dll'))
 $ErrorActionPreference = 'Stop'
+foreach ($f in $Pesos, $DllNvidia, $Adaptador, (Join-Path $Lmxxf 'build_msvc\LmxxfNrRuntime_v4.dll')) {
+    if (-not (Test-Path $f)) { "falta: $f"; exit 1 }
+}
 $dst = Join-Path $PSScriptRoot 'bin\runtime'
 $assets = Join-Path $dst 'native-game-tiled-assets'
 # troca um arquivo sem escrever por cima dele: se o destino for hardlink de outro pacote, so o vinculo sai
@@ -27,6 +31,6 @@ Get-ChildItem (Join-Path $Lmxxf 'build_msvc\modules_mascara') -Filter *.hsaco | 
 Coloca (Join-Path $Lmxxf 'shaders\native_codec_encode.hlsl') (Join-Path $assets 'native_codec_encode.hlsl')
 python (Join-Path $PSScriptRoot 'ferramentas\extrai_historico.py') $DllNvidia $assets
 # rede pequena da 310.9.16 (opcao 'Rede' no painel): runtime\pequena = so os pesos dela + network-layout.txt
-if ($DllPequena) {
+if ($DllPequena -and (Test-Path $DllPequena)) {
     python (Join-Path $PSScriptRoot 'ferramentas\monta_pacote_pequena.py') (Join-Path $env:TEMP 'dlss5_rede_pequena') $dst $DllPequena $DllNvidia
 } else { "sem -DllPequena: a rede pequena fica de fora (escolher 'pequena' no painel usa a grande)" }

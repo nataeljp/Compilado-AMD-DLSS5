@@ -173,10 +173,12 @@ runtime\lmxxf\compilar.ps1 -Modulos   # lmxxf (commit a9b7a52) + patch -> LmxxfN
 runtime\adaptador\compilar.ps1        # adaptador LmxxfNrRuntime.dll (API do AMDNR por cima do lmxxf)
 build.ps1                             # bin\DLSS5Overlay.exe
 build_buffer.ps1                      # bin\captura\DLSS5Buffer.dll e obj\JogoTeste.exe
-monta_runtime.ps1 -Pesos <pasta DLSS5-AMD> -DllNvidia <nvngx_dlssnr.dll 310.8> [-DllPequena <nvngx_dlssnr.dll 310.9.16>]
+monta_runtime.ps1                     # bin\runtime a partir de dependencias\ (ou -Pesos, -DllNvidia, -DllPequena)
 empacota.ps1 -Versao X                # zip para a aba Releases
 ```
 
+- `dependencias\` (fora do git, cada um monta a sua): `pesos\DLSS5-AMD` (o pacote de pesos convertidos do
+  `nvngx_dlssnr`) e `nvidia\nvngx_dlssnr_310.8.dll` / `nvngx_dlssnr_310.9.16.dll` (as DLLs da NVIDIA, só leitura).
 - `monta_runtime.ps1` monta `bin\runtime`: os pesos do pacote DLSS5-AMD (a pasta com `native-game-tiled-assets`), com
   os pesos exatos em FP16 gravados como `.f16` (metade do tamanho, saída idêntica bit a bit), o runtime v4, os pesos do
   histórico extraídos do `nvngx_dlssnr` 310.8 e, com `-DllPequena`, a rede pequena da 310.9.16. Nada é escrito por cima
