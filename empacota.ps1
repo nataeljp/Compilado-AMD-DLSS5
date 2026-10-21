@@ -15,7 +15,10 @@ Copy-Item "$raiz\bin\ml" "$pasta\ml" -Recurse
 Copy-Item "$raiz\README.md" $pasta
 Copy-Item "$raiz\licencas" "$pasta\licencas" -Recurse
 # runtime sem logs nem caches (as variantes e a pasta montada da rede pequena sao refeitas pelo programa)
-robocopy "$raiz\bin\runtime" "$pasta\runtime" /E /XF *.log /XD nr_variantes native-game-tiled-assets-pequena logs /NFL /NDL /NJH /NJS /NP | Out-Null
+robocopy "$raiz\bin\runtime" "$pasta\runtime" /E /XF *.log /XD nr_variantes native-game-tiled-assets-pequena logs shader-cache /NFL /NDL /NJH /NJS /NP | Out-Null
+# robocopy: 0-7 = sucesso (1 = copiou arquivos), 8+ = falha
+if ($LASTEXITCODE -ge 8) { "robocopy falhou ($LASTEXITCODE)"; exit 1 }
+$global:LASTEXITCODE = 0
 # configuracao padrao (a do usuario nao vai no pacote)
 Set-Content -Path "$pasta\config.json" -Encoding ascii -Value @'
 {
