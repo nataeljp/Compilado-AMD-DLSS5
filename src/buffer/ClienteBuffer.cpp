@@ -36,6 +36,7 @@ Texture2D<float2> accAnt0 : register(t4); // deslocamento acumulado ate cada anc
 Texture2D<float2> accAnt1 : register(t5);
 Texture2D<float2> accAnt2 : register(t6);
 Texture2D<float2> accEd : register(t7);   // o acumulador da ancora da edicao aplicada (ja deste quadro)
+Texture2D<uint> reconLe : register(t8);   // CSRecon: a menor distancia DESTE quadro que cai em cada pixel da ancora
 RWTexture2D<float4> corJogo : register(u0);
 RWTexture2D<float4> corSlot : register(u1);
 RWTexture2D<float2> movSlot : register(u2);
@@ -44,6 +45,7 @@ RWTexture2D<float> expSlot : register(u4);
 RWTexture2D<float2> accNovo0 : register(u5);
 RWTexture2D<float2> accNovo1 : register(u6);
 RWTexture2D<float2> accNovo2 : register(u7);
+RWTexture2D<uint> recon : register(u8);   // a mesma, escrita (resolucao da profundidade)
 SamplerState lin : register(s0);
 
 static const float CEU = 1e6;
@@ -124,6 +126,58 @@ float Exposicao()
     profSlot[p] = profJogo.Load(int3(p, 0));
 }
 
+// Oclusao como no FSR (profundidade reconstruida): cada ponto deste quadro marca a distancia dele onde estava no quadro
+// da edicao (a ancora); a edicao de la so vale para este pixel se nenhum ponto DESTE quadro, mais perto da camera, estava
+// no mesmo lugar. Comparar com a distancia gravada na ancora deixava passar a edicao do personagem no chao perto dele
+// (simulado na gravacao do Gears: fantasma 0,07 com a regra tolerante, 0,06 com a rigida; 0 assim).
+[numthreads(8, 8, 1)] void CSLimpaRecon(uint2 p : SV_DispatchThreadID)
+{
+    if (p.x < profW && p.y < profH) recon[p] = 0xFFFFFFFFu;
+}
+[numthreads(8, 8, 1)] void CSRecon(uint2 q : SV_DispatchThreadID)
+{
+    if (!aplica || q.x >= profW || q.y >= profH) return;
+    const float2 uv = (q + 0.5) / float2(profW, profH);
+    float2 m = accEd.SampleLevel(lin, uv, 0);
+    if (!all(isfinite(m))) return;
+    const float z = Radial(Dist(profJogo.Load(int3(q, 0))), uv);
+    const float2 u = (uv * float2(corW, corH) + m) * float2(profW, profH) / float2(corW, corH);
+    const int2 b = int2(floor(u - 0.5));
+    [unroll] for (int j = 0; j < 2; ++j)
+        [unroll] for (int i = 0; i < 2; ++i)
+        {
+            const int2 t = b + int2(i, j);
+            if (all(t >= 0) && all(t < int2(profW, profH)))
+                InterlockedMin(recon[t], asuint(z));
+        }
+}
+// peso da edicao que esta em qAnc (pixels da cor, no quadro da ancora) para um ponto deste quadro a distancia z, com o
+// pixel de profundidade pz (folga da inclinacao: num chao rasante o vizinho de 1 pixel ja esta alguns % mais perto)
+float NaoOculto(float2 qAnc, float z, uint2 pz)
+{
+    const float2 u = qAnc * float2(profW, profH) / float2(corW, corH);
+    const int2 b = int2(floor(u - 0.5));
+    const int2 lim = int2(profW, profH) - 1;
+    float zmin = CEU * 4.0;
+    [unroll] for (int j = 0; j < 2; ++j)
+        [unroll] for (int i = 0; i < 2; ++i)
+        {
+            const uint v = reconLe.Load(int3(clamp(b + int2(i, j), 0, lim), 0));
+            if (v != 0xFFFFFFFFu) zmin = min(zmin, asfloat(v));
+        }
+    if (zmin >= CEU * 2.0) return 1.0;
+    if (z >= CEU * 0.5) return zmin < CEU * 0.5 ? 0.0 : 1.0;
+    const float zp = Dist(profJogo.Load(int3(pz, 0)));
+    float g = 0.0;
+    [unroll] for (int k = 0; k < 4; ++k)
+    {
+        const int2 o = int2(k == 0 ? 1 : k == 1 ? -1 : 0, k == 2 ? 1 : k == 3 ? -1 : 0);
+        const float zv = Dist(profJogo.Load(int3(clamp(int2(pz) + o, 0, lim), 0)));
+        if (zv < CEU * 0.5 && zp < CEU * 0.5) g = max(g, abs(zv - zp) / max(zp, 1e-6));
+    }
+    return 1.0 - smoothstep(0.05 + 2.0 * g, 0.15 + 2.0 * g, max(z - zmin, 0.0) / max(zmin, 1e-6));
+}
+
 [numthreads(8, 8, 1)] void CSCor(uint2 p : SV_DispatchThreadID)
 {
     if (p.x >= corW || p.y >= corH) return;
@@ -152,11 +206,12 @@ float Exposicao()
     const int2 lim = int2(corW, corH) - 1;
     float3 ed = 0;
     float soma = 0;
+    const float livre = fora ? 1.0 : NaoOculto(q0, zc, pp);
     [unroll] for (int k = 0; k < 4; ++k)
     {
         const int2 o = int2(k & 1, k >> 1);
         const float4 v = edicao.Load(int3(clamp(i0 + o, 0, lim), 0));
-        const float wv = (o.x ? fr.x : 1.0 - fr.x) * (o.y ? fr.y : 1.0 - fr.y) * MesmaAntes(exp2(v.a), zc);
+        const float wv = (o.x ? fr.x : 1.0 - fr.x) * (o.y ? fr.y : 1.0 - fr.y) * MesmaAntes(exp2(v.a), zc) * livre;
         ed += v.rgb * wv;
         soma += wv;
     }
@@ -196,7 +251,7 @@ float Exposicao()
                 if (any(qf < 0.0) || any(qf > tamC)) continue; // o vizinho tambem veio de fora do quadro
                 const int2 qt = clamp(int2(qf), 0, lim);
                 const float4 v = edicao.Load(int3(qt, 0));
-                const float wv = wz * MesmaAntes(exp2(v.a), zt) / r;
+                const float wv = wz * MesmaAntes(exp2(v.a), zt) * NaoOculto(qf, zt, tp) / r;
                 ed += v.rgb * wv;
                 s1 += wv;
             }
@@ -298,10 +353,10 @@ bool ClienteBuffer::Inicia(ID3D12Device* d, const char* exe)
     strncpy_s(cab->exe, exe ? exe : "", _TRUNCATE);
     cab->aplica = 1;
 
-    // raiz: 16 constantes, SRV t0..t3, UAV u0..u4, amostrador linear com borda presa
+    // raiz: 24 constantes, SRV t0..t8, UAV u0..u8, amostrador linear com borda presa
     D3D12_DESCRIPTOR_RANGE r[2]{};
-    r[0] = {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 8, 0, 0, 0};
-    r[1] = {D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 8, 0, 0, 0};
+    r[0] = {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 9, 0, 0, 0};
+    r[1] = {D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 9, 0, 0, 0};
     D3D12_ROOT_PARAMETER p[3]{};
     p[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     p[0].Constants.Num32BitValues = 24;
@@ -321,9 +376,9 @@ bool ClienteBuffer::Inicia(ID3D12Device* d, const char* exe)
         erro = "root signature";
         return false;
     }
-    const char* ent[3] = {"CSAcum", "CSProf", "CSCor"};
-    Com<ID3D12PipelineState>* pso[3] = {&psoMov, &psoProf, &psoCor};
-    for (int i = 0; i < 3; ++i)
+    const char* ent[5] = {"CSAcum", "CSProf", "CSCor", "CSLimpaRecon", "CSRecon"};
+    Com<ID3D12PipelineState>* pso[5] = {&psoMov, &psoProf, &psoCor, &psoLimpaRecon, &psoRecon};
+    for (int i = 0; i < 5; ++i)
     {
         Com<ID3DBlob> b;
         if (!Compila(ent[i], &b, erro))
@@ -337,7 +392,7 @@ bool ClienteBuffer::Inicia(ID3D12Device* d, const char* exe)
             return false;
         }
     }
-    D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 16 * 3, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0};
+    D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kDescQuadro * 3, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0};
     if (FAILED(d->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&heap))))
     {
         erro = "descriptor heap";
@@ -450,6 +505,22 @@ bool ClienteBuffer::Garante(const EntradasJogo& e)
                                                         IID_PPV_ARGS(&acc[j][i])));
             estadoAcc[j][i] = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
         }
+    if (ok)
+    {
+        D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+        D3D12_RESOURCE_DESC rd{};
+        rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        rd.Width = profW;
+        rd.Height = profH;
+        rd.DepthOrArraySize = rd.MipLevels = 1;
+        rd.Format = DXGI_FORMAT_R32_UINT;
+        rd.SampleDesc.Count = 1;
+        rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        recon.Reset();
+        ok = SUCCEEDED(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                                    nullptr, IID_PPV_ARGS(&recon)));
+        estadoRecon = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    }
     temp.Reset();
     if (ok && !(dc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS))
     {
@@ -518,8 +589,20 @@ void ClienteBuffer::Uav(UINT i, ID3D12Resource* r, DXGI_FORMAT f)
 void ClienteBuffer::Barreira(ID3D12GraphicsCommandList* c, ID3D12Resource* r, D3D12_RESOURCE_STATES a,
                              D3D12_RESOURCE_STATES b)
 {
-    if (!r || a == b)
+    if (!r)
         return;
+    if (a == b)
+    {
+        // UAV -> UAV: barreira de UAV (as escritas de um despacho terminam antes do proximo ler/escrever)
+        if (a == D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+        {
+            D3D12_RESOURCE_BARRIER u{};
+            u.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+            u.UAV.pResource = r;
+            c->ResourceBarrier(1, &u);
+        }
+        return;
+    }
     D3D12_RESOURCE_BARRIER x{};
     x.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     x.Transition = {r, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, a, b};
@@ -632,8 +715,8 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
     }
     MemoryBarrier();
 
-    // descritores deste quadro: 3 conjuntos (o jogo pode ter ate 3 quadros na GPU); SRV t0..t7, UAV u0..u7
-    const UINT tS = (proxDesc % 3) * 16, tU = tS + 8;
+    // descritores deste quadro: 3 conjuntos (o jogo pode ter ate 3 quadros na GPU); SRV t0..t8, UAV u0..u8
+    const UINT tS = (proxDesc % 3) * kDescQuadro, tU = tS + 9;
     ++proxDesc;
     const UINT ant = pp, novo = pp ^ 1;
     const DXGI_FORMAT fMov = Leitura(fmtMov), fProf = Leitura(fmtProf), fCor = Leitura(fmtCor);
@@ -645,6 +728,7 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
     for (int j = 0; j < 3; ++j)
         Srv(tS + 4 + j, acc[j][ant].Get(), fAcc);
     Srv(tS + 7, jEd >= 0 ? acc[jEd][novo].Get() : nullptr, fAcc);
+    Srv(tS + 8, recon.Get(), DXGI_FORMAT_R32_UINT);
     ID3D12Resource* alvo = temp ? temp.Get() : e.cor;
     Uav(tU + 0, alvo, fCor);
     Uav(tU + 1, exporta ? cor[s].Get() : nullptr, DXGI_FORMAT_R16G16B16A16_FLOAT);
@@ -653,6 +737,7 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
     Uav(tU + 4, exporta ? exp[s].Get() : nullptr, DXGI_FORMAT_R32_FLOAT);
     for (int j = 0; j < 3; ++j)
         Uav(tU + 5 + j, acc[j][novo].Get(), fAcc);
+    Uav(tU + 8, recon.Get(), DXGI_FORMAT_R32_UINT);
 
     const UINT mw = e.movEspacoW ? e.movEspacoW : movW, mh = e.movEspacoH ? e.movEspacoH : movH;
     struct
@@ -713,6 +798,18 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
     }
     if (jEd >= 0)
         estado(jEd, novo, SRV); // CSCor le o acumulador da edicao ja deste quadro
+    if (k >= 0)
+    {
+        // profundidade reconstruida na ancora da edicao: zera, espalha (InterlockedMin) e passa a leitura
+        Barreira(c, recon.Get(), estadoRecon, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        c->SetPipelineState(psoLimpaRecon.Get());
+        c->Dispatch((profW + 7) / 8, (profH + 7) / 8, 1);
+        Barreira(c, recon.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        c->SetPipelineState(psoRecon.Get());
+        c->Dispatch((profW + 7) / 8, (profH + 7) / 8, 1);
+        Barreira(c, recon.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, SRV);
+        estadoRecon = SRV;
+    }
     if (exporta || k >= 0)
     {
         c->SetPipelineState(psoCor.Get());

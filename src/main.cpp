@@ -461,11 +461,51 @@ struct App
     UINT imgW = 0, imgH = 0;
     DXGI_FORMAT imgFmt = DXGI_FORMAT_R8G8B8A8_UNORM;
     // ---- reproducao (--reproduz pasta): os quadros gravados (Ctrl+Shift+G) entram como entrada, um por quadro ----
-    bool reproducao = false;
+    // Gravacao da captura de buffer (tem "dist"): o movimento e a distancia gravados entram no lugar dos buffers do jogo
+    // (DoJogo, oclusao reconstruida, acumulo exato) -- o modo buffer inteiro fora do jogo, deterministico.
+    bool reproducao = false, repJogo = false;
+    Tex repMov, repProf; // movimento (pixels da rede) e "profundidade" 1 / distancia (Z invertido infinito, perto = 1)
     std::wstring pastaReproducao;
     int quadrosReproducao = 0;
     ComPtr<ID3D12Resource> uploadReproducao;
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT fpReproducao{};
+    bool Exata() const { return buffer || repJogo; } // movimento e distancia do jogo (ao vivo ou gravados)
+    // sobe bytes (linhas de w * bpp) para a textura t (GPU ociosa; so na reproducao)
+    void SobeTex(Tex& t, const std::vector<unsigned char>& b, UINT bpp)
+    {
+        const auto rd = t.r->GetDesc();
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
+        UINT64 total = 0;
+        gpu.dev->GetCopyableFootprints(&rd, 0, 1, 0, &fp, nullptr, nullptr, &total);
+        D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_UPLOAD};
+        D3D12_RESOURCE_DESC bd{};
+        bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        bd.Width = total;
+        bd.Height = bd.DepthOrArraySize = bd.MipLevels = 1;
+        bd.SampleDesc.Count = 1;
+        bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        ComPtr<ID3D12Resource> up;
+        Ck(gpu.dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                            IID_PPV_ARGS(&up)),
+           "upload(reproducao jogo)");
+        unsigned char* m = nullptr;
+        up->Map(0, nullptr, (void**)&m);
+        for (UINT y = 0; y < t.h; ++y)
+            memcpy(m + fp.Offset + size_t(y) * fp.Footprint.RowPitch, b.data() + size_t(y) * t.w * bpp, size_t(t.w) * bpp);
+        up->Unmap(0, nullptr);
+        Ck(al[0]->Reset(), "reset");
+        Ck(cl[0]->Reset(al[0].Get(), nullptr), "list");
+        t.Para(cl[0].Get(), D3D12_RESOURCE_STATE_COPY_DEST);
+        D3D12_TEXTURE_COPY_LOCATION dst{t.r.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+        D3D12_TEXTURE_COPY_LOCATION src{up.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+        src.PlacedFootprint = fp;
+        cl[0]->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        t.Para(cl[0].Get(), D3D12_RESOURCE_STATE_COMMON);
+        cl[0]->Close();
+        ID3D12CommandList* l[] = {cl[0].Get()};
+        gpu.fila->ExecuteCommandLists(1, l);
+        gpu.Espera();
+    }
     bool AbreReproducao(const std::wstring& p)
     {
         FILE* f = nullptr;
@@ -491,6 +531,13 @@ struct App
         quadrosReproducao = n;
         pastaReproducao = p;
         reproducao = true;
+        repJogo = cab.find("\"dist\":") != std::string::npos;
+        if (repJogo)
+        {
+            repMov.Cria(gpu.dev.Get(), imgW, imgH, DXGI_FORMAT_R16G16_FLOAT, L"reproducao movimento", false);
+            repProf.Cria(gpu.dev.Get(), imgW, imgH, DXGI_FORMAT_R32_FLOAT, L"reproducao profundidade", false);
+            Log("reproducao", "gravacao da captura de buffer: movimento e distancia gravados no lugar dos buffers do jogo");
+        }
         imgFmt = DXGI_FORMAT_R16G16B16A16_FLOAT;
         D3D12_HEAP_PROPERTIES hp{};
         hp.Type = D3D12_HEAP_TYPE_DEFAULT;
@@ -546,6 +593,26 @@ struct App
         ID3D12CommandList* l[] = {cl[0].Get()};
         gpu.fila->ExecuteCommandLists(1, l);
         gpu.Espera();
+        if (repJogo)
+        {
+            auto le = [&](const wchar_t* nome, size_t bytes) {
+                std::vector<unsigned char> b(bytes);
+                wchar_t a[64];
+                swprintf(a, 64, L"\\%04d_%s.raw", i, nome);
+                FILE* g = nullptr;
+                _wfopen_s(&g, (pastaReproducao + a).c_str(), L"rb");
+                if (!g || fread(b.data(), 1, bytes, g) != bytes)
+                    throw std::runtime_error("reproducao: falta o movimento ou a distancia gravada");
+                fclose(g);
+                return b;
+            };
+            SobeTex(repMov, le(L"mov", size_t(imgW) * imgH * 4), 4);
+            auto z = le(L"dist", size_t(imgW) * imgH * 4);
+            float* zf = reinterpret_cast<float*>(z.data());
+            for (size_t k = 0; k < size_t(imgW) * imgH; ++k)
+                zf[k] = 1.f / std::max(zf[k], 1e-6f); // Dist(d) = perto / d com perto = 1 devolve a distancia gravada
+            SobeTex(repProf, z, 4);
+        }
     }
     float hdrSintetico = 0; // --hdr-sintetico <nits>: a foto vira scRGB (SoftKnee inverso x branco) para testar o caminho HDR
     bool CarregaImagem(const std::wstring& arq)
@@ -836,6 +903,17 @@ struct App
             fluxo.DoJogo(c, desc, gpu.dev.Get(), *qb.mov, *qb.prof, cam);
             temMov = true;
         }
+        else if (repJogo)
+        {
+            // reproducao de uma gravacao da captura de buffer: o movimento (pixels da rede) e a distancia radial gravados
+            Fluxo::Camera cam;
+            cam.corW = float(repMov.w);
+            cam.corH = float(repMov.h);
+            cam.perto = 1.f; // repProf = 1 / distancia: Dist devolve a distancia gravada (ja radial: sem FOV)
+            cam.invertida = cam.infinita = true;
+            fluxo.DoJogo(c, desc, gpu.dev.Get(), repMov, repProf, cam);
+            temMov = true;
+        }
         else
             temMov = cfg.movimento && fluxo.Calcula(c, desc, gpu.dev.Get(), fed.r.Get(), fed.fmt);
         if (temMov)
@@ -843,7 +921,7 @@ struct App
         // mascara de desenvolvedor: a classificacao (quando chega) e o estado seguem o movimento ate este quadro
         if (MascaraAtiva())
             mascara.Quadro(c, desc, gpu.dev.Get(), fed, temMov ? &fluxo.Movimento() : nullptr,
-                           temMov ? &fluxo.Confianca() : nullptr, buffer ? fluxo.DistanciaAtual() : nullptr,
+                           temMov ? &fluxo.Confianca() : nullptr, Exata() ? fluxo.DistanciaAtual() : nullptr,
                            cfg.temporal.exposicao, quadros, cfg.dev.taxa);
         // A rede roda na fila dela e responde com atraso: este quadro vai para a tela agora, com a ultima edicao; a
         // resposta, quando chega, e do quadro t0 que a rede viu e entra pelo deslocamento acumulado desde t0.
@@ -904,14 +982,14 @@ struct App
         {
             temporal.Edicao(c, desc, gpu.dev.Get(), origRede, rede.Entrada(), rede.Resposta(), tp);
             temporal.Grade(c, desc, gpu.dev.Get(), origRede, semDeslocamento ? nullptr : deslocamento,
-                           buffer && zRede.r ? &zRede : nullptr);
+                           Exata() && zRede.r ? &zRede : nullptr);
         }
         Tex* edicao = ultimaEdicao = (cfg.modo != 1 && redeOk)
                           ? temporal.Roda(c, desc, gpu.dev.Get(), orig, fed, fedAnt, usa, usa ? &rede.Entrada() : nullptr,
                                           usa && !semDeslocamento ? deslocamento : nullptr,
                                           temMov ? &fluxo.Movimento() : nullptr,
                                           (temMov && cfg.usaConfianca) ? &fluxo.Confianca() : nullptr,
-                                          fluxo.BufEstat(), tp, buffer ? fluxo.DistanciaAtual() : nullptr)
+                                          fluxo.BufEstat(), tp, Exata() ? fluxo.DistanciaAtual() : nullptr)
                           : nullptr;
         if (usa)
         {
@@ -1119,7 +1197,7 @@ struct App
         origRede.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
         c->CopyResource(origRede.r.Get(), orig.r.Get());
         orig.Para(c, antes);
-        if (Tex* z = buffer ? fluxo.DistanciaAtual() : nullptr)
+        if (Tex* z = Exata() ? fluxo.DistanciaAtual() : nullptr)
         {
             if (zRede.w != z->w || zRede.h != z->h)
                 zRede.Cria(gpu.dev.Get(), z->w, z->h, z->fmt, L"distancia que a rede viu", false);
@@ -1267,7 +1345,7 @@ struct App
             Log("gravacao", gravando > 0 ? "ja gravando" : "nada para gravar (ligue o overlay no jogo)");
             return;
         }
-        const double porQuadro = double(fed.w) * fed.h * (8 + 8 + 8 + 4 + 2 + (buffer ? 4 : 0));
+        const double porQuadro = double(fed.w) * fed.h * (8 + 8 + 8 + 4 + 2 + (Exata() ? 4 : 0));
         gravando = std::clamp(int(6e9 / porQuadro), 8, 240);
         gravados = 0;
         SYSTEMTIME st;
@@ -1286,7 +1364,7 @@ struct App
                     "\"conf\":\"R16F\"%s%s},\"quadros\":%d}\n",
                     fed.w, fed.h, inteiro.w, inteiro.h, hdr ? 1 : 0, escalaUsada,
                     MascaraAtiva() ? ",\"mascara\":\"RGBA16F\",\"mascara_sabe\":\"R8\"" : "",
-                    buffer ? ",\"dist\":\"R32F\"" : "", gravando);
+                    Exata() ? ",\"dist\":\"R32F\"" : "", gravando);
         if (!escritor.joinable())
             escritor = std::thread([this] {
                 for (;;)
@@ -1321,7 +1399,7 @@ struct App
         Tex* m = MascaraAtiva() ? mascara.Estado() : nullptr;
         Tex* ms = MascaraAtiva() ? mascara.Sabe() : nullptr;
         // captura de buffer: a distancia radial do jogo (R32F) para medir oclusao e rastro fora do jogo
-        Tex* zt = buffer ? fluxo.DistanciaAtual() : nullptr;
+        Tex* zt = Exata() ? fluxo.DistanciaAtual() : nullptr;
         Tex* tex[8] = {&orig, &temporal.Crua(), edicaoExibida ? edicaoExibida : &temporal.Crua(), &fluxo.Movimento(),
                        &fluxo.Confianca(), m ? m : &orig, ms ? ms : &fluxo.Confianca(), zt ? zt : &fluxo.Confianca()};
         const UINT bpp[8] = {8, 8, 8, 4, 2, 8, 1, 4};
@@ -1471,7 +1549,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
     App app;
     std::wstring alvoTitulo, imagemArq;
-    bool teclasTeste = false;
+    bool teclasTeste = false, ignoraFoco = false;
     int atrasoArg = -2; // --atraso N: a resposta da rede entra N quadros depois do envio (teste do modo assincrono)
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
@@ -1481,6 +1559,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             alvoTitulo = argv[++i];
         else if (!wcscmp(argv[i], L"--teclas-teste"))
             teclasTeste = true; // testes com outro overlay aberto: atalhos Ctrl+Shift+F5..F10
+        else if (!wcscmp(argv[i], L"--ignora-foco"))
+            ignoraFoco = true; // testes com o PC em uso: roda sem a janela do jogo em primeiro plano
         else if (!wcscmp(argv[i], L"--grava-em"))
             app.gravaEm = _wtoi(argv[++i]);
         else if (!wcscmp(argv[i], L"--quadros"))
@@ -1708,7 +1788,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         // Game Bar: com o jogo fora de foco (Alt+Tab, minimizado, outra janela na frente) overlay e painel somem e
         // nada e processado; o "sempre no topo" so e reafirmado com o jogo em foco (antes, a cada 250 ms, o overlay
         // voltava por cima de qualquer janela e parecia que o Alt+Tab e o minimizar nao funcionavam)
-        const bool foco = !app.Ligado() || app.quadrosTeste > 0 || app.JogoEmFoco();
+        const bool foco = !app.Ligado() || app.quadrosTeste > 0 || ignoraFoco || app.JogoEmFoco();
         app.painel.DefineAutoOculto(app.Ligado() && !foco);
         {
             static auto ultimaOrdem = clk::now();

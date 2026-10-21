@@ -65,6 +65,16 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
     dele virava estimativa atrasada (o rastro em personagem e objetos). Contra o quadro anterior (e no jogo, com a
     edição de 1–3 quadros atrás) só conta o que o movimento da câmera não explica. Medido com a câmera girando e
     andando (`--giro --anda`): confiança no objeto perto 0,46 → 0,997; a faixa recém-descoberta segue 100% detectada.
+  - No jogo, a DLL aplica a edição de 1–3 quadros atrás com a mesma oclusão reconstruída (cada ponto deste quadro marca
+    a distância dele onde estava no quadro da edição); antes ela só comparava a distância gravada na edição e deixava
+    passar a edição do personagem no chão perto dele.
+  - A média temporal da edição encurta com o movimento do pixel (metade a 16 px/quadro, `DLSS5_ESTAB_PX`): a edição da
+    rede depende do ângulo de vista e da animação, e 8 quadros de média em movimento eram a edição atrasada sobre a
+    cena; parado, a média longa segura a cintilação.
+  - Medido na gravação do Gears reproduzida fora do jogo (`--reproduz` de uma gravação do modo buffer usa o movimento e a
+    distância gravados: o modo buffer inteiro, determinístico) contra a edição ideal (a resposta da rede reprojetada):
+    resíduo no overlay 0,041 → 0,018 (0,040 → 0,027 perto de bordas de profundidade); na etapa do jogo, simulada com
+    os dados gravados, a edição que chegava de algo que estava na frente 0,070 → 0.
   - Diagnóstico: `captura\DLSS5Buffer.log` registra a cada 5 s os despachos do FSR (por segundo), a resolução de render,
     resets, trocas de saída, jitter, e do lado do overlay quantos quadros foram exportados e receberam edição, com a
     idade média e máxima da edição em quadros.

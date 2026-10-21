@@ -6,6 +6,17 @@
 namespace ov {
 
 namespace {
+// captura de buffer: movimento (px da rede por quadro) em que a media temporal cai pela metade; 0 desliga.
+// DLSS5_ESTAB_PX sobrepoe (medida)
+float PxEstabilidade()
+{
+    static const float v = [] {
+        const char* e = std::getenv("DLSS5_ESTAB_PX");
+        return e ? float(std::atof(e)) : 16.f;
+    }();
+    return v;
+}
+
 // edicao da resposta no espaco do quadro que a rede viu (t0): composicao de referencia - original
 const char* kEdicao = R"(
 // espaco comprimido (x / (1 + luma), como o TAA dos jogos): o realce em HDR nao domina o acumulo nem o reposicionamento
@@ -103,7 +114,8 @@ float3 CorP(float3 o) { o = max(o, 0.0); return pow(o / (1.0 + Lum(o)), 1.0 / 2.
 
 const char* kHlsl = R"(
 cbuffer C : register(b0) { uint w; uint h; uint temResp; uint temHist; float maxN; float rejeicao; float folga; uint temMov;
-                           uint temDesl; uint temConf; uint temEstat; uint temGrade; uint gw; uint gh; uint temDeslG; uint exata; };
+                           uint temDesl; uint temConf; uint temEstat; uint temGrade; uint gw; uint gh; uint temDeslG; uint exata;
+                           float pxEstab; uint pad1; uint pad2; uint pad3; };
 // exata: movimento e confianca do proprio jogo (captura de buffer). A confianca vem da profundidade reprojetada e e
 // exata: vale inteira no historico, no caminho da resposta atrasada e na grade (que separa camadas pela distancia).
 // espaco comprimido (x / (1 + luma), como o TAA dos jogos): o realce em HDR nao domina o acumulo nem o reposicionamento
@@ -409,7 +421,11 @@ float3 FatiaDentro(float2 pos, float z01, float3 cp, float lz)
         }
         // exata com historico valido: onde a resposta (de 1-2 quadros atras) nao viu esta superficie (o objeto estava na
         // frente), o historico do proprio fundo fica; misturar a grade ali trazia um pouco do objeto (fantasma)
-        float nn = min(n + peso, maxN);
+        // exata: a media temporal encurta com o movimento do pixel (pxEstab px/quadro = metade dos quadros). A edicao da
+        // rede depende do angulo de vista (reflexo, luz, armadura) e da animacao: em movimento, 8 quadros de media eram
+        // a edicao atrasada sobre a cena (o rastro); parado, a media longa segura a cintilacao da rede.
+        const float teto = (exata && pxEstab > 0.0) ? max(1.0, maxN / (1.0 + length(v) / pxEstab)) : maxN;
+        float nn = min(n + peso, teto);
         // media ponderada (historico n, amostra peso); sem historico a amostra entra inteira
         hr = lerp(hr, e, exata ? peso / max(nn, max(peso, 1e-4)) : peso / max(nn, 1.0));
         n = nn;
@@ -443,6 +459,8 @@ struct K
     UINT w, h, temResp, temHist;
     float maxN, rejeicao, folga;
     UINT temMov, temDesl, temConf, temEstat, temGrade, gw, gh, temDeslG, pad;
+    float pxEstab;
+    UINT pad1, pad2, pad3;
 };
 struct KGrade
 {
@@ -465,7 +483,7 @@ const D3D12_RESOURCE_STATES SRV =
 
 void Temporal::Cria(ID3D12Device* d)
 {
-    passe.Cria(d, (std::string(hlsl::Comum) + kHlsl).c_str(), "CSTemporal", 15, 2, 16, "temporal");
+    passe.Cria(d, (std::string(hlsl::Comum) + kHlsl).c_str(), "CSTemporal", 15, 2, 20, "temporal");
     passeGrade.Cria(d, (std::string(hlsl::Comum) + kGrade).c_str(), "CSGrade", 3, 2, 8, "grade");
     passeEdicao.Cria(d, (std::string(hlsl::Comum) + kEdicao).c_str(), "CSEdicao", 3, 1, 8, "edicao");
     passeAcumula.Cria(d, (std::string(hlsl::Comum) + kAcumula).c_str(), "CSAcumula", 3, 1, 4, "acumula");
@@ -633,7 +651,11 @@ Tex* Temporal::Roda(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Devic
         gw,
         gh,
         deslGAgora ? 1u : 0u,
-        ((zAgora && zGradeValida) ? 1u : 0u) | (getenv("DLSS5_DEBUG_FAIXA") ? 2u : 0u)};
+        ((zAgora && zGradeValida) ? 1u : 0u) | (getenv("DLSS5_DEBUG_FAIXA") ? 2u : 0u),
+        PxEstabilidade(),
+        0,
+        0,
+        0};
     using Par = std::pair<ID3D12Resource*, DXGI_FORMAT>;
     const Par vazio{fed.r.Get(), fed.fmt};
     passe.Roda(c, desc, d,

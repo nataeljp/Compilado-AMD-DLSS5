@@ -74,8 +74,12 @@ class ClienteBuffer
     Cabecalho* cab = nullptr;
     uint32_t geracao = 0;
     Com<ID3D12RootSignature> raiz;
-    Com<ID3D12PipelineState> psoMov, psoProf, psoCor;
+    Com<ID3D12PipelineState> psoMov, psoProf, psoCor, psoLimpaRecon, psoRecon;
+    static constexpr UINT kDescQuadro = 18; // por conjunto de descritores: SRV t0..t8 e UAV u0..u8
     Com<ID3D12DescriptorHeap> heap;
+    // profundidade reconstruida na ancora da edicao (R32_UINT, resolucao da profundidade; local, nao compartilhada)
+    Com<ID3D12Resource> recon;
+    D3D12_RESOURCE_STATES estadoRecon = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     UINT passoDesc = 0, proxDesc = 0;
     Com<ID3D12Resource> cor[kSlotsEntrada], mov[kSlotsEntrada], prof[kSlotsEntrada], exp[kSlotsEntrada];
     Com<ID3D12Resource> edicao[kSlotsEdicao];
