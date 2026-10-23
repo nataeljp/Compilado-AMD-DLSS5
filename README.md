@@ -26,6 +26,21 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
 5. O programa fica na **bandeja do sistema** (ícones ocultos da barra de tarefas): clique no ícone mostra/esconde o
    painel; botão direito → **Sair** fecha. Fechar o painel (×, Esc) só esconde.
 
+### Memória de vídeo
+
+- **A rede é fixa por sessão.** Tamanho, rede grande ou pequena, passes e rede completa valem do Ctrl+Shift+D até o
+  próximo; mudar no painel vale ao religar (Ctrl+Shift+D duas vezes). O driver HIP da AMD nunca devolve os buffers que
+  a ponte do runtime importa (`hip_d3d12_bridge.h` do lmxxf, cerca de 44 bytes por pixel da rede), então cada tamanho
+  novo de rede prende memória até fechar o overlay; e trocar de rede recarrega os pesos com a GPU parada.
+- O painel mostra a VRAM do overlay contra o orçamento que o Windows dá a ele, e o `overlay.jsonl` registra a cada 5 s
+  (`"tipo":"memoria"`) o uso, o orçamento, a memória de vídeo na RAM e cada tamanho de rede novo.
+- Se a VRAM do overlay passar do orçamento por 2 s, a rede é desligada de vez (uma travada só, em vez de o Windows
+  mover a rede para a RAM e o fps cair sem voltar) e o painel avisa. Religar recria a rede.
+- Desligar com Ctrl+Shift+D não solta a rede; para devolver toda a VRAM, feche o overlay (bandeja → Sair).
+- Na captura de buffer, a DLL no jogo aloca movimento e profundidade pelo maior tamanho de render que o jogo declarou
+  ao FSR: a resolução dinâmica não recria mais as texturas, e as gerações velhas só são soltas depois de a GPU terminar
+  de usá-las.
+
 ### Modo de Rede: captura de vídeo ou de buffer
 
 - **Captura de vídeo** (padrão): lê a janela como o OBS. Funciona em qualquer jogo, inclusive online; a rede vê o HUD
@@ -142,9 +157,9 @@ Os parâmetros do DLSS 5 seguem os nomes que a NVIDIA expõe no NGX (os mesmos d
 | `corComposicao`, `protecao` | 0..2, 1..16 | mistura de cor e proteção bilateral de luz da composição (padrão 1 e 16 = desligada) |
 | `ponte` | −1..2 | quadro → proxy da rede: −1 automática (SDR direta, HDR SoftKnee), 0 direta, 1 SoftKnee, 2 ACES (RRT+ODT, RenoDX) |
 | `brancoNits` | 0..400 | branco de papel do HDR (0 = o branco SDR do Windows) |
-| `alturaRede` | 720..2160 | altura em que a rede roda (limitada pela janela) |
-| `redeCompleta` | true/false | os 71 blocos (camadas) da rede; false pula 42/43/46 (~1 ms) |
-| `passes` | 1..3 | quantas vezes a rede inteira roda por quadro (1 = normal) |
+| `alturaRede` | 720..2160 | altura em que a rede roda (limitada pela janela); vale ao religar |
+| `redeCompleta` | true/false | os 71 blocos (camadas) da rede; false pula 42/43/46 (~1 ms); vale ao religar |
+| `passes` | 1..3 | quantas vezes a rede inteira roda por quadro (1 = normal); vale ao religar |
 | `movimento`, `usaConfianca` | true/false | movimento simulado por fluxo óptico; descartar o acúmulo onde ida e volta não conferem |
 | `estabilidade`, `rejeicao` | 1..16, 2..40 | quadros que a edição acumula; quão rápido mudança de cor derruba o acúmulo |
 | `mediaMovimento` | 0..32 px | captura de buffer: a média cai pela metade a cada tantos px/quadro de movimento (padrão 8; 0 = fixa) |
