@@ -31,6 +31,9 @@ struct EntradasJogo
     float preExposicao = 1, escalaExposicao = 1;
     // regiao valida (resolucao dinamica: so o canto superior esquerdo da textura); 0 = a textura inteira
     uint32_t corValidoW = 0, corValidoH = 0, movValidoW = 0, movValidoH = 0, profValidoW = 0, profValidoH = 0;
+    // o maior tamanho de render que o jogo declarou ao FSR ao criar o contexto (0 = desconhecido: o modulo chegou depois);
+    // movimento em resolucao de render e profundidade cabem nele, entao a resolucao dinamica nao recria as texturas
+    uint32_t maxRenderW = 0, maxRenderH = 0;
     float jitterX = 0, jitterY = 0;
     float perto = 0, longe = 0, fovY = 0;
     bool reset = false, profInvertida = false, profInfinita = false, hdr = true;
@@ -87,7 +90,18 @@ class ClienteBuffer
     Com<ID3D12Fence> cercaJogo, cercaOverlay;
     DXGI_FORMAT fmtCor = DXGI_FORMAT_UNKNOWN, fmtMov = DXGI_FORMAT_UNKNOWN, fmtProf = DXGI_FORMAT_UNKNOWN;
     UINT64 corW = 0;
-    UINT corH = 0, movW = 0, movH = 0, profW = 0, profH = 0;
+    UINT corH = 0, movW = 0, movH = 0, profW = 0, profH = 0; // tamanho das texturas (o maximo da geracao)
+    UINT movValW = 0, movValH = 0, profValW = 0, profValH = 0; // a regiao valida do jogo neste quadro
+    // Fila de descarte: uma geracao velha pode estar em uso por quadros ja gravados nas listas do jogo. Os recursos dela
+    // so saem quando a cerca local (sinalizada depois de cada lista com os passes daqui) passar do ultimo quadro gravado.
+    struct Velho
+    {
+        std::vector<Com<ID3D12Pageable>> itens;
+        uint64_t valor = 0;
+    };
+    std::vector<Velho> lixeira;
+    Com<ID3D12Fence> cercaLocal;
+    uint64_t valorLocal = 0, pendenteLocal = 0;
     uint64_t quadro = 0, pendente = 0;
     std::string erro;
     std::vector<HANDLE> handles; // nomes da geracao atual (fechados quando ela troca)

@@ -27,6 +27,7 @@ cbuffer K : register(b0)
     uint jExporta;      // acumulador cujo deslocamento vai como movimento exportado (3 = so o deste quadro)
     float tanY, aspecto; // tan(fovY / 2) e largura / altura: distancia radial (0 = sem FOV: Z da camera)
     uint pad2;
+    uint movVW, movVH, profVW, profVH; // a regiao valida do movimento e da profundidade do jogo neste quadro
 };
 Texture2D<float2> movJogo : register(t0);
 Texture2D<float> profJogo : register(t1);
@@ -47,6 +48,20 @@ RWTexture2D<float2> accNovo1 : register(u6);
 RWTexture2D<float2> accNovo2 : register(u7);
 RWTexture2D<uint> recon : register(u8);   // a mesma, escrita (resolucao da profundidade)
 SamplerState lin : register(s0);
+
+// Com resolucao dinamica o jogo entrega movimento e profundidade numa regiao valida que muda a cada quadro. As texturas
+// daqui tem o tamanho maximo (movW x movH, profW x profH) e leem o pixel valido do jogo mais proximo; com a regiao igual
+// ao tamanho maximo e o proprio pixel.
+float2 MovJogo(uint2 p)
+{
+    const uint2 v = uint2(movVW, movVH);
+    return movJogo.Load(int3(min(uint2((float2(p) + 0.5) * float2(v) / float2(movW, movH)), v - 1), 0));
+}
+float ProfJogo(int2 q)
+{
+    const uint2 v = uint2(profVW, profVH);
+    return profJogo.Load(int3(min(uint2((float2(q) + 0.5) * float2(v) / float2(profW, profH)), v - 1), 0));
+}
 
 static const float CEU = 1e6;
 // profundidade do jogo -> distancia da camera (a mesma conta no overlay e no jogo: Fluxo/DoJogo, Exporta, CSCor)
@@ -106,7 +121,7 @@ float Exposicao()
     if (exporta && all(p == 0))
         expSlot[uint2(0, 0)] = Exposicao();
     if (p.x >= movW || p.y >= movH) return;
-    float2 m = movJogo.Load(int3(p, 0)) * float2(movEscX, movEscY);
+    float2 m = MovJogo(p) * float2(movEscX, movEscY);
     m = all(isfinite(m)) ? m : 0;
     const float2 uv = ((p + 0.5) * float2(corW, corH) / float2(movW, movH) + m) / float2(corW, corH);
     float2 a[3];
@@ -123,7 +138,7 @@ float Exposicao()
 [numthreads(8, 8, 1)] void CSProf(uint2 p : SV_DispatchThreadID)
 {
     if (p.x >= profW || p.y >= profH) return;
-    profSlot[p] = profJogo.Load(int3(p, 0));
+    profSlot[p] = ProfJogo(p);
 }
 
 // Oclusao como no FSR (profundidade reconstruida): cada ponto deste quadro marca a distancia dele onde estava no quadro
@@ -140,7 +155,7 @@ float Exposicao()
     const float2 uv = (q + 0.5) / float2(profW, profH);
     float2 m = accEd.SampleLevel(lin, uv, 0);
     if (!all(isfinite(m))) return;
-    const float z = Radial(Dist(profJogo.Load(int3(q, 0))), uv);
+    const float z = Radial(Dist(ProfJogo(q)), uv);
     const float2 u = (uv * float2(corW, corH) + m) * float2(profW, profH) / float2(corW, corH);
     const int2 b = int2(floor(u - 0.5));
     [unroll] for (int j = 0; j < 2; ++j)
@@ -167,12 +182,12 @@ float NaoOculto(float2 qAnc, float z, uint2 pz)
         }
     if (zmin >= CEU * 2.0) return 1.0;
     if (z >= CEU * 0.5) return zmin < CEU * 0.5 ? 0.0 : 1.0;
-    const float zp = Dist(profJogo.Load(int3(pz, 0)));
+    const float zp = Dist(ProfJogo(pz));
     float g = 0.0;
     [unroll] for (int k = 0; k < 4; ++k)
     {
         const int2 o = int2(k == 0 ? 1 : k == 1 ? -1 : 0, k == 2 ? 1 : k == 3 ? -1 : 0);
-        const float zv = Dist(profJogo.Load(int3(clamp(int2(pz) + o, 0, lim), 0)));
+        const float zv = Dist(ProfJogo(clamp(int2(pz) + o, 0, lim)));
         if (zv < CEU * 0.5 && zp < CEU * 0.5) g = max(g, abs(zv - zp) / max(zp, 1e-6));
     }
     return 1.0 - smoothstep(0.05 + 2.0 * g, 0.15 + 2.0 * g, max(z - zmin, 0.0) / max(zmin, 1e-6));
@@ -194,7 +209,7 @@ float NaoOculto(float2 qAnc, float z, uint2 pz)
     m = all(isfinite(m)) ? m : 0;
     // so a mesma superficie: a edicao leva no alfa log2 da distancia de cada pixel no quadro dela
     const uint2 pp = min(uint2((p + 0.5) * float2(profW, profH) / float2(corW, corH)), uint2(profW - 1, profH - 1));
-    const float zc = Radial(Dist(profJogo.Load(int3(pp, 0))), (p + 0.5) / float2(corW, corH));
+    const float zc = Radial(Dist(ProfJogo(pp)), (p + 0.5) / float2(corW, corH));
     // fora do quadro (camera girando rapido: conteudo novo entrando pela borda) nao ha edicao para trazer: prender na
     // borda esticava a ultima coluna/linha (faixas). Vai para os vizinhos.
     const float2 q0 = p + 0.5 + m;
@@ -242,7 +257,7 @@ float NaoOculto(float2 qAnc, float z, uint2 pz)
                 sincos(k * 0.3926991 + r * 0.29, dir.y, dir.x);
                 const int2 t = clamp(int2(float2(p) + 0.5 + dir * r), 0, lim);
                 const uint2 tp = min(uint2((t + 0.5) * float2(profW, profH) / tamC), uint2(profW - 1, profH - 1));
-                const float zt = Radial(Dist(profJogo.Load(int3(tp, 0))), (t + 0.5) / tamC);
+                const float zt = Radial(Dist(ProfJogo(tp)), (t + 0.5) / tamC);
                 const float wz = Mesma(zt, zc);
                 if (wz <= 0.0) continue;
                 float2 mt = accEd.SampleLevel(lin, (t + 0.5) / tamC, 0);
@@ -353,13 +368,13 @@ bool ClienteBuffer::Inicia(ID3D12Device* d, const char* exe)
     strncpy_s(cab->exe, exe ? exe : "", _TRUNCATE);
     cab->aplica = 1;
 
-    // raiz: 24 constantes, SRV t0..t8, UAV u0..u8, amostrador linear com borda presa
+    // raiz: 28 constantes, SRV t0..t8, UAV u0..u8, amostrador linear com borda presa
     D3D12_DESCRIPTOR_RANGE r[2]{};
     r[0] = {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 9, 0, 0, 0};
     r[1] = {D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 9, 0, 0, 0};
     D3D12_ROOT_PARAMETER p[3]{};
     p[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    p[0].Constants.Num32BitValues = 24;
+    p[0].Constants.Num32BitValues = 28;
     p[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     p[1].DescriptorTable = {1, &r[0]};
     p[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
@@ -399,6 +414,11 @@ bool ClienteBuffer::Inicia(ID3D12Device* d, const char* exe)
         return false;
     }
     passoDesc = d->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    if (FAILED(d->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&cercaLocal))))
+    {
+        erro = "cerca local";
+        return false;
+    }
     return true;
 }
 
@@ -463,17 +483,53 @@ bool ClienteBuffer::Garante(const EntradasJogo& e)
     const D3D12_RESOURCE_DESC dc = e.cor->GetDesc(), dm = e.mov->GetDesc(), dp = e.prof->GetDesc();
     auto val = [](uint32_t v, UINT64 total) { return UINT(v && v <= total ? v : total); };
     const UINT cw = val(e.corValidoW, dc.Width), ch = val(e.corValidoH, dc.Height);
-    const UINT mw = val(e.movValidoW, dm.Width), mh = val(e.movValidoH, dm.Height);
-    const UINT pw = val(e.profValidoW, dp.Width), ph = val(e.profValidoH, dp.Height);
+    // movimento e profundidade: a regiao valida deste quadro vai para os shaders (MovJogo/ProfJogo); as texturas tem o
+    // tamanho maximo e so sao recriadas se ele crescer (antes, cada mudanca da resolucao dinamica recriava tudo)
+    movValW = val(e.movValidoW, dm.Width), movValH = val(e.movValidoH, dm.Height);
+    profValW = val(e.profValidoW, dp.Width), profValH = val(e.profValidoH, dp.Height);
+    auto maximo = [](UINT valido, uint32_t declarado, UINT64 total) {
+        return UINT(std::min<UINT64>(std::max<UINT64>(valido, declarado), total));
+    };
+    UINT mw = maximo(movValW, e.maxRenderW, dm.Width), mh = maximo(movValH, e.maxRenderH, dm.Height);
+    UINT pw = maximo(profValW, e.maxRenderW, dp.Width), ph = maximo(profValH, e.maxRenderH, dp.Height);
     const bool mesmaCor = (temp != nullptr) == !(dc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) &&
                           (!temp || (temp->GetDesc().Width == dc.Width && temp->GetDesc().Height == dc.Height));
-    if (geracao && cw == corW && ch == corH && dc.Format == fmtCor && mw == movW && mh == movH && dm.Format == fmtMov &&
-        pw == profW && ph == profH && dp.Format == fmtProf && mesmaCor)
+    const bool mesmaSaida = geracao && cw == corW && ch == corH && dc.Format == fmtCor && dm.Format == fmtMov &&
+                            dp.Format == fmtProf && mesmaCor;
+    if (mesmaSaida && mw <= movW && mh <= movH && pw <= profW && ph <= profH)
         return true;
+    if (mesmaSaida)
+    {
+        // so cresce: o maximo visto ate aqui continua valendo
+        mw = std::max(mw, movW), mh = std::max(mh, movH);
+        pw = std::max(pw, profW), ph = std::max(ph, profH);
+    }
     cab->geracao = 0; // o overlay solta a geracao velha
     for (HANDLE h_ : handles)
         CloseHandle(h_);
     handles.clear();
+    if (geracao)
+    {
+        Velho v;
+        v.valor = valorLocal; // o ultimo quadro gravado com esta geracao
+        auto guarda = [&](const Com<ID3D12Resource>& r) {
+            if (r)
+                v.itens.emplace_back(r.Get());
+        };
+        for (uint32_t i = 0; i < kSlotsEntrada; ++i)
+            guarda(cor[i]), guarda(mov[i]), guarda(prof[i]), guarda(exp[i]);
+        for (uint32_t i = 0; i < kSlotsEdicao; ++i)
+            guarda(edicao[i]);
+        for (auto& par : acc)
+            for (auto& r : par)
+                guarda(r);
+        guarda(recon);
+        guarda(temp);
+        for (ID3D12Fence* f : {cercaJogo.Get(), cercaOverlay.Get()})
+            if (f)
+                v.itens.emplace_back(f);
+        lixeira.push_back(std::move(v));
+    }
     ++geracao;
     corW = cw, corH = ch, fmtCor = dc.Format;
     movW = mw, movH = mh, fmtMov = dm.Format;
@@ -621,6 +677,12 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
 {
     if (!cab || !e.cor || !e.mov || !e.prof)
         return 0;
+    if (!lixeira.empty())
+    {
+        const uint64_t feito = cercaLocal->GetCompletedValue();
+        lixeira.erase(std::remove_if(lixeira.begin(), lixeira.end(), [&](const Velho& v) { return v.valor <= feito; }),
+                      lixeira.end());
+    }
     cab->batimentoJogo = GetTickCount64();
     if (!OverlayVivo())
     {
@@ -749,11 +811,13 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
         UINT ativos, zera, jExporta;
         float tanY, aspecto;
         UINT pad2;
+        UINT movVW, movVH, profVW, profVH;
     } k_{UINT(corW), corH, movW, movH, profW, profH, exporta ? 1u : 0u, k >= 0 ? 1u : 0u,
          e.movEscalaX * float(corW) / float(mw), e.movEscalaY * float(corH) / float(mh), e.preExposicao,
          e.escalaExposicao, e.exposicao ? 1u : 0u, Srgb(fmtCor) ? 1u : 0u,
          (e.profInvertidaConhecida ? e.profInvertida : cab->profInvertidaUsada != 0) ? 1u : 0u, infinita ? 1u : 0u, perto,
-         longe, ativos, zera, jExp >= 0 ? UINT(jExp) : 3u, TanMeioFov(e.fovY), float(corW) / float(corH), 0};
+         longe, ativos, zera, jExp >= 0 ? UINT(jExp) : 3u, TanMeioFov(e.fovY), float(corW) / float(corH), 0,
+         movValW, movValH, profValW, profValH};
 
     const D3D12_RESOURCE_STATES SRV = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     auto estado = [&](int j, UINT i, D3D12_RESOURCE_STATES para) {
@@ -786,7 +850,8 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
     ID3D12DescriptorHeap* hs[] = {heap.Get()};
     c->SetDescriptorHeaps(1, hs);
     c->SetComputeRootSignature(raiz.Get());
-    c->SetComputeRoot32BitConstants(0, 24, &k_, 0);
+    static_assert(sizeof(k_) == 28 * 4, "constantes: o mesmo layout do cbuffer K");
+    c->SetComputeRoot32BitConstants(0, 28, &k_, 0);
     c->SetComputeRootDescriptorTable(1, Gpu(tS));
     c->SetComputeRootDescriptorTable(2, Gpu(tU));
     c->SetPipelineState(psoMov.Get()); // CSAcum: acumuladores e o movimento exportado
@@ -844,6 +909,7 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
     }
     if (exporta || k >= 0)
         pendente = n; // o overlay espera a cerca do jogo: quadro exportado e leitura do slot de edicao
+    pendenteLocal = ++valorLocal; // a fila de descarte sabe quando a GPU terminou este quadro
     return n;
 }
 
@@ -853,6 +919,11 @@ void ClienteBuffer::Submetido(ID3D12CommandQueue* q)
     {
         q->Signal(cercaJogo.Get(), pendente);
         pendente = 0;
+    }
+    if (pendenteLocal && cercaLocal && q)
+    {
+        q->Signal(cercaLocal.Get(), pendenteLocal);
+        pendenteLocal = 0;
     }
 }
 

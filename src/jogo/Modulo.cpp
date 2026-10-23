@@ -27,6 +27,8 @@ bool g_clienteOk = false, g_clienteFalhou = false;
 ID3D12Device* g_dev = nullptr;
 ID3D12GraphicsCommandList* g_lista = nullptr; // a lista em que o cliente gravou (sinaliza quando for submetida)
 std::unordered_map<ffxContext, uint32_t> g_flags; // flags de criacao de cada contexto de upscale
+// o maior tamanho de render declarado na criacao de cada contexto (as texturas do cliente cabem nele)
+std::unordered_map<ffxContext, std::pair<uint32_t, uint32_t>> g_maxRender;
 FILE* g_log = nullptr;
 HMODULE g_eu = nullptr;
 
@@ -290,6 +292,7 @@ ffxReturnCode_t CriaContexto(ffxContext* ctx, ffxCreateContextDescHeader* desc, 
                 const auto* u = reinterpret_cast<const ffxCreateContextDescUpscale*>(h);
                 std::lock_guard<std::mutex> lk(g_mx);
                 g_flags[*ctx] = u->flags | 0x80000000u; // bit alto: flags conhecidas
+                g_maxRender[*ctx] = {u->maxRenderSize.width, u->maxRenderSize.height};
                 Log("contexto de upscale criado: flags 0x%x, render ate %ux%u, saida %ux%u", u->flags,
                     u->maxRenderSize.width, u->maxRenderSize.height, u->maxUpscaleSize.width, u->maxUpscaleSize.height);
             }
@@ -325,12 +328,15 @@ ffxReturnCode_t Despacha(ffxContext* ctx, const ffxDispatchDescHeader* desc)
             return r;
         GanchoFila(g_dev);
     }
-    uint32_t flags = 0;
+    uint32_t flags = 0, maxRenderW = 0, maxRenderH = 0;
     if (ctx)
     {
         auto it = g_flags.find(*ctx);
         if (it != g_flags.end())
             flags = it->second;
+        auto im = g_maxRender.find(*ctx);
+        if (im != g_maxRender.end())
+            maxRenderW = im->second.first, maxRenderH = im->second.second;
     }
     const bool conhecidas = (flags & 0x80000000u) != 0;
     dlss5ov::EntradasJogo e;
@@ -351,6 +357,8 @@ ffxReturnCode_t Despacha(ffxContext* ctx, const ffxDispatchDescHeader* desc)
     e.profEstado = Estado(u->depth.state);
     e.profValidoW = u->renderSize.width;
     e.profValidoH = u->renderSize.height;
+    e.maxRenderW = maxRenderW;
+    e.maxRenderH = maxRenderH;
     e.exposicao = static_cast<ID3D12Resource*>(u->exposure.resource);
     e.expEstado = Estado(u->exposure.state);
     e.preExposicao = u->preExposure > 0 ? u->preExposure : 1.f;
