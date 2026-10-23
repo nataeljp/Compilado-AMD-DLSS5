@@ -1007,38 +1007,16 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         Marca("Gradação do modelo (B/C)", &cfg.ngx.gradacao, "A gradacao final do kernel da NVIDIA para os Models B e C.");
     }
 
-    // ---- pele e objetos (o Developer Masking + Show Masks da NVIDIA): quanto do DLSS 5 entra em cada grupo ----
-    Secao("PELE E OBJETOS (MÁSCARA)");
+    // ---- pele: a separacao que a propria rede da NVIDIA faz (UseAutoMask) e o ajuste fino dela ----
+    Secao("PELE (NVIDIA)");
     {
-        mc |= Marca("Separar pele e objetos", &cfg.dev.liga,
-                    "Como o Developer Masking da NVIDIA: um classificador (bin\\ml, na GPU) separa pele, cabelo, o resto\n"
-                    "do personagem e objetos do cenario, e cada grupo recebe quanto do DLSS 5 entra nele -- o ControlMask\n"
-                    "do binario da NVIDIA: mistura por pixel entre o quadro e a rede, numa passada so. A rede ja acha a pele\n"
-                    "sozinha (medido: igual a NVIDIA); a mascara so decide quanto do efeito fica em cada grupo.");
-        if (cfg.dev.liga && !e.estadoMascara.empty())
-        {
-            const bool falha = e.estadoMascara.rfind("classificador:", 0) == 0 || e.estadoMascara.find("runtime sem") != std::string::npos;
-            ImGui::PushTextWrapPos(0.f);
-            ImGui::TextColored(falha ? ImVec4(1, 0.45f, 0.4f, 1) : ImGui::ColorConvertU32ToFloat4(kVerde), "%s",
-                               e.estadoMascara.c_str());
-            ImGui::PopTextWrapPos();
-        }
-        ImGui::BeginDisabled(!cfg.dev.liga);
-        const char* grupos[4] = {"DLSS 5 na pele", "DLSS 5 no cabelo", "DLSS 5 no personagem", "DLSS 5 nos objetos"};
-        const char* dicas[4] = {"Rosto e maos.", "Cabelo e barba.", "Roupa, armadura, acessorios (e animais).",
-                                "Veiculos, moveis, plantas, garrafas, telas."};
-        for (int g = 0; g < 4; ++g)
-        {
-            ImGui::PushID(100 + g);
-            Deslizador(grupos[g], &cfg.dev.grupo[g].dlss, 0.f, 2.f, "%.3f",
-                       (std::string(dicas[g]) + " 1 = o efeito inteiro da rede, 0 = o quadro original, 2 = o dobro.").c_str(), 1.f);
-            ImGui::PopID();
-        }
-        Marca("Mostrar máscara", &cfg.dev.mostra,
-              "Pinta os grupos sobre a imagem (o Show Masks): pele vermelha, cabelo amarelo, personagem azul, objetos verdes.");
-        DeslizadorInt("Classificações/s", &cfg.dev.taxa, 2, 15, "%d",
-                      "Quantas vezes por segundo o classificador olha o quadro (custa GPU e CPU). Entre uma e outra a\n"
-                      "mascara segue o movimento.");
+        mc |= Marca("Pele separada pela rede", &cfg.ngx.mascara,
+                    "DLSSNR.UseAutoMask: a propria rede acha a pele e separa do resto da cena. Desligada, os canais de\n"
+                    "pele e de cena vao a -1. Padrao: ligada.");
+        ImGui::BeginDisabled(!cfg.ngx.mascara);
+        mc |= Deslizador("Estrutura da pele", &cfg.ngx.estruturaPele, -2.f, 4.f, "%.3f",
+                         "DLSSNR.SkinStructureStrength: a estrutura so na pele que a rede achou (padrao 1). O resto da\n"
+                         "cena segue a Estrutura local.", 1.f);
         ImGui::EndDisabled();
     }
 
@@ -1106,68 +1084,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
     ImGui::PopStyleColor();
     if (avancado)
     {
-        // a separacao interna da propria rede (NVIDIA): nao e a mascara de pele e objetos de cima
-        Secao("MÁSCARA INTERNA DA REDE (NVIDIA)", false);
-        mc |= Marca("Personagem e cena separados na rede", &cfg.ngx.mascara,
-                    "DLSSNR.UseAutoMask: a propria rede separa personagem e cena (sem classificador). Desligada, os\n"
-                    "canais de pele e cena vao a -1. Padrao: ligada.");
-        ImGui::BeginDisabled(!cfg.ngx.mascara);
-        mc |= Deslizador("Estrutura do personagem", &cfg.ngx.estruturaPele, -2.f, 4.f, "%.3f",
-                         "DLSSNR.SkinStructureStrength: o canal de personagem da rede (efeito pequeno; padrao 1).", 1.f);
-        ImGui::EndDisabled();
-        // ajustes por grupo DENTRO da rede: os canais de controle da primeira camada por pixel (nosso, nao e da NVIDIA)
-        Secao("AJUSTE POR GRUPO DENTRO DA REDE (EXPERIMENTAL)");
-        Dica("Nao e da NVIDIA: os canais de controle da rede (tom, estrutura, estilo) mudam por pixel em cada grupo. A\n"
-             "rede mistura cada pixel com os vizinhos, entao numa regiao pequena rende ~metade. Precisa da mascara ligada.");
-        ImGui::BeginDisabled(!cfg.dev.liga);
-        {
-            const float b2 = (ImGui::GetContentRegionAvail().x - 8 * g_e) * 0.5f;
-            if (Botao("Pele realista", b2))
-            {
-                // medido na Zorah: Model C com menos tom e o mais perto da NVIDIA na pele (dE do rosto); o resto = global
-                for (int g = 0; g < 2; ++g)
-                {
-                    cfg.dev.grupo[g].estrutura = 0.f;
-                    cfg.dev.grupo[g].tom = -0.5f;
-                    cfg.dev.grupo[g].modelo = 2;
-                }
-                mc = true;
-            }
-            Dica("Pele e cabelo com Model C e menos tom (o mais perto da NVIDIA na pele, medido na Zorah); personagem,\n"
-                 "objetos e cenario seguem o global.");
-            ImGui::SameLine(0, 8 * g_e);
-            if (Botao("Zerar", b2))
-            {
-                for (auto& G : cfg.dev.grupo)
-                {
-                    G.estrutura = G.tom = 0.f;
-                    G.modelo = -1;
-                }
-                mc = true;
-            }
-            Dica("Todos os grupos iguais ao global (a mascara nao muda nada na rede).");
-            const char* nomes[4] = {"PELE", "CABELO", "PERSONAGEM (roupa, armadura, acessórios)", "OBJETOS (veículos, móveis, plantas)"};
-            const char* modelos[] = {"Global", "A", "B", "C"};
-            for (int g = 0; g < 4; ++g)
-            {
-                GrupoMascara& G = cfg.dev.grupo[g];
-                ImGui::PushID(g);
-                Secao(nomes[g], false);
-                mc |= Deslizador("Estrutura", &G.estrutura, -2.f, 2.f, "%+.3f",
-                                 "Mais (+) ou menos (-) estrutura que o global, so neste grupo. 0 = igual ao global.", 0.f);
-                mc |= Deslizador("Tom", &G.tom, -2.f, 2.f, "%+.3f",
-                                 "Mais (+) ou menos (-) tom que o global, so neste grupo. 0 = igual ao global.", 0.f);
-                int m = G.modelo + 1;
-                if (Segmentos("modelo", modelos, 4, &m))
-                {
-                    G.modelo = m - 1;
-                    mc = true;
-                }
-                ImGui::PopID();
-            }
-        }
-        ImGui::EndDisabled();
-        Secao("COMPOSIÇÃO");
+        Secao("COMPOSIÇÃO", false);
         const char* comps[] = {"Crua (resposta - proxy)", "Referencia NVIDIA/RenoDX"};
         ImGui::SetNextItemWidth(lc);
         ImGui::Combo("##comp", &cfg.temporal.composicao, comps, 2);

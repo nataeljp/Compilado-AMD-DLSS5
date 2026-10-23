@@ -10,8 +10,6 @@ Copy-Item "$raiz\bin\DLSS5Overlay.exe" $pasta
 # captura de buffer: o modulo que o overlay coloca no jogo aberto
 New-Item -ItemType Directory -Force "$pasta\captura" | Out-Null
 Copy-Item "$raiz\bin\captura\DLSS5Buffer.dll" "$pasta\captura"
-# mascara de desenvolvedor: ONNX Runtime + DirectML e os classificadores (licencas em licencas\MODELOS_MASCARA.txt)
-Copy-Item "$raiz\bin\ml" "$pasta\ml" -Recurse
 Copy-Item "$raiz\README.md" $pasta
 Copy-Item "$raiz\licencas" "$pasta\licencas" -Recurse
 # runtime sem logs nem caches (as variantes e a pasta montada da rede pequena sao refeitas pelo programa)

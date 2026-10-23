@@ -15,73 +15,7 @@ ParamsRede Config::Rede() const
     r.pele = ngx.mascara ? ngx.estruturaPele : -1.f;
     r.outro = ngx.mascara ? ngx.estruturaLocal : -1.f;
     r.detalhe = r.cor = 1.f; // a resposta inteira do runtime; a composicao e feita no overlay
-    r.mascaraPixel = dev.liga && dev.PorPixel();
-    TabelaMascara(r.tabela);
     return r;
-}
-
-void Config::TabelaMascara(float t[40]) const
-{
-    auto linha = [&](int g, float tom, float est, float pele, int modelo) {
-        float* l = t + g * 8;
-        l[0] = std::clamp(tom, 0.f, 1.f);
-        l[1] = std::clamp(est, -1.f, 4.f);
-        l[2] = std::clamp(pele, -1.f, 4.f);
-        l[3] = ngx.mascara ? std::clamp(est, -1.f, 4.f) : -1.f; // "outro": a estrutura de quem nao e personagem
-        l[4] = float(std::clamp(modelo, 0, 2)) / 128.f;         // estilo: Model A/B/C = 0, 1, 2 (x 1/128)
-        l[5] = l[6] = l[7] = 0.f;
-    };
-    linha(0, ngx.tomLocal, ngx.estruturaLocal, ngx.mascara ? ngx.estruturaPele : -1.f, ngx.modelo);
-    // A rede mistura cada pixel com os vizinhos: numa regiao pequena (a pele) o mesmo ajuste rende ~metade do que rende na
-    // tela inteira (medido na Zorah). O ajuste do grupo entra em dobro para o painel valer o que diz.
-    constexpr float kRegiao = 2.f;
-    // explicita: a rede ja foi treinada com o canal de personagem (pele); falta dizer ONDE e personagem. O cenario (e os
-    // objetos) ficam com o canal de personagem desligado (-1), o personagem com ele ligado.
-    const bool expl = ngx.mascara && dev.explicita > 0;
-    float base[8];
-    std::copy(t, t + 8, base);
-    if (expl)
-        t[2] = -1.f;
-    for (int g = 1; g <= 4; ++g)
-    {
-        if (expl)
-        {
-            std::copy(base, base + 8, t + g * 8);
-            float* l = t + g * 8;
-            if (g == 4)
-                l[2] = -1.f; // objeto: cenario
-            else if (dev.explicita == 2)
-                l[3] = -1.f; // personagem: o canal de cena sai
-            const GrupoMascara& G = dev.grupo[g - 1];
-            if (G.Neutro())
-                continue;
-            l[0] = std::clamp(std::clamp(ngx.tomLocal, 0.f, 2.f) + kRegiao * G.tom, -2.f, 4.f);
-            l[1] = std::clamp(ngx.estruturaLocal + kRegiao * G.estrutura, -2.f, 8.f);
-            if (g <= 3)
-                l[2] = std::clamp(ngx.estruturaPele + kRegiao * G.estrutura, -2.f, 8.f);
-            if (dev.explicita != 2 || g == 4)
-                l[3] = l[1];
-            if (G.modelo >= 0)
-                l[4] = float(std::clamp(G.modelo, 0, 2)) / 128.f;
-            continue;
-        }
-        const GrupoMascara& G = dev.grupo[g - 1];
-        std::copy(t, t + 8, t + g * 8);
-        if (G.Neutro())
-            continue;
-        float* l = t + g * 8;
-        const float est = ngx.estruturaLocal + kRegiao * G.estrutura;
-        l[0] = std::clamp(std::clamp(ngx.tomLocal, 0.f, 2.f) + kRegiao * G.tom, -2.f, 4.f);
-        l[1] = std::clamp(est, -1.f, 4.f);
-        if (ngx.mascara)
-        {
-            l[3] = l[1];
-            if (g <= 3) // pele, cabelo e personagem: o canal de pele (o do personagem) leva a estrutura do grupo
-                l[2] = std::clamp(ngx.estruturaPele + kRegiao * G.estrutura, -2.f, 8.f);
-        }
-        if (G.modelo >= 0)
-            l[4] = float(std::clamp(G.modelo, 0, 2)) / 128.f;
-    }
 }
 
 // le "chave": valor de um objeto JSON plano (numeros e booleanos); o resto e ignorado
@@ -133,18 +67,6 @@ void Config::Carrega(const std::wstring& arquivo)
     F("estruturaPele", ngx.estruturaPele);
     B("mascara", ngx.mascara);
     B("gradacao", ngx.gradacao);
-    B("mascaraDev", dev.liga);
-    B("mostraMascara", dev.mostra);
-    I("taxaMascara", dev.taxa);
-    I("mascaraExplicita", dev.explicita);
-    for (int g = 0; g < 4; ++g)
-    {
-        const std::string p = "grupo" + std::to_string(g + 1);
-        F((p + "Dlss").c_str(), dev.grupo[g].dlss);
-        F((p + "Estrutura").c_str(), dev.grupo[g].estrutura);
-        F((p + "Tom").c_str(), dev.grupo[g].tom);
-        I((p + "Modelo").c_str(), dev.grupo[g].modelo);
-    }
     I("composicao", temporal.composicao);
     F("corComposicao", temporal.cor);
     F("protecao", temporal.guarda);
@@ -193,18 +115,6 @@ void Config::Salva(const std::wstring& arquivo) const
     f << "  \"estruturaPele\": " << ngx.estruturaPele << ",\n";
     f << "  \"mascara\": " << b(ngx.mascara) << ",\n";
     f << "  \"gradacao\": " << b(ngx.gradacao) << ",\n";
-    f << "  \"mascaraDev\": " << b(dev.liga) << ",\n";
-    f << "  \"mostraMascara\": " << b(dev.mostra) << ",\n";
-    f << "  \"taxaMascara\": " << dev.taxa << ",\n";
-    f << "  \"mascaraExplicita\": " << dev.explicita << ",\n";
-    for (int g = 0; g < 4; ++g)
-    {
-        const std::string p = "  \"grupo" + std::to_string(g + 1);
-        f << p << "Dlss\": " << dev.grupo[g].dlss << ",\n";
-        f << p << "Estrutura\": " << dev.grupo[g].estrutura << ",\n";
-        f << p << "Tom\": " << dev.grupo[g].tom << ",\n";
-        f << p << "Modelo\": " << dev.grupo[g].modelo << ",\n";
-    }
     f << "  \"composicao\": " << temporal.composicao << ",\n";
     f << "  \"corComposicao\": " << temporal.cor << ",\n";
     f << "  \"protecao\": " << temporal.guarda << ",\n";

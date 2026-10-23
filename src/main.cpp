@@ -19,7 +19,6 @@
 #include "Temporal.h"
 #include "Overlay.h"
 #include "Painel.h"
-#include "Mascara.h"
 #include "Rede.h"
 #include "Shaders.h"
 #include <shellapi.h>
@@ -72,20 +71,7 @@ struct App
     Rede rede;
     Fluxo fluxo;
     Temporal temporal;
-    Mascara mascara;           // mascara de desenvolvedor: pele, cabelo, personagem e objetos com controles proprios
-    bool mascaraTentou = false; // o classificador (bin\ml) carrega na primeira vez que a mascara e ligada
-    bool mascaraAtivaAntes = false;
-    // a mascara so roda (classificador, rastreio) quando algo a usa: intensidade por grupo, ajuste na rede ou mostrar
-    bool MascaraAtiva() const
-    {
-        return cfg.dev.liga && mascara.Pronta() && (cfg.dev.PorIntensidade() || cfg.dev.PorPixel() || cfg.dev.mostra);
-    }
-    ParamsRede ParamsDaRede() const
-    {
-        ParamsRede p = cfg.Rede();
-        p.mascaraPixel = p.mascaraPixel && mascara.Pronta() && rede.TemMascara();
-        return p;
-    }
+    ParamsRede ParamsDaRede() const { return cfg.Rede(); }
     Captura cap;
     Overlay ov;
     Painel painel;
@@ -170,12 +156,11 @@ struct App
         const std::string compoe = std::string(hlsl::Comum) + hlsl::Compoe;
         pInteiro.Cria(gpu.dev.Get(), prepara.c_str(), "CSInteiro", 1, 1, 16, "inteiro");
         pReduz.Cria(gpu.dev.Get(), prepara.c_str(), "CSReduz", 1, 2, 16, "reduz");
-        pCompoe.Cria(gpu.dev.Get(), compoe.c_str(), "CSCompoe", 5, 1, 32, "compoe");
+        pCompoe.Cria(gpu.dev.Get(), compoe.c_str(), "CSCompoe", 4, 1, 24, "compoe");
         pExporta.Cria(gpu.dev.Get(), (std::string(hlsl::Comum) + hlsl::Exporta).c_str(), "CSExporta", 3, 1, 12,
                       "edicao para o jogo");
         fluxo.Cria(gpu.dev.Get());
         temporal.Cria(gpu.dev.Get());
-        mascara.Cria(gpu.dev.Get());
         EsperaPasses();
         if (cfg.temporalRede > 0)
         {
@@ -772,16 +757,6 @@ struct App
     {
         if (redeOk && cfg.redePequena != redePequenaAtiva)
             TrocaRede();
-        if (cfg.dev.liga && !mascaraTentou)
-        {
-            mascaraTentou = true;
-            mascara.Inicia(pasta + L"\\ml", gpu.dev.Get());
-        }
-        if (MascaraAtiva() != mascaraAtivaAntes)
-        {
-            mascaraAtivaAntes = MascaraAtiva();
-            mascara.Reinicia(quadros); // religada: o estado de quando foi desligada nao vale mais
-        }
         Captura::Quadro q;
         FonteBuffer::Quadro qb;
         if (buffer)
@@ -813,8 +788,6 @@ struct App
             q.h = qb.cor->h;
             q.cercaValor = 0;
             estadoBuffer = Fmt("conectado: %ux%u, cor sem HUD, profundidade e movimento do jogo", q.w, q.h);
-            if (qb.reset)
-                mascara.Reinicia(quadros);
             if (qb.reset && temporal.Valido())
             {
                 temporal.Reinicia(); // o jogo avisou corte de cena
@@ -918,11 +891,6 @@ struct App
             temMov = cfg.movimento && fluxo.Calcula(c, desc, gpu.dev.Get(), fed.r.Get(), fed.fmt);
         if (temMov)
             fluxo.Estatisticas(c, desc, gpu.dev.Get(), fed, fedAnt);
-        // mascara de desenvolvedor: a classificacao (quando chega) e o estado seguem o movimento ate este quadro
-        if (MascaraAtiva())
-            mascara.Quadro(c, desc, gpu.dev.Get(), fed, temMov ? &fluxo.Movimento() : nullptr,
-                           temMov ? &fluxo.Confianca() : nullptr, Exata() ? fluxo.DistanciaAtual() : nullptr,
-                           cfg.temporal.exposicao, quadros, cfg.dev.taxa);
         // A rede roda na fila dela e responde com atraso: este quadro vai para a tela agora, com a ultima edicao; a
         // resposta, quando chega, e do quadro t0 que a rede viu e entra pelo deslocamento acumulado desde t0.
         // sincrono (imagem, reproducao sem --atraso): a rede ve este quadro e responde nele mesmo, como antes.
@@ -1024,31 +992,18 @@ struct App
             UINT grada, filmica, pad1;
             float preLuz, preSombra, preLimiar, preLimiarSombra, preCor;
             UINT pad2, pad3, pad4;
-            float dlssGrupo[4];
-            UINT usaMascara, pad5, pad6, pad7;
         } kc{inteiro.w,      inteiro.h,      fed.w, fed.h, edicao ? cfg.forca : 0.f, (UINT)cfg.modo, cfg.divisao,
              edicao ? 1u : 0u, hdr ? 1u : 0u, escalaUsada, kExp, kCon, kSat, grada ? 1u : 0u,
              pontePassada == 3 ? 1u : 0u, (hdr && pontePassada == 1) ? 1u : 0u, cfg.preLuz, cfg.preSombra, cfg.preLimiar, cfg.preLimiarSombra, cfg.preCor,
-             0, 0, 0, {}, 0, 0, 0, 0};
-        // pele e objetos separados: quanto do DLSS 5 entra em cada grupo (o ControlMask da NVIDIA)
-        Tex* estMascara = MascaraAtiva() && cfg.dev.PorIntensidade() ? mascara.Estado() : nullptr;
-        for (int g = 0; g < 4; ++g)
-            kc.dlssGrupo[g] = std::clamp(cfg.dev.grupo[g].dlss, 0.f, 2.f);
-        kc.usaMascara = estMascara ? 1u : 0u;
-        if (estMascara)
-            estMascara->Para(c, SRV);
+             0, 0, 0};
         pCompoe.Roda(c, desc, gpu.dev.Get(),
                      {{inteiro.r.Get(), inteiro.fmt},
                       {fed.r.Get(), fed.fmt},
                       edicao ? std::pair<ID3D12Resource*, DXGI_FORMAT>{edicao->r.Get(), edicao->fmt}
                              : std::pair<ID3D12Resource*, DXGI_FORMAT>{fed.r.Get(), fed.fmt},
                       temMov ? std::pair<ID3D12Resource*, DXGI_FORMAT>{fluxo.Movimento().r.Get(), fluxo.Movimento().fmt}
-                             : std::pair<ID3D12Resource*, DXGI_FORMAT>{fed.r.Get(), fed.fmt},
-                      estMascara ? std::pair<ID3D12Resource*, DXGI_FORMAT>{estMascara->r.Get(), estMascara->fmt}
-                                 : std::pair<ID3D12Resource*, DXGI_FORMAT>{fed.r.Get(), fed.fmt}},
+                             : std::pair<ID3D12Resource*, DXGI_FORMAT>{fed.r.Get(), fed.fmt}},
                      {{saida.r.Get(), saida.fmt}}, &kc, (saida.w + 7) / 8, (saida.h + 7) / 8);
-        if (MascaraAtiva() && cfg.dev.mostra)
-            mascara.Mostra(c, desc, gpu.dev.Get(), saida, hdr, escalaUsada); // "Mostrar mascara" (Show Masks)
         // captura de buffer: a edicao (C(saida) - C(cor do jogo)) vai para o slot que o jogo soma no quadro seguinte
         Tex* edJogo = buffer ? fb.EdicaoLivre() : nullptr;
         if (edJogo)
@@ -1110,8 +1065,6 @@ struct App
             ov.Mostra(true);
         }
         gpu.EsperaValor(fim);
-        if (MascaraAtiva())
-            mascara.DepoisDoQuadro(); // o quadro reduzido vai para o classificador
         if (buffer)
             fb.Consumido(qb.n);
         estat = fluxo.LeEstatisticas();
@@ -1120,7 +1073,6 @@ struct App
             // corte de cena (o shader ja limpou este quadro): historico e grade da cena velha saem; a resposta em voo,
             // se foi enviada antes deste quadro, e descartada quando chegar; a rede roda logo na cena nova
             temporal.Reinicia();
-            mascara.Reinicia(quadros);
             zeraHistorico = true;
             quadroCorte = quadros;
             if (cortes++ % 50 == 0)
@@ -1164,8 +1116,6 @@ struct App
                              chegadas ? somaAtrasoQ / chegadas : 0.0, chegadas ? somaAtrasoMs / chegadas : 0.0,
                              1.0 - estat.semConfianca, estat.mudancaLuz, estat.velocidade));
             fracaoRede = double(quadrosComRede - comRedeMarca) / 60.0;
-            if (MascaraAtiva() && quadros % 300 == 0)
-                Log("mascara", mascara.Status());
             comRedeMarca = quadrosComRede;
             somaMs = maxMs = 0;
             somaAtrasoQ = somaAtrasoMs = 0;
@@ -1188,8 +1138,6 @@ struct App
     void CopiaParaRede(ID3D12GraphicsCommandList* c)
     {
         rede.CopiaEntrada(c, fed);
-        if (MascaraAtiva() && rede.TemMascara())
-            mascara.Codifica(c, desc, gpu.dev.Get(), rede.Entrada()); // grupo e peso de cada pixel no alfa
         if (origRede.w != orig.w || origRede.h != orig.h)
             origRede.Cria(gpu.dev.Get(), orig.w, orig.h, orig.fmt, L"original que a rede viu", false);
         const auto antes = orig.estado;
@@ -1251,8 +1199,6 @@ struct App
         e.redeOk = redeOk && rede.Pronta();
         e.fonte = cfg.fonte;
         e.estadoBuffer = estadoBuffer;
-        e.estadoMascara = !cfg.dev.liga ? std::string() : !mascaraTentou ? std::string("o classificador carrega quando o DLSS ligar no jogo") : mascara.Status() +
-                          (rede.TemMascara() ? "" : " | runtime sem controles por pixel (anterior ao v4)");
         if (Ligado())
         {
             wchar_t t[256] = {};
@@ -1336,7 +1282,7 @@ struct App
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
         UINT64 total = 0;
     };
-    Leitura leituras[8];
+    Leitura leituras[6];
 
     void IniciaGravacao()
     {
@@ -1361,9 +1307,8 @@ struct App
             fprintf(metaGravacao,
                     "{\"rede_w\":%u,\"rede_h\":%u,\"janela_w\":%u,\"janela_h\":%u,\"hdr\":%d,\"escala\":%.4f,"
                     "\"arquivos\":{\"orig\":\"RGBA16F\",\"crua\":\"RGBA16F\",\"edicao\":\"RGBA16F\",\"mov\":\"RG16F\","
-                    "\"conf\":\"R16F\"%s%s},\"quadros\":%d}\n",
+                    "\"conf\":\"R16F\"%s},\"quadros\":%d}\n",
                     fed.w, fed.h, inteiro.w, inteiro.h, hdr ? 1 : 0, escalaUsada,
-                    MascaraAtiva() ? ",\"mascara\":\"RGBA16F\",\"mascara_sabe\":\"R8\"" : "",
                     Exata() ? ",\"dist\":\"R32F\"" : "", gravando);
         if (!escritor.joinable())
             escritor = std::thread([this] {
@@ -1395,20 +1340,15 @@ struct App
     // copia as texturas do quadro (GPU ja ociosa) e entrega os bytes a thread de escrita
     void GravaQuadro(bool comRede, bool comMov, Tex* edicaoExibida)
     {
-        // com a mascara de desenvolvedor: o estado dela neste quadro (rgba = pele, cabelo, personagem, objeto)
-        Tex* m = MascaraAtiva() ? mascara.Estado() : nullptr;
-        Tex* ms = MascaraAtiva() ? mascara.Sabe() : nullptr;
         // captura de buffer: a distancia radial do jogo (R32F) para medir oclusao e rastro fora do jogo
         Tex* zt = Exata() ? fluxo.DistanciaAtual() : nullptr;
-        Tex* tex[8] = {&orig, &temporal.Crua(), edicaoExibida ? edicaoExibida : &temporal.Crua(), &fluxo.Movimento(),
-                       &fluxo.Confianca(), m ? m : &orig, ms ? ms : &fluxo.Confianca(), zt ? zt : &fluxo.Confianca()};
-        const UINT bpp[8] = {8, 8, 8, 4, 2, 8, 1, 4};
-        const wchar_t* nomes[8] = {L"orig", L"crua", L"edicao", L"mov", L"conf", L"mascara", L"mascara_sabe", L"dist"};
+        Tex* tex[6] = {&orig, &temporal.Crua(), edicaoExibida ? edicaoExibida : &temporal.Crua(), &fluxo.Movimento(),
+                       &fluxo.Confianca(), zt ? zt : &fluxo.Confianca()};
+        const UINT bpp[6] = {8, 8, 8, 4, 2, 4};
+        const wchar_t* nomes[6] = {L"orig", L"crua", L"edicao", L"mov", L"conf", L"dist"};
         std::vector<int> quais = {0, 1, 2, 3, 4};
-        if (MascaraAtiva())
-            quais.insert(quais.end(), {5, 6});
         if (zt)
-            quais.push_back(7);
+            quais.push_back(5);
         Ck(al[0]->Reset(), "reset");
         Ck(cl[0]->Reset(al[0].Get(), nullptr), "list");
         for (const int i : quais)
@@ -1451,7 +1391,7 @@ struct App
             std::vector<unsigned char> b(size_t(tex[i]->w) * tex[i]->h * bpp[i]);
             // sem edicao exibida (antes da 1a resposta, depois de um corte de cena) a "edicao" gravada e zero; antes
             // gravava a ultima crua, e as ferramentas mostravam na analise uma edicao velha que nao estava na tela
-            if ((i != 2 || edicaoExibida) && (i != 5 || m) && (i != 6 || ms))
+            if (i != 2 || edicaoExibida)
             {
                 unsigned char* p = nullptr;
                 L.rb->Map(0, nullptr, (void**)&p);

@@ -219,12 +219,11 @@ inline const char* Compoe = R"(
 cbuffer C : register(b0) { uint fw; uint fh; uint dw; uint dh; float forca; uint modo; float divisao; uint usaEdicao;
                            uint hdr; float escala; float kExp; float kCon; float kSat; uint grada; uint filmica; uint sanduiche;
                            float preLuz; float preSombra; float preLimiar; float preLimiarSombra; float preCor; uint pad2;
-                           uint pad3; uint pad4; float4 dlssGrupo; uint usaMascara; uint pad5; uint pad6; uint pad7; };
+                           uint pad3; uint pad4; };
 Texture2D<float4> inteiro : register(t0);
 Texture2D<float4> fed : register(t1);
 Texture2D<float4> edicao : register(t2);
 Texture2D<float4> mov : register(t3);
-Texture2D<float4> mascara : register(t4); // pele, cabelo, personagem, objeto (o resto e cenario), no tamanho da rede
 RWTexture2D<float4> saida : register(u0);
 SamplerState s : register(s0);
 
@@ -294,13 +293,6 @@ float3 Tela(float3 lin, bool grade, float folga)
             e = edicao.Load(int3(p, 0)).rgb;
         else
             e = CatmullRom(edicao, (float2(p) + 0.5) / float2(fw, fh), float2(dw, dh));
-    }
-    // pele e objetos separados: quanto do DLSS 5 entra em cada grupo (o ControlMask da NVIDIA: lerp(original, rede, w))
-    if (usaMascara)
-    {
-        const float4 m = mascara.SampleLevel(s, (float2(p) + 0.5) / float2(fw, fh), 0);
-        const float soma = saturate(m.r + m.g + m.b + m.a);
-        e *= (1.0 - soma) + dot(m, dlssGrupo) / max(m.r + m.g + m.b + m.a, 1e-4) * soma;
     }
     // o resultado parte do quadro com o mesmo ajuste que a rede viu; o lado "original" fica intacto
     float3 r = PreAjuste(o, TelaDe(o, hdr != 0 && sanduiche == 0, filmica != 0), preLuz, preSombra, preLimiar, preLimiarSombra, preCor) +

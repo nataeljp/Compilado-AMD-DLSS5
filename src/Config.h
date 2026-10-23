@@ -18,53 +18,9 @@ struct ParamsNgx
     bool gradacao = true;       // a gradacao final do Model B/C (exposicao, contraste, saturacao)
 };
 
-// Mascara de desenvolvedor (o "Developer Masking" da NVIDIA): grupos separados do cenario por um classificador, cada um
-// com os proprios controles dentro da rede
-// Os ajustes de cada grupo sao RELATIVOS ao global: 0 = igual ao global; o global continua mandando no quadro inteiro.
-struct GrupoMascara
-{
-    // quanto do DLSS 5 entra neste grupo (0 = o quadro original, 1 = a rede): o ControlMask da NVIDIA (no binario, o
-    // ultimo kernel faz lerp(original, rede, mascara) por pixel, numa passada so)
-    float dlss = 1.f;
-    // ajustes DENTRO da rede (nosso, nao e da NVIDIA; Avancado): os canais de controle da primeira camada por pixel
-    float estrutura = 0.f; // a mais (+) ou a menos (-) que a estrutura global, so neste grupo
-    float tom = 0.f;       // a mais ou a menos que o tom global, so neste grupo
-    int modelo = -1;       // -1 = o modelo global; 0/1/2 = Model A/B/C so neste grupo
-    bool Neutro() const { return estrutura == 0.f && tom == 0.f && modelo < 0; }
-};
-struct MascaraDev
-{
-    bool liga = false;     // separa pele, cabelo, personagem e objetos (classificador em bin\ml)
-    bool mostra = false;   // pinta os grupos sobre a imagem (o "Show Masks")
-    int taxa = 6;          // classificacoes por segundo (entre elas o movimento leva a mascara)
-    // onde e personagem: 0 = a rede adivinha (os canais de personagem e de cena valem a tela inteira, o UseAutoMask da
-    // NVIDIA); 1 = o classificador diz (canal de personagem so no personagem, de cena so no cenario); 2 = idem, e o canal
-    // de cena tambem sai do personagem
-    int explicita = 0; // medido contra a NVIDIA (Lara 1080p): 1 = -1,7 dB, 2 = -2,6 dB; a rede ja acha a pele sozinha
-    GrupoMascara grupo[4]; // pele, cabelo, personagem (roupa, armadura, acessorios, animais), objetos
-    // algum grupo pede controles por pixel dentro da rede (sem isso a rede roda como sempre e so a intensidade muda)
-    bool PorPixel() const
-    {
-        if (explicita > 0)
-            return true;
-        for (const auto& g : grupo)
-            if (!g.Neutro())
-                return true;
-        return false;
-    }
-    bool PorIntensidade() const
-    {
-        for (const auto& g : grupo)
-            if (g.dlss != 1.f)
-                return true;
-        return false;
-    }
-};
-
 struct Config
 {
     ParamsNgx ngx;
-    MascaraDev dev;
     ParamsRede rede;        // tamanho/passes/rede completa; os controles saem de `ngx`
     ParamsTemporal temporal;
     int alturaRede = 1080;  // altura em que a rede roda (720..2160); a largura segue a proporcao da janela
@@ -96,8 +52,6 @@ struct Config
 
     // controles da rede a partir dos parametros NGX (mascara ligada: pele/cena com a estrutura; desligada: -1)
     ParamsRede Rede() const;
-    // a tabela de controles por grupo da mascara de desenvolvedor (o cenario = os controles globais)
-    void TabelaMascara(float t[40]) const;
     void Carrega(const std::wstring& arquivo);
     void Salva(const std::wstring& arquivo) const;
 };
