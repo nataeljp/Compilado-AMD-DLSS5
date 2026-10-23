@@ -900,7 +900,15 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kTexto2), "rede %ux%u  ·  overlay %.1f ms  ·  resposta em %.0f%%",
                                e.redeW, e.redeH, e.msMedio, 100.0 * e.fracaoRede);
         }
-        if (!e.redeOk)
+        if (!e.memoria.empty())
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kTexto2), "%s", e.memoria.c_str());
+        if (!e.avisoMemoria.empty())
+        {
+            ImGui::PushTextWrapPos(0.f);
+            ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "%s", e.avisoMemoria.c_str());
+            ImGui::PopTextWrapPos();
+        }
+        else if (!e.redeOk)
             ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "Rede indisponível: só o quadro original (overlay.jsonl)");
         ImGui::Dummy(ImVec2(0, 4 * g_e));
         bool ligado = cfg.modo != 1;
@@ -1049,7 +1057,8 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         if (Segmentos("rede", redes, 2, &ir, 32 * g_e))
             cfg.redePequena = ir == 1;
         Dica("Grande: a do DLSS 5 (71 blocos), a mais fiel a NVIDIA. Pequena: a rapida que a NVIDIA traz no DLSS\n"
-             "310.9.16 (31 blocos): mais leve, mais diferente (36 dB contra 47 da grande em 4K). A troca recria a rede.");
+             "310.9.16 (31 blocos): mais leve, mais diferente (36 dB contra 47 da grande em 4K). Vale ao religar:\n"
+             "a troca recarrega os pesos com a GPU parada.");
         const int alturas[] = {720, 1080, 1440, 2160};
         const char* nomes[] = {"720p", "1080p", "1440p", "Nativa"};
         int ia = -1;
@@ -1060,7 +1069,19 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         if (Segmentos("tamanho", nomes, 4, &novo, 30 * g_e) && novo >= 0)
             cfg.alturaRede = alturas[novo];
         Dica("Altura em que a rede roda (limitada pela janela). Menor = mais rapido e a resposta chega antes; a\n"
-             "edicao e ampliada sobre o quadro nativo. 'Nativa' (ate 2160) e a mais fiel a NVIDIA.");
+             "edicao e ampliada sobre o quadro nativo. 'Nativa' (ate 2160) e a mais fiel a NVIDIA. Vale ao religar:\n"
+             "cada tamanho novo prende memoria de video que o driver so devolve ao fechar o overlay.");
+        if (!e.alvo.empty() && (cfg.redePequena != e.pequenaSessao || cfg.alturaRede != e.alturaSessao ||
+                                cfg.rede.passes != e.passesSessao || cfg.rede.redeCompleta != e.completaSessao))
+        {
+            ImGui::PushTextWrapPos(0.f);
+            ImGui::TextColored(ImVec4(1, 0.78f, 0.3f, 1),
+                               "Em uso: rede %s, %dp, %d passe(s)%s. As mudanças de rede, tamanho e passes valem ao "
+                               "religar (Ctrl+Shift+D duas vezes).",
+                               e.pequenaSessao ? "pequena" : "grande", e.alturaSessao, e.passesSessao,
+                               e.completaSessao ? "" : ", sem os blocos 42/43/46");
+            ImGui::PopTextWrapPos();
+        }
         DeslizadorInt("Ritmo", &cfg.ritmo, 1, 4, "%d",
                       "A rede roda numa fila propria: todo quadro vai para a tela na hora, sem esperar a rede, e a\n"
                       "resposta entra quando fica pronta, trazida pelo movimento ate o quadro atual.\n"
@@ -1136,7 +1157,8 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
               "Desligado pula 3 blocos (42, 43, 46): ~1 ms mais rapido. So na rede grande.");
         ImGui::EndDisabled();
         DeslizadorInt("Passes", &cfg.rede.passes, 1, 3, "%d",
-                      "Quantas vezes a rede inteira roda por resposta (1 = normal); mais = estilo mais forte e mais caro.");
+                      "Quantas vezes a rede inteira roda por resposta (1 = normal); mais = estilo mais forte e mais caro.\n"
+                      "Vale ao religar, como a rede completa e o tamanho.");
 
         Secao("MOVIMENTO E ESTABILIDADE");
         if (Marca("Movimento simulado (fluxo óptico)", &cfg.movimento,

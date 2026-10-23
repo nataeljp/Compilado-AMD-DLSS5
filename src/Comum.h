@@ -50,6 +50,9 @@ struct Gpu
     void Espera();
     UINT64 Sinaliza();
     void EsperaValor(UINT64 v);
+    // memoria de video deste processo na placa: uso e orcamento na VRAM, e o que esta na RAM do sistema
+    // (QueryVideoMemoryInfo); false se o adaptador nao responder
+    bool Memoria(UINT64& uso, UINT64& orcamento, UINT64& naRam) const;
 };
 
 // heap de descritores CBV/SRV/UAV visivel aos shaders, alocacao linear por quadro

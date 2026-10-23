@@ -23,6 +23,13 @@ struct EstadoPainel
     double fracaoRede = 1; // fracao dos quadros com resposta nova da rede
     int fonte = 0;               // Modo de Rede: 0 captura de video, 1 captura de buffer
     std::string estadoBuffer;    // estado da captura de buffer
+    // a rede da sessao (o que vale ate religar) e a memoria de video do overlay
+    int alturaSessao = 0;
+    bool pequenaSessao = false;
+    int passesSessao = 1;
+    bool completaSessao = true;
+    std::string memoria;         // uso e orcamento de VRAM do overlay
+    std::string avisoMemoria;    // a rede foi desligada por falta de VRAM ("" = nao)
 };
 
 struct AcoesPainel

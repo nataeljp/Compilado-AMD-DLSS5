@@ -68,6 +68,20 @@ void Log(const char* tipo, const std::string& msg)
 }
 
 // ---------------- Gpu ----------------
+bool Gpu::Memoria(UINT64& uso, UINT64& orcamento, UINT64& naRam) const
+{
+    ComPtr<IDXGIAdapter3> a3;
+    DXGI_QUERY_VIDEO_MEMORY_INFO local{}, ram{};
+    if (!adaptador || FAILED(adaptador.As(&a3)) ||
+        FAILED(a3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &local)) ||
+        FAILED(a3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &ram)))
+        return false;
+    uso = local.CurrentUsage;
+    orcamento = local.Budget;
+    naRam = ram.CurrentUsage;
+    return true;
+}
+
 void Gpu::Cria()
 {
     Ck(CreateDXGIFactory2(0, IID_PPV_ARGS(&fabrica)), "CreateDXGIFactory2");

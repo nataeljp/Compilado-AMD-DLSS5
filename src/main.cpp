@@ -29,6 +29,7 @@
 #include <condition_variable>
 #include <deque>
 #include <mutex>
+#include <set>
 #include <thread>
 
 using namespace ov;
@@ -71,7 +72,13 @@ struct App
     Rede rede;
     Fluxo fluxo;
     Temporal temporal;
-    ParamsRede ParamsDaRede() const { return cfg.Rede(); }
+    ParamsRede ParamsDaRede() const
+    {
+        ParamsRede p = cfg.Rede();
+        p.passes = sessao.passes;
+        p.redeCompleta = sessao.redeCompleta;
+        return p;
+    }
     Captura cap;
     Overlay ov;
     Painel painel;
@@ -102,13 +109,36 @@ struct App
     int trocaRedeNoQuadro = -1; // --troca-rede N: modo imagem troca grande <-> pequena no quadro N (teste da troca ao vivo)
     bool redePequenaAtiva = false;
     std::wstring PastaRede() const { return pastaRuntime.empty() ? pasta + L"\\runtime" : pastaRuntime; }
-    // troca grande <-> pequena ao vivo: a rede e recriada (o historico recomeca)
+    // A rede da sessao: tamanho, rede grande ou pequena, passes e rede completa valem do Liga ate o proximo Liga; mudar
+    // no painel vale ao religar. Durante o jogo nada disso muda: cada tamanho novo de rede prende buffers que o driver
+    // HIP da AMD nunca devolve (hip_d3d12_bridge.h do lmxxf, 44 bytes por pixel da rede, ate o overlay fechar), e
+    // trocar de rede recarrega os pesos com a GPU parada (travada de segundos).
+    struct Sessao
+    {
+        int alturaRede = 1080;
+        bool redePequena = false;
+        int passes = 1;
+        bool redeCompleta = true;
+    } sessao;
+    Sessao SessaoDoConfig() const { return {cfg.alturaRede, cfg.redePequena, cfg.rede.passes, cfg.rede.redeCompleta}; }
+    // ao ligar: os valores do painel (e do perfil do jogo) passam a valer; a rede e recriada so se a escolha grande /
+    // pequena mudou ou se ela tinha sido desligada (emergencia de memoria)
+    void IniciaSessao()
+    {
+        sessao = SessaoDoConfig();
+        if (!redeOk || sessao.redePequena != redePequenaAtiva)
+            TrocaRede();
+        emergenciaMemoria.clear();
+        Log("rede", Fmt("sessao: rede %s, altura %d, passes %d, rede completa %d", sessao.redePequena ? "pequena" : "grande",
+                        sessao.alturaRede, sessao.passes, sessao.redeCompleta ? 1 : 0));
+    }
+    // troca grande <-> pequena (so ao ligar): a rede e recriada (o historico recomeca)
     void TrocaRede()
     {
         gpu.Espera();
         rede.Encerra();
-        redeOk = rede.Inicia(gpu, PastaRede(), cfg.redePequena);
-        redePequenaAtiva = cfg.redePequena;
+        redeOk = rede.Inicia(gpu, PastaRede(), sessao.redePequena);
+        redePequenaAtiva = sessao.redePequena;
         nivelAtual = -1;
         zeraHistorico = true;
         temporal.Reinicia();
@@ -184,6 +214,7 @@ struct App
         marca(redeOk ? "rede carregada" : "rede falhou");
         Etapa(L"Preparando a captura e o painel...");
         redePequenaAtiva = cfg.redePequena;
+        sessao = SessaoDoConfig();
         if (!redeOk)
             Log("app", "a rede nao subiu: o overlay mostra o quadro original");
         cap.Cria(gpu);
@@ -332,6 +363,7 @@ struct App
             return;
         }
         CarregaPerfil(h);
+        IniciaSessao();
         painel.Ancora(h);
         painel.DefineJogo(h);
         float esc = 1.f;
@@ -392,6 +424,7 @@ struct App
         }
         if (!r.motivo.empty())
             Log("buffer", r.motivo);
+        IniciaSessao();
         buffer = true;
         alvoBuffer = h;
         hdr = true; // a cor do jogo antes do tonemap e linear
@@ -410,7 +443,7 @@ struct App
     // tamanho em que a rede roda: altura configurada (ou a da janela, se menor), largura pela proporcao, pares
     void TamanhoRede(UINT fw, UINT fh, UINT& dw, UINT& dh) const
     {
-        const UINT alvo = (UINT)std::clamp(cfg.alturaRede, 360, 2160);
+        const UINT alvo = (UINT)std::clamp(sessao.alturaRede, 360, 2160);
         dh = std::min(fh, alvo);
         dw = (UINT)std::lround(double(fw) * dh / fh);
         dw = std::min<UINT>(dw & ~1u, 3840);
@@ -439,6 +472,14 @@ struct App
         temporal.Reinicia();
         zeraHistorico = true;
         Log("app", Fmt("janela %ux%u, rede %ux%u", fw, fh, dw, dh));
+        if (tamanhosRede.insert(uint64_t(dw) << 32 | dh).second)
+        {
+            // estimativa pelo codigo da ponte do lmxxf: entrada e historico de 16 bytes por pixel e saida de 12
+            mbPresos += double(dw) * dh * 44.0 / (1024.0 * 1024.0);
+            Log("memoria", Fmt("tamanho de rede novo neste processo (%ux%u): ~%.0f MB presos pelo driver HIP ate fechar o "
+                               "overlay (%zu tamanhos, ~%.0f MB no total; estimativa de 44 bytes por pixel)",
+                               dw, dh, double(dw) * dh * 44.0 / (1024.0 * 1024.0), tamanhosRede.size(), mbPresos));
+        }
     }
 
     // ---- modo imagem (comparacao com as fotos da NVIDIA): um arquivo no lugar da captura, sem overlay ----
@@ -755,8 +796,6 @@ struct App
 
     bool Quadro()
     {
-        if (redeOk && cfg.redePequena != redePequenaAtiva)
-            TrocaRede();
         Captura::Quadro q;
         FonteBuffer::Quadro qb;
         if (buffer)
@@ -1065,6 +1104,7 @@ struct App
             ov.Mostra(true);
         }
         gpu.EsperaValor(fim);
+        VigiaMemoria();
         if (buffer)
             fb.Consumido(qb.n);
         estat = fluxo.LeEstatisticas();
@@ -1185,6 +1225,58 @@ struct App
     bool ultimoTemMov = false;
     Fluxo::Estat estat;
     UINT desdeRede = 0;
+
+    // ---- memoria de video: o uso deste processo contra o orcamento que o Windows da a ele ----
+    // Acima do orcamento o Windows passa a mover memoria para a RAM, e a rede, lida pelo PCIe, derruba o fps sem volta
+    // (medido pelo lmxxf). Acima do orcamento por 2 s seguidos, a rede e desligada de vez (uma travada so, em vez do fps
+    // no chao); religar (Ctrl+Shift+D duas vezes) recria a rede.
+    std::set<uint64_t> tamanhosRede; // tamanhos de rede ja usados neste processo (cada um prende buffers da ponte HIP)
+    double mbPresos = 0;
+    std::string memoriaTexto;      // linha do painel
+    std::string emergenciaMemoria; // por que a rede foi desligada ("" = nao foi)
+    std::chrono::steady_clock::time_point marcaMemoria{}, registroMemoria{}, acimaDesde{};
+    bool acimaDoOrcamento = false;
+    void VigiaMemoria()
+    {
+        const auto agora = std::chrono::steady_clock::now();
+        if (agora - marcaMemoria < std::chrono::milliseconds(250))
+            return;
+        marcaMemoria = agora;
+        UINT64 uso = 0, orcamento = 0, naRam = 0;
+        if (!gpu.Memoria(uso, orcamento, naRam))
+            return;
+        const double mb = 1024.0 * 1024.0, gb = mb * 1024.0;
+        memoriaTexto = Fmt("VRAM do overlay %.2f de %.2f GB (orçamento)  ·  na RAM %.2f GB", uso / gb, orcamento / gb, naRam / gb);
+        if (agora - registroMemoria >= std::chrono::seconds(5))
+        {
+            registroMemoria = agora;
+            Log("memoria", Fmt("VRAM do processo %.0f MB, orcamento %.0f MB, memoria de video na RAM %.0f MB, presos pela "
+                               "ponte HIP ~%.0f MB (%zu tamanhos)",
+                               uso / mb, orcamento / mb, naRam / mb, mbPresos, tamanhosRede.size()));
+        }
+        if (!redeOk || orcamento == 0 || uso <= orcamento)
+        {
+            acimaDoOrcamento = false;
+            return;
+        }
+        if (!acimaDoOrcamento)
+        {
+            acimaDoOrcamento = true;
+            acimaDesde = agora;
+            return;
+        }
+        if (agora - acimaDesde < std::chrono::seconds(2))
+            return;
+        emergenciaMemoria = Fmt("Rede desligada: a VRAM do overlay (%.2f GB) passou do orçamento (%.2f GB) por 2 s. "
+                                "Religue para tentar de novo, com a rede menor.", uso / gb, orcamento / gb);
+        Log("memoria", Fmt("rede desligada: VRAM do processo %.0f MB acima do orcamento %.0f MB por 2 s", uso / mb,
+                           orcamento / mb));
+        rede.Encerra();
+        redeOk = false;
+        acimaDoOrcamento = false;
+        zeraHistorico = true;
+        temporal.Reinicia();
+    }
     UINT64 quadrosComRede = 0;
     Tex* ultimaEdicao = nullptr;
 
@@ -1211,7 +1303,13 @@ struct App
             e.msMedio = msMedio;
             e.fps = fps;
             e.fracaoRede = fracaoRede;
+            e.alturaSessao = sessao.alturaRede;
+            e.pequenaSessao = sessao.redePequena;
+            e.passesSessao = sessao.passes;
+            e.completaSessao = sessao.redeCompleta;
         }
+        e.memoria = memoriaTexto;
+        e.avisoMemoria = emergenciaMemoria;
         e.exe = Utf8(exeAlvo);
         painel.DicaBandeja(Ligado() && !exeAlvo.empty() ? L"DLSS 5 Overlay - " + exeAlvo : L"DLSS 5 Overlay - sem jogo");
         e.perfilExiste = PerfilExiste();
@@ -1623,10 +1721,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 for (int i = 0; i < n; ++i)
                 {
                     if (i == app.trocaRedeNoQuadro)
-                        app.cfg.redePequena = !app.cfg.redePequena; // o Quadro() recria a rede
+                    {
+                        app.cfg.redePequena = !app.cfg.redePequena;
+                        app.IniciaSessao(); // como religar: recria a rede
+                    }
                     const int alturaBase = app.cfg.alturaRede;
                     if (app.alternaAltura && (i / 4) % 2)
                         app.cfg.alturaRede = app.alternaAltura;
+                    app.sessao.alturaRede = app.cfg.alturaRede; // o teste troca a altura sem religar
                     const auto t = std::chrono::steady_clock::now();
                     app.Quadro();
                     app.gpu.Espera(); // tempo de GPU (rede inclusa), nao so o de envio
@@ -1635,6 +1737,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                         Log("imagem", Fmt("quadro %d altura %d: %.2f ms", i, app.cfg.alturaRede,
                                           std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count()));
                         app.cfg.alturaRede = alturaBase;
+                        app.sessao.alturaRede = alturaBase;
                     }
                     if (i >= 2)
                         soma += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count(),
