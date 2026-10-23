@@ -1,5 +1,5 @@
-// Lado do JOGO da captura de buffer (ver Protocolo.h). Independente do resto do overlay: compila dentro do host
-// (OptiScaler) e no jogo de teste. Grava na lista do jogo, depois do upscale:
+// Lado do JOGO da captura de buffer (ver Protocolo.h). Independente do resto do overlay: compila dentro da
+// DLSS5Buffer.dll (src\jogo\Modulo.cpp) e no jogo de teste. Grava na lista do jogo, depois do upscale:
 //   - exporta cor (x exposicao), movimento e profundidade para os slots compartilhados, quando o overlay quer;
 //   - soma a ultima edicao publicada pelo overlay, reprojetada pelos vetores do jogo, na propria cor (no lugar).
 // Nunca espera o overlay: sem overlay vivo (batimento), nao faz nada alem de manter o cabecalho.

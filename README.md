@@ -68,9 +68,9 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
   - No jogo, a DLL aplica a edição de 1–3 quadros atrás com a mesma oclusão reconstruída (cada ponto deste quadro marca
     a distância dele onde estava no quadro da edição); antes ela só comparava a distância gravada na edição e deixava
     passar a edição do personagem no chão perto dele.
-  - A média temporal da edição encurta com o movimento do pixel (metade a 16 px/quadro, `DLSS5_ESTAB_PX`): a edição da
-    rede depende do ângulo de vista e da animação, e 8 quadros de média em movimento eram a edição atrasada sobre a
-    cena; parado, a média longa segura a cintilação.
+  - A média temporal da edição encurta com o movimento do pixel (metade a 8 px/quadro: `mediaMovimento`, que
+    `DLSS5_ESTAB_PX` sobrepõe): a edição da rede depende do ângulo de vista e da animação, e 8 quadros de média em
+    movimento eram a edição atrasada sobre a cena; parado, a média longa segura a cintilação.
   - Medido na gravação do Gears reproduzida fora do jogo (`--reproduz` de uma gravação do modo buffer usa o movimento e a
     distância gravados: o modo buffer inteiro, determinístico) contra a edição ideal (a resposta da rede reprojetada):
     resíduo no overlay 0,041 → 0,018 (0,040 → 0,027 perto de bordas de profundidade); na etapa do jogo, simulada com

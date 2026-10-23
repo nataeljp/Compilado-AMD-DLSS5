@@ -1,4 +1,4 @@
-// Captura de buffer: o protocolo entre o modulo dentro do jogo (ClienteBuffer, no host OptiScaler) e o overlay.
+// Captura de buffer: o protocolo entre o modulo dentro do jogo (ClienteBuffer, dentro da DLSS5Buffer.dll) e o overlay.
 //
 // O jogo exporta, depois do upscale, a cor (sem HUD, linear), os vetores de movimento e a profundidade para texturas
 // D3D12 compartilhadas; o overlay roda a rede e toda a cadeia (temporal, grade, composicao) e devolve uma EDICAO
@@ -39,7 +39,7 @@ inline void NomeRecurso(wchar_t* b, size_t n, uint32_t pid, uint32_t geracao, co
 
 // Formatos das texturas compartilhadas (o jogo converte para eles):
 //   cor    RGBA16F, corW x corH  (linear; x exposicao do jogo quando ele a entrega)
-//   mov    RG16F,   movW x movH  (pixels da COR, do quadro atual ate o anterior: p_anterior = p + mov)
+//   mov    RG32F,   movW x movH  (pixels da COR, acumulado do quadro atual ate a exportacao anterior: p_ant = p + mov)
 //   prof   R32F,    profW x profH (como o jogo entrega; profInvertida diz se perto = 1)
 //   exp    R32F,    1 x 1         (a exposicao aplicada na cor; 1 sem exposicao do jogo)
 //   edicao RGBA16F, corW x corH   (escrita pelo overlay; alfa = log2 da distancia da camera de cada pixel, para o
