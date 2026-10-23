@@ -36,6 +36,25 @@ using namespace ov;
 
 namespace {
 
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+// espera curta com precisao de fracao de milissegundo. O Sleep (e o sleep_for) acorda no passo do timer do processo,
+// 15,6 ms por padrao desde o Windows 10 2004 (o timeBeginPeriod de outro programa nao vale mais aqui): o teto de fps
+// chegava a segurar o quadro ate ~15 ms a mais que o pedido.
+void EsperaPrecisa(std::chrono::steady_clock::duration d)
+{
+    if (d <= std::chrono::steady_clock::duration::zero())
+        return;
+    static HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    LARGE_INTEGER prazo{};
+    prazo.QuadPart = -std::max<LONGLONG>(1, LONGLONG(std::chrono::duration_cast<std::chrono::nanoseconds>(d).count() / 100));
+    if (timer && SetWaitableTimer(timer, &prazo, 0, nullptr, nullptr, FALSE))
+        WaitForSingleObject(timer, INFINITE);
+    else
+        std::this_thread::sleep_for(d); // sem o timer de alta resolucao (anterior ao Windows 10 1803)
+}
+
 std::wstring PastaDoExe()
 {
     wchar_t b[MAX_PATH];
@@ -1877,7 +1896,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             const auto minimo = std::chrono::microseconds(1000000 / app.cfg.fpsMax);
             const auto agora = clk::now();
             if (agora - ultimo < minimo)
-                std::this_thread::sleep_for(minimo - (agora - ultimo));
+                EsperaPrecisa(minimo - (agora - ultimo));
         }
         try
         {
