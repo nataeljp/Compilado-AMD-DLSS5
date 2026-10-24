@@ -1118,7 +1118,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
 
         Secao("PONTE HDR -> REDE");
         const char* pontes[] = {"Automatica (SDR direta, HDR SoftKnee)", "Direta", "SoftKnee", "ACES (RRT+ODT, RenoDX)",
-                                "Curva do jogo (luz de cena, SDR)", "Luz de cena direta (captura de buffer)"};
+                                "Curva do jogo (luz de cena, SDR)", "Luz direta sem joelho (buffer ou HDR)"};
         int ip = cfg.ponte + 1;
         ImGui::SetNextItemWidth(lc);
         if (ImGui::Combo("##ponte", &ip, pontes, 6))
@@ -1128,8 +1128,9 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         }
         Dica("Como o quadro vira o proxy SDR que a rede ve; em HDR a cadeia trabalha nele e so a saida volta ao HDR.\n"
              "Curva do jogo: a curva filmica e desfeita na entrada (a rede ve luz de cena) e refeita na saida.\n"
-             "Luz de cena direta: a luz vai sem corte e so o ombro do codificador da NVIDIA comprime os realces (o\n"
-             "contrato do modo 1 dela); para a captura de buffer, em que a cor do jogo vem antes do tonemap.");
+             "Luz direta sem joelho: a luz vai sem corte e so o ombro do codificador da NVIDIA comprime os realces (o\n"
+             "contrato do modo 1 dela). Para a captura de buffer (cor antes do tonemap) e para jogo em HDR, em que os\n"
+             "realces passam do branco; com o Branco (nits) igual ao branco de papel do jogo.");
         Deslizador("Branco (nits)", &cfg.brancoNits, 0.f, 400.f, cfg.brancoNits > 0.f ? "%.0f" : "Windows",
                    "Branco de papel do jogo em HDR (0 = o branco SDR do Windows, o certo para a rede).", 0.f);
 
