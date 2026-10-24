@@ -186,3 +186,39 @@ Copy-Item runtime\adaptador\LmxxfNrRuntime.dll bin\runtime\LmxxfNrRuntime.dll
 3. **Histórico**: **Força do histórico** em 1, 0,5 e 0 andando (rastro contra cintilação).
 4. **Perfis**: salve dois perfis, troque entre eles, renomeie, marque um "ao ligar", feche e abra o programa e confira
    que ele carregou sozinho.
+
+## 8. Rodada 4: grade afim contra a máscara em movimento (captura de buffer)
+
+A máscara semitransparente que anda com o objeto vinha de a edição ser uma diferença por pixel feita no quadro que a
+rede viu e levada até o quadro atual (atraso da rede + acúmulo de vários quadros). Agora, a cada resposta, o overlay
+ajusta a transformação de cor que a rede fez (y = A·x + b, por célula de 16 px da rede e faixa de brilho) e a aplica,
+na resolução cheia, à cor do quadro **atual**. A edição principal é recalculada do conteúdo de agora; só o detalhe que
+a grade não explica (o resíduo) segue o caminho antigo, na força **Detalhe por pixel**.
+
+`ferramentas\simula_grade_afim.py` reproduz as contas numa cena sintética (um objeto andando 14 px). A edição foi
+construída nela, não é a da rede. Erro contra a edição certa do quadro atual, em volta do objeto / na área descoberta:
+
+| | vetor exato | vetor com 1,5 px de erro |
+|---|---|---|
+| transporte por pixel (antes) | 0,0197 / 0,0372 | 0,0560 / 0,0607 |
+| grade afim | 0,0139 / 0,0153 | 0,0139 / 0,0153 |
+| grade afim + 0,25 do resíduo | 0,0119 / 0,0139 | 0,0138 / 0,0153 |
+
+Ali a grade explicou 74% da edição; quanto ela explica da rede de verdade se mede no jogo.
+
+Só o overlay mudou (não precisa recompilar runtime nem DLL):
+
+```powershell
+git pull
+powershell -ExecutionPolicy Bypass -File build.ps1
+```
+
+Testes (captura de buffer, a cena em que a máscara aparecia):
+
+1. Avançado → Movimento: **Grade afim (edição sem fantasma)** ligada e desligada (muda na próxima resposta).
+2. **Detalhe por pixel** em 0, 0,25 e 1: em 0 nada é transportado; se a máscara sumir em 0 e voltar em 1, o resto é
+   do resíduo.
+3. **Média em movimento** de volta a 8 (ou menos): em 32 o acúmulo quase não encurta em movimento.
+4. Rede em 540p ou 720p: com a grade afim aplicada na resolução cheia o resultado deve ficar menos borrado.
+5. Se aparecer uma pulsação a cada resposta da rede (a grade troca de uma vez), me diga: dá para misturar a grade
+   anterior com a nova em alguns quadros.

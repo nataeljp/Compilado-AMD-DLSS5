@@ -142,7 +142,9 @@ Requisitos: placa AMD RDNA 4 (RX 9070 / 9060) e driver AMD com `amdhip64_7.dll` 
    um segundo RGB que é a entrada de histórico (sem o histórico ligado ela recebe a cor de novo), 5 controles da NVIDIA,
    1 constante e 1 zerada. Não há entrada de luz, profundidade ou normal: na captura de buffer, o movimento e a
    profundidade do jogo chegam à rede só pelo histórico (`temporalRede`).
-4. **Composição**: a *edição* da rede (resposta − entrada) é acumulada no tempo num espaço comprimido (x / (1 + luma),
+4. **Composição**: com a **grade afim** (padrão), a parte principal da edição é a transformação de cor que a rede fez
+   (por célula e faixa de brilho, ajustada a cada resposta) aplicada à cor nativa do quadro atual; só o resíduo segue o
+   caminho abaixo. A *edição* da rede (resposta − entrada) é acumulada no tempo num espaço comprimido (x / (1 + luma),
    como o TAA dos jogos, para o realce HDR não virar pontos), reprojetada pelo movimento simulado (menos cintilação) e
    somada ao quadro nativo, que mantém o próprio detalhe. Onde a edição não pode ser trazida (conteúdo animado, oclusão,
    borda nova da tela) ela sai de uma grade bilateral da última resposta (bloco × brilho). Composição de cor
@@ -174,6 +176,7 @@ Os parâmetros do DLSS 5 seguem os nomes que a NVIDIA expõe no NGX (os mesmos d
 | `profundidade` | 0..4 | blocos da rede grande: 0 = 71, 1 = 68 (sem 42/43/46), 2 = 63 (sem 40–47), 3 = 55 (e sem 23–30), 4 = 47 (e sem o ViT 31–38; só com `reusoVit` desligado). Só blocos residuais saem; muda na hora; só no `config.json`. Não se aplica à rede pequena, que é outro modelo |
 | `movimento`, `usaConfianca` | true/false | movimento simulado por fluxo óptico; descartar o acúmulo onde ida e volta não conferem |
 | `estabilidade`, `rejeicao` | 1..16, 2..40 | quadros que a edição acumula; quão rápido mudança de cor derruba o acúmulo |
+| `gradeAfim`, `detalhePorPixel` | true/false, 0..1 | grade afim (Bilateral Guided Upsampling / HDRNet): em cada resposta, por célula de 16 px da rede e faixa de brilho, a transformação de cor y = A·x + b que a rede fez (mínimos quadrados, puxada para a identidade onde há pouca variação de cor), aplicada na resolução cheia à cor do quadro **atual** — a edição principal é recalculada do conteúdo de agora, não transportada pixel a pixel (sem a máscara semitransparente em movimento) nem ampliada da rede pequena. O resíduo (o detalhe que a grade não explica) segue pelo caminho por pixel na força `detalhePorPixel` (padrão 0,25). Padrão: ligada |
 | `bordaPelosVizinhos` | true/false | captura de vídeo: onde a edição trazida pelo movimento não confere (borda de objeto andando), ela vem dos vizinhos de cor parecida cuja reprojeção confere, em vez só da grade bilateral (células de 16 px da rede); padrão true |
 | `mediaMovimento` | 0..32 px | captura de buffer: a média cai pela metade a cada tantos px/quadro de movimento (padrão 8; 0 = fixa) |
 | `ritmo` | 1..4 | 1 = a rede recomeça assim que termina; N = no máximo uma vez a cada N quadros (libera GPU para o jogo) |

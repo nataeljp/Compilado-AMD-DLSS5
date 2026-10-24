@@ -113,6 +113,8 @@ void Config::Carrega(const std::wstring& arquivo)
     F("mediaMovimento", temporal.pxEstab);
     F("rejeicao", temporal.rejeicao);
     B("bordaPelosVizinhos", temporal.vizinhos);
+    B("gradeAfim", temporal.afim);
+    F("detalhePorPixel", temporal.detalhe);
     F("divisao", divisao);
     I("fpsMax", fpsMax);
     B("ocultaDeGravacoes", ocultaDeGravacoes);
@@ -170,6 +172,8 @@ std::string Config::Texto() const
     f << "  \"mediaMovimento\": " << temporal.pxEstab << ",\n";
     f << "  \"rejeicao\": " << temporal.rejeicao << ",\n";
     f << "  \"bordaPelosVizinhos\": " << b(temporal.vizinhos) << ",\n";
+    f << "  \"gradeAfim\": " << b(temporal.afim) << ",\n";
+    f << "  \"detalhePorPixel\": " << temporal.detalhe << ",\n";
     f << "  \"divisao\": " << divisao << ",\n";
     f << "  \"fpsMax\": " << fpsMax << ",\n";
     f << "  \"ocultaDeGravacoes\": " << b(ocultaDeGravacoes) << "\n";

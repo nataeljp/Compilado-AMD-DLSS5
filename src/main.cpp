@@ -211,10 +211,10 @@ struct App
             cl[i]->Close();
         }
         const std::string prepara = std::string(hlsl::Comum) + hlsl::Prepara;
-        const std::string compoe = std::string(hlsl::Comum) + hlsl::Compoe;
+        const std::string compoe = std::string(hlsl::Comum) + hlsl::AfimAplica + hlsl::Compoe;
         pInteiro.Cria(gpu.dev.Get(), prepara.c_str(), "CSInteiro", 1, 1, 16, "inteiro");
         pReduz.Cria(gpu.dev.Get(), prepara.c_str(), "CSReduz", 1, 2, 16, "reduz");
-        pCompoe.Cria(gpu.dev.Get(), compoe.c_str(), "CSCompoe", 6, 1, 40, "compoe");
+        pCompoe.Cria(gpu.dev.Get(), compoe.c_str(), "CSCompoe", 8, 1, 44, "compoe");
         pExporta.Cria(gpu.dev.Get(), (std::string(hlsl::Comum) + hlsl::Exporta).c_str(), "CSExporta", 3, 1, 12,
                       "edicao para o jogo");
         pGuias.Cria(gpu.dev.Get(), hlsl::Guias, "CSGuias", 2, 2, 4, "guias do historico da rede");
@@ -1317,6 +1317,13 @@ struct App
                           temporal.Crua().w == fed.w && temporal.Crua().h == fed.h;
         if (crua)
             temporal.Crua().Para(c, SRV);
+        // grade afim: aplicada aqui, na resolucao cheia (so com a edicao do Temporal deste quadro)
+        Tex* afimC = edicao ? temporal.AfimEmUso() : nullptr;
+        Tex* deslGC = afimC ? temporal.DeslGrade() : nullptr;
+        if (afimC)
+            afimC->Para(c, SRV);
+        if (deslGC)
+            deslGC->Para(c, SRV);
         saida.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         struct
         {
@@ -1331,12 +1338,13 @@ struct App
             float preLuz, preSombra, preLimiar, preLimiarSombra, preCor;
             UINT pad2, pad3, pad4;
             float satMatiz[6], luzMatiz[6];
-            UINT usaMatiz, temCrua, padM1, padM2;
+            UINT usaMatiz, temCrua, usaAfim, temDeslG, agw, agh, padA0, padA1;
         } kc{inteiro.w,      inteiro.h,      fed.w, fed.h, edicao ? cfg.forca : 0.f, (UINT)cfg.modo, cfg.divisao,
              edicao ? 1u : 0u, hdr ? 1u : 0u, escalaUsada, kExp, kCon, kSat, grada ? 1u : 0u,
              pontePassada == 3 ? 1u : 0u, (hdr && pontePassada == 1) ? 1u : 0u, cfg.preLuz, cfg.preSombra, cfg.preLimiar, cfg.preLimiarSombra, cfg.preCor,
-             0, 0, 0, {}, {}, cfg.matiz.Ativa() ? 1u : 0u, (cfg.modo == 5 && crua) ? 1u : 0u, 0, 0};
-        static_assert(sizeof(kc) == 40 * 4, "constantes: o mesmo layout do cbuffer do CSCompoe");
+             0, 0, 0, {}, {}, cfg.matiz.Ativa() ? 1u : 0u, (cfg.modo == 5 && crua) ? 1u : 0u, afimC ? 1u : 0u,
+             deslGC ? 1u : 0u, temporal.AfimW(), temporal.AfimH(), 0, 0};
+        static_assert(sizeof(kc) == 44 * 4, "constantes: o mesmo layout do cbuffer do CSCompoe");
         for (int i = 0; i < 6; ++i)
         {
             kc.satMatiz[i] = std::clamp(cfg.matiz.sat[i], -1.f, 1.f);
@@ -1350,7 +1358,9 @@ struct App
                       edicao ? Par{edicao->r.Get(), edicao->fmt} : vazio,
                       temMov ? Par{fluxo.Movimento().r.Get(), fluxo.Movimento().fmt} : vazio,
                       crua ? Par{origCrua.r.Get(), origCrua.fmt} : vazio,
-                      crua ? Par{temporal.Crua().r.Get(), temporal.Crua().fmt} : vazio},
+                      crua ? Par{temporal.Crua().r.Get(), temporal.Crua().fmt} : vazio,
+                      afimC ? Par{afimC->r.Get(), afimC->fmt} : vazio,
+                      deslGC ? Par{deslGC->r.Get(), deslGC->fmt} : vazio},
                      {{saida.r.Get(), saida.fmt}}, &kc, (saida.w + 7) / 8, (saida.h + 7) / 8);
         // captura de buffer: a edicao (C(saida) - C(cor do jogo)) vai para o slot que o jogo soma no quadro seguinte
         Tex* edJogo = buffer ? fb.EdicaoLivre() : nullptr;

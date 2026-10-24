@@ -1412,6 +1412,19 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             }
 
             Secao("MOVIMENTO E ESTABILIDADE");
+            if (Marca("Grade afim (edição sem fantasma)", &cfg.temporal.afim,
+                      "Em cada resposta, a transformacao de cor que a rede fez (por celula de 16 px e faixa de brilho,\n"
+                      "y = A x + b) e aplicada a cor do quadro ATUAL: a edicao principal e recalculada do conteudo de agora,\n"
+                      "nao transportada pixel a pixel do quadro velho -- sem a mascara semitransparente que andava com o\n"
+                      "objeto. O que a grade nao explica (detalhe fino) segue pelo caminho de antes, na forca abaixo.\n"
+                      "Desligado: tudo pelo caminho por pixel, como antes."))
+                mc = true;
+            ImGui::BeginDisabled(!cfg.temporal.afim);
+            Deslizador("Detalhe por pixel", &cfg.temporal.detalhe, 0.f, 1.f, "%.3f",
+                       "Com a grade afim: quanto do residuo (o detalhe que a grade nao explica) entra, transportado e\n"
+                       "acumulado como antes. 0 = nada transportado (sem fantasma nenhum, menos detalhe da rede);\n"
+                       "1 = todo o detalhe (o fantasma volta so na parte do residuo).", 0.25f);
+            ImGui::EndDisabled();
             if (Marca("Movimento simulado (fluxo óptico)", &cfg.movimento,
                       "Vetores de movimento estimados entre os quadros capturados, sem buffer do jogo."))
                 mc = true;

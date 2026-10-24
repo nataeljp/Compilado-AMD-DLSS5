@@ -25,6 +25,9 @@ struct ParamsTemporal
     float exposicao = 1.f;    // ganho do quadro antes da rede (ponto de operacao); desfeito na composicao
     bool vizinhos = true;     // captura de video: onde a reprojecao nao confere, a edicao dos vizinhos de cor parecida
                               // (false = so a grade bilateral, como antes)
+    bool afim = true;         // grade afim: a transformacao de cor da rede aplicada a cor do quadro atual (sem fantasma);
+                              // o caminho por pixel leva so o residuo
+    float detalhe = 0.25f;    // com a grade afim: quanto do residuo por pixel (transportado e acumulado) entra, 0..1
 };
 
 class Temporal
@@ -32,7 +35,7 @@ class Temporal
   public:
     void Cria(ID3D12Device* d);
     void Garante(ID3D12Device* d, UINT w, UINT h);
-    void Reinicia() { valido = gradeValida = false; }
+    void Reinicia() { valido = gradeValida = afimValida = afimEmUso = false; }
     // A rede responde com atraso (fila propria): a resposta e do quadro t0 que ela viu, nao do atual.
     // Edicao: quando a resposta chega, a edicao dela no espaco de t0 (origT0/fedT0: o quadro e o proxy de t0).
     void Edicao(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, Tex& origT0, Tex& fedT0, Tex& resp,
@@ -54,13 +57,25 @@ class Temporal
               const ParamsTemporal& p, Tex* zAgora = nullptr); // zAgora: movimento e confianca exatos (do jogo)
     bool Valido() const { return valido; }
     Tex& Crua() { return crua; } // a edicao da ultima resposta, no espaco de t0 (diagnostico)
+    // grade afim em uso no ultimo Roda (o CSCompoe a aplica na resolucao cheia), ou nullptr; DeslGrade: o deslocamento
+    // ate o t0 dela (nullptr = t0 e este quadro); AfimW/AfimH: celulas
+    Tex* AfimEmUso() { return afimEmUso ? &afim : nullptr; }
+    Tex* DeslGrade() { return deslGAgora; }
+    UINT AfimW() const { return agw; }
+    UINT AfimH() const { return agh; }
     Tex zGrade;                  // distancia da camera no t0 da grade (captura de buffer)
     bool zGradeValida = false;
 
   private:
     Tex* AcumulaEm(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, Tex (&par)[2], UINT& qual, Tex* mov,
                    Tex* confianca, bool zera);
-    Passe passe, passeEdicao, passeAcumula, passeGrade;
+    // o que segue pelo caminho por pixel (reposicionado, acumulado, grade bilateral): com a grade afim, o residuo dela
+    Tex& EdT0() { return afimValida ? residuo : crua; }
+    Passe passe, passeEdicao, passeAcumula, passeGrade, passeAfimEstat, passeAfimResolve, passeResiduo;
+    // grade afim da ultima resposta (Temporal.cpp, kAfim): somas, coeficientes e o residuo por pixel em t0
+    Tex afimEst, afim, residuo;
+    UINT agw = 0, agh = 0;
+    bool afimValida = false, afimEmUso = false;
     Tex grade, gradeCor, deslG[2];
     Tex* deslGAgora = nullptr;
     UINT gw = 0, gh = 0, deslGAtual = 0;

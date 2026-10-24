@@ -85,7 +85,7 @@ void Barreira(ID3D12GraphicsCommandList* c, ID3D12Resource* r, D3D12_RESOURCE_ST
 // o monitor da janela esta com HDR ligado? `escalaSdr` = branco SDR do Windows em unidades scRGB (1,0 = 80 nits)
 bool MonitorHdr(Gpu& g, HWND janela, float& escalaSdr);
 
-// passe compute: raiz = constantes (b0, ate 32 dwords) + tabela de SRVs (t0..) + tabela de UAVs (u0..) +
+// passe compute: raiz = constantes (b0, ate ~60 dwords: a raiz inteira cabe em 64) + tabela de SRVs (t0..) + tabela de UAVs (u0..) +
 // amostrador linear clamp (s0)
 // espera todos os passes criados ate aqui; relanca o primeiro erro de compilacao
 void EsperaPasses();
