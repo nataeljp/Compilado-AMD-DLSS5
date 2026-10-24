@@ -50,6 +50,19 @@ class Rede
     Tex& Entrada() { return entrada; }   // o quadro que a rede viu (estado COMMON fora das listas)
     Tex& Resposta() { return resposta; } // a ultima resposta (estado COMMON fora das listas)
 
+    // historico da propria rede (DLSS5_TEMPORAL_MODE=1 no ambiente, lido pelo runtime ao carregar): a entrada de historico
+    // da rede recebe a resposta anterior trazida pelo movimento. As guias: movimento (RG32F, pixels da entrada ate o quadro
+    // do envio anterior; NaN = sem historico no pixel) e profundidade (R32F, maior = mais perto; so com a distancia do
+    // jogo). O overlay as escreve na lista dele antes do Envia, com a rede livre, e as deixa em COMMON; UsaGuias diz o que
+    // vale no proximo Envia. Sem LmxxfNrSetHistoryGuides no runtime (anterior a este branch): TemGuias() = false.
+    bool TemGuias() const { return setGuias != nullptr; }
+    void GaranteGuias(UINT w, UINT h);
+    Tex& GuiaMov() { return guiaMov; }
+    Tex& GuiaProf() { return guiaProf; }
+    void UsaGuias(bool mov, bool prof) { usaMov = mov, usaProf = prof; }
+    // o historico da rede recomeca no proximo trabalho (corte de cena, troca de ajuste)
+    void ZeraHistorico();
+
     // profundidade dinamica (runtime v3): blocos residuais pulados a partir do proximo quadro; false = recusado/ausente
     bool DefineProfundidade(const std::vector<uint32_t>& blocos);
     bool TemProfundidade() const { return setSkip != nullptr; }
@@ -67,8 +80,11 @@ class Rede
     ComPtr<ID3D12CommandAllocator> al[2];
     ComPtr<ID3D12GraphicsCommandList> cl[2];
     Tex entrada, resposta;
+    Tex guiaMov, guiaProf;
+    bool usaMov = false, usaProf = false, avisouGuias = false;
     HMODULE mod = nullptr;
     int32_t (*setSkip)(void*, const uint32_t*, uint32_t) = nullptr;
+    int32_t (*setGuias)(void*, void*, void*, uint32_t) = nullptr;
     LmxxfNrApi api{};
     void* ctx = nullptr;
     LmxxfNrJob job{};

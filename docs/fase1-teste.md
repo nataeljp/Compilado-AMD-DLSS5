@@ -98,3 +98,53 @@ a 60 quadros por segundo de propósito; o atraso extra do `sleep_for` deve ter s
 - O resultado do `fc` do teste 4.1.
 - As linhas `"tipo":"memoria"` do `overlay.jsonl` no começo e no fim dos 30 minutos.
 - Se usar a captura de buffer: a linha `render` do `DLSS5Buffer.log` e quantas linhas `geracao` apareceram.
+
+## 6. Rodada seguinte: banding no HDR, cor por matiz e histórico da rede
+
+| Mudança | O que muda |
+|---|---|
+| sem o seletor de blocos | O painel volta a ter só Grande/Pequena. O "Padrão NVIDIA" volta a `profundidade` para 0 (71 blocos). |
+| banding no HDR automático | Na ponte automática em HDR (SoftKnee), o quadro comprimido ficava guardado em FP16, e a volta ao HDR ampliava o degrau do FP16: entre 2× e 2,5× o branco sobravam 4 níveis, com degraus de ~17% (o banding em volta do sol). Agora o quadro guarda a luz linear e o joelho é feito na leitura, em float32: os mesmos 2× a 2,5× ficam com 257 níveis e degraus de ~0,09%. |
+| cor por matiz | No HDR automático o ajuste roda na luz HDR (antes rodava na tela comprimida e pesava mais nos realces). Cada deslizador tem a cor da faixa dele. |
+| histórico da própria rede | Avançado → "Histórico da própria rede (ao reabrir)". A rede tem uma entrada de histórico que até aqui recebia o quadro atual de novo; ligada, ela recebe a resposta anterior trazida pelo movimento (captura de buffer: movimento e profundidade do jogo; captura de vídeo: fluxo óptico). Precisa do runtime recompilado. |
+
+Como na fase 1: checado com MinGW e glslang, **não compilado com o MSVC nem rodado**.
+
+### 6.1 Compilar
+
+Feche o overlay antes (ele prende as DLLs de `bin\runtime`).
+
+```powershell
+cd D:\AI_Claude\DLSS5-Overlay
+git pull
+powershell -ExecutionPolicy Bypass -File build.ps1
+```
+
+Só para o histórico da rede, o runtime e o adaptador:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File runtime\lmxxf\compilar.ps1
+powershell -ExecutionPolicy Bypass -File runtime\adaptador\compilar.ps1
+Remove-Item bin\runtime\lmxxf_upstream.dll, bin\runtime\LmxxfNrRuntime.dll
+Copy-Item runtime\lmxxf\fonte\build_msvc\LmxxfNrRuntime_v4.dll bin\runtime\lmxxf_upstream.dll
+Copy-Item runtime\adaptador\LmxxfNrRuntime.dll bin\runtime\LmxxfNrRuntime.dll
+Test-Path bin\runtime\native-game-tiled-assets\post70-history-head.f16
+```
+
+- O `compilar.ps1` do lmxxf agora guarda o hash do patch em `runtime\lmxxf\fonte\.patch_aplicado`. Com o patch novo,
+  ele volta a fonte ao commit base e aplica o atual sozinho; a pasta `build_msvc` fica.
+- O `Test-Path` deve dar `True`: a cabeça de histórico da rede vem da DLL 310.8 da NVIDIA pelo `monta_runtime.ps1`.
+  Se der `False`, rode o `monta_runtime.ps1` de novo (ele refaz `bin\runtime` inteiro).
+
+### 6.2 Testes
+
+1. **Banding**: HDR ligado, ponte Automática, a cena do sol. O degradê em volta do sol deve ficar liso, também com
+   Exibição → Original.
+2. **Cor por matiz**: em HDR, Ciano: saturação −0,5 deve tirar o ciano do branco sem mudar a pele.
+3. **Histórico da rede**: marque a opção e reabra o programa. Abaixo dela o painel diz "Em uso: com o movimento ...";
+   se disser que o runtime não tem `LmxxfNrSetHistoryGuides`, o runtime novo não foi copiado. Compare parado e andando,
+   com a opção ligada e desligada (cintilação e rastro).
+   - No `overlay.jsonl`, a linha `historico da rede: guia(s) ... entregue(s) ao adaptador` diz que o overlay mandou as
+     guias.
+   - No `bin\runtime\lmxxf_adaptador.log`, uma linha `ERRO SetHistoryGuides` ou `ERRO PrepareFrame` diz que o runtime
+     recusou; mande a linha. Sem o `post70-history-head.f16`, o erro do PrepareFrame cita esse arquivo.

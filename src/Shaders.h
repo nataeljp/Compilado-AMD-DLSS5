@@ -46,6 +46,17 @@ float3 SoftKneeInv(float3 c)
     float m = Max3(c);
     return m > JOELHO ? c * (JoelhoInv(m) / m) : c;
 }
+// ponte SoftKnee em HDR (sanduiche): a tela SDR equivalente de uma luz linear e a folga, o que passa do teto da inversa
+// (realces acima de ~3,3x o branco), devolvida na saida para nao cortar o pico HDR. Calculadas em float32 na leitura:
+// guardar a tela comprimida em FP16 e desfazer o joelho depois ampliava o degrau do FP16 (entre 2x e 2,5x o branco
+// sobravam 4 niveis, com degraus de ~17%: o banding em volta do sol).
+float3 Sanduiche(float3 l, out float folga)
+{
+    l = max(l, 0.0);
+    const float3 sdr = SoftKnee(l);
+    folga = max(Lum(l), 1e-6) / max(Lum(SoftKneeInv(sdr)), 1e-6);
+    return sdr;
+}
 
 // ACES (RRT+ODT para SDR 100 nits), ajuste de Stephen Hill como no RenoDX (MIT)
 float3 AcesFittedAP1(float3 color)
@@ -162,8 +173,9 @@ SamplerState s : register(s0);
 {
     if (p.x >= fw || p.y >= fh) return;
     float4 c = src.Load(int3(p, 0));
-    // reproducao de gravacao (--reproduz): a entrada ja e o quadro do overlay (luz de cena), sem conversao
-    if (passa) { dst[p] = float4(c.rgb, 1.0); return; }
+    // reproducao de gravacao (--reproduz): a entrada ja e o quadro do overlay (luz de cena), sem conversao. No sanduiche o
+    // gravado esta na tela SDR equivalente e o quadro inteiro guarda luz linear: volta pela inversa (CSReduz refaz o joelho)
+    if (passa) { dst[p] = float4(hdr != 0 && ponte == 1 ? SoftKneeInv(c.rgb) : c.rgb, 1.0); return; }
     // HDR: scRGB dividido pelo branco de papel; SDR: sRGB -> linear (ponte 3: e desfaz a curva do jogo, luz de cena)
     float3 l = hdr ? max(c.rgb, 0.0) / escala : Linear(saturate(c.rgb));
     float folga = 1.0;
@@ -181,16 +193,11 @@ SamplerState s : register(s0);
         else
             l = FilmicaInv(l);
     }
-    else if (ponte == 1 && hdr)
-    {
-        // HDR pela ponte SoftKnee (a automatica em HDR): a cadeia inteira (rede, edicao, acumulo, ajustes) trabalha na
-        // tela SDR equivalente que a rede ve, e so a saida volta ao HDR (sanduiche, como a ponte 3). Antes a edicao era
-        // aplicada como razao de luz sobre o HDR expandido: nos realces (o ombro da curva) ela ficava menor do que a rede
-        // pretendia (medido contra a NVIDIA: 43,8 dB em HDR contra 47,4 em SDR). A folga guarda o que passa do teto.
-        const float3 sdr = SoftKnee(l);
-        folga = max(Lum(l), 1e-6) / max(Lum(SoftKneeInv(sdr)), 1e-6);
-        l = sdr;
-    }
+    // HDR pela ponte SoftKnee (a automatica em HDR): a cadeia inteira (rede, edicao, acumulo, ajustes) trabalha na tela SDR
+    // equivalente que a rede ve, e so a saida volta ao HDR (sanduiche, como a ponte 3). Antes a edicao era aplicada como
+    // razao de luz sobre o HDR expandido: nos realces (o ombro da curva) ela ficava menor do que a rede pretendia (medido
+    // contra a NVIDIA: 43,8 dB em HDR contra 47,4 em SDR). O quadro inteiro guarda a luz linear; o joelho e a folga sao
+    // feitos na leitura (Sanduiche, no CSReduz e no CSCompoe).
     // (luzes/sombras/cor antes da rede: no CSReduz e no resultado do CSCompoe; o quadro inteiro fica intacto)
     dst[p] = float4(l, folga);
 }
@@ -201,15 +208,18 @@ SamplerState s : register(s0);
     float2 esc = float2(fw, fh) / float2(dw, dh);
     int n = clamp((int)ceil(max(esc.x, esc.y)), 1, 6);
     float2 base = float2(p) * esc;
+    const bool sanduiche = hdr != 0 && ponte == 1; // a cadeia trabalha na tela SDR equivalente (joelho por amostra)
     float4 a = 0;
     [loop] for (int j = 0; j < n; ++j)
         [loop] for (int i = 0; i < n; ++i)
         {
             float2 q = base + (float2(i, j) + 0.5) * esc / n;
-            a += src.SampleLevel(s, q / float2(fw, fh), 0);
+            float4 t = src.SampleLevel(s, q / float2(fw, fh), 0);
+            float folga;
+            if (sanduiche) t.rgb = Sanduiche(t.rgb, folga);
+            a += t;
         }
     float3 o = a.rgb / (n * n);
-    const bool sanduiche = hdr != 0 && ponte == 1; // o quadro ja e a tela SDR equivalente (CSInteiro)
     o = PreAjuste(o, TelaDe(o, hdr != 0 && !sanduiche, ponte == 3), preLuz, preSombra, preLimiar, preLimiarSombra, preCor);
     dst[p] = float4(o, 1.0);
     // exposicao: o ponto de operacao da rede (o proxy ve o quadro x exposicao; a composicao desfaz)
@@ -290,7 +300,8 @@ float3 Tela(float3 lin, bool grade, float folga)
 
 // cor por matiz depois da rede, em seis eixos (0 vermelho, 1 amarelo, 2 verde, 3 ciano, 4 azul, 5 magenta): saturacao e
 // brilho de cada faixa. Os pesos sao triangulos entre eixos vizinhos (somam 1), e o brilho pesa pelo croma: cinza e
-// branco nao mudam.
+// branco nao mudam. Recebe luz linear (primarias Rec.709, branco de papel = 1): SDR, HDR e luz de cena da ponte 3; no
+// sanduiche o CSCompoe desfaz o joelho antes, para o ajuste valer igual nos realces HDR.
 float3 CorPorMatiz(float3 c)
 {
     c = max(c, 0.0);
@@ -320,6 +331,8 @@ float3 CorPorMatiz(float3 c)
     if (p.x >= fw || p.y >= fh) return;
     const float4 oi = inteiro.Load(int3(p, 0));
     float3 o = oi.rgb;
+    float folga = oi.a;
+    if (sanduiche) o = Sanduiche(oi.rgb, folga);
     float3 e = 0;
     if (usaEdicao)
     {
@@ -331,9 +344,9 @@ float3 CorPorMatiz(float3 c)
     // o resultado parte do quadro com o mesmo ajuste que a rede viu; o lado "original" fica intacto
     float3 r = PreAjuste(o, TelaDe(o, hdr != 0 && sanduiche == 0, filmica != 0), preLuz, preSombra, preLimiar, preLimiarSombra, preCor) +
                forca * e;
-    if (usaMatiz) r = CorPorMatiz(r);
+    if (usaMatiz) r = sanduiche ? SoftKnee(CorPorMatiz(SoftKneeInv(r))) : CorPorMatiz(r);
     bool orig = modo == 1 || (modo == 2 && (float)p.x < divisao * fw);
-    float3 c = orig ? Tela(o, false, oi.a) : Tela(r, grada != 0, oi.a);
+    float3 c = orig ? Tela(o, false, folga) : Tela(r, grada != 0, folga);
     float hs = hdr ? escala : 1.0;
     if (modo == 3) c = saturate(0.5 + 4.0 * e) * hs;
     if (modo == 4)
@@ -403,6 +416,34 @@ float Radial(float z, float2 uv)
     const uint2 pp = min(uint2((p + 0.5) * float2(profW, profH) / float2(w, h)), uint2(profW - 1, profH - 1));
     const float z = Radial(Dist(prof.Load(int3(pp, 0))), (p + 0.5) / float2(w, h));
     edicao[p] = float4(Comprime(r) - Comprime(o), log2(max(z, 1e-6)));
+}
+)";
+
+// guias do historico da propria rede (DLSS5_TEMPORAL_MODE=1, LmxxfNrSetHistoryGuides): o runtime traz a resposta anterior
+// da rede ate este quadro pelo movimento e a da como a entrada de historico dela (a mistura e a cabeca de historico do
+// bloco 70 que decide). modo 0: parado (movimento zero); 1: a textura (xy = pixels da rede ate o quadro do envio anterior,
+// w < 0,5 = o caminho saiu da imagem); 2: sem historico (NaN: o runtime descarta o pixel). Profundidade: 1 / (1 + distancia)
+// (maior = mais perto), so com a distancia do jogo.
+inline const char* Guias = R"(
+cbuffer C : register(b0) { uint w; uint h; uint modo; uint temDist; };
+Texture2D<float4> mov : register(t0);
+Texture2D<float> dist : register(t1);
+RWTexture2D<float2> guiaMov : register(u0);
+RWTexture2D<float> guiaProf : register(u1);
+[numthreads(8, 8, 1)] void CSGuias(uint2 p : SV_DispatchThreadID)
+{
+    if (p.x >= w || p.y >= h) return;
+    const float nan = asfloat(0x7fc00000u);
+    float2 v = float2(0, 0);
+    if (modo == 1)
+    {
+        const float4 d = mov.Load(int3(p, 0));
+        v = d.w >= 0.5 && all(isfinite(d.xy)) ? d.xy : float2(nan, nan);
+    }
+    else if (modo != 0)
+        v = float2(nan, nan);
+    guiaMov[p] = v;
+    guiaProf[p] = temDist ? 1.0 / (1.0 + max(dist.Load(int3(p, 0)), 0.0)) : 0.0;
 }
 )";
 

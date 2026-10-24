@@ -575,10 +575,94 @@ index 9eefc67..d763b51 100644
 +    Output[id.xy] = float4(value,alphaIn);
  }
 diff --git a/src/LmxxfNrRuntime.cpp b/src/LmxxfNrRuntime.cpp
-index 01c88a5..91a6e57 100644
+index 01c88a5..3d4fc39 100644
 --- a/src/LmxxfNrRuntime.cpp
 +++ b/src/LmxxfNrRuntime.cpp
-@@ -449,6 +449,40 @@ hip_reference::Options RuntimeOptions(unsigned w, unsigned h, const std::wstring
+@@ -33,11 +33,23 @@ namespace
+ // Runtime ABI has no trustworthy motion/depth guides. This is explicitly the
+ // static, raw-change-rejected consumer of the same model-gated mode 1 shader.
+ // Retire acknowledges an actual consumer submission; it never means GPU idle.
++// [DLSS5 Overlay] LmxxfNrSetHistoryGuides: o host pode dar movimento (e profundidade) por quadro; sem eles, o estatico acima.
+ class RuntimeMode1History {
++public:
++    /* [DLSS5 Overlay] guias do host: movimento em pixels da entrada da rede (deste quadro ate o quadro do trabalho anterior;
++       NaN = sem historico ali), alinhado no canto superior esquerdo da entrada; profundidade opcional na mesma grade. */
++    struct Guides {
++        Microsoft::WRL::ComPtr<ID3D12Resource> motion, depth;
++        UINT depthInverted{1};
++    };
++private:
+     struct Slot {
+         Microsoft::WRL::ComPtr<ID3D12Resource> control;
++        Microsoft::WRL::ComPtr<ID3D12Resource> motion, depth; // [DLSS5 Overlay] guias presos ate a conclusao do slot
++        Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap;    // [DLSS5 Overlay] SRVs deles (nulo = estatico)
+         UINT64 completion{};
+     };
++    Guides guides; // [DLSS5 Overlay] valem a partir do proximo Prepare
+     std::array<Slot,64> slots{};
+     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> bindings;
+     Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+@@ -87,10 +99,22 @@ public:
+             rd.Height=1;rd.DepthOrArraySize=rd.MipLevels=1;rd.SampleDesc.Count=1;rd.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+             NativeFastHistorySupport::Check(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&rd,D3D12_RESOURCE_STATE_GENERIC_READ,nullptr,IID_PPV_ARGS(&s.control)),"runtime history control");
+         }
++        // [DLSS5 Overlay] guias do host: o movimento vem em pixels da entrada (a grade valida da rede); o shader le a textura
++        // por uv * tamanho, entao o tamanho declarado e o da grade valida (colunas espelhadas alem da entrada leem 0)
++        const bool real=guides.motion!=nullptr;
++        const bool troca=parameters.reserved[0]!=(real?1u:0u);
++        if(!real||s.motion!=guides.motion||s.depth!=guides.depth||!s.heap)
++            s.heap=real?NativeFastHistory::History::Binding(d,guides.motion.Get(),guides.depth.Get()):nullptr;
++        s.motion=real?guides.motion:nullptr;s.depth=real?guides.depth:nullptr;
++        parameters.reserved[0]=real?1u:0u;parameters.hasDepth=real&&guides.depth!=nullptr?1u:0u;
++        parameters.renderWidth=parameters.motionWidth=parameters.width;
++        parameters.renderHeight=parameters.motionHeight=parameters.height;
++        parameters.scaleX=real?1.f/float(parameters.width):0.f;parameters.scaleY=real?1.f/float(parameters.height):0.f;
++        parameters.depthInverted=real?guides.depthInverted:0u;
+         const auto now=std::chrono::steady_clock::now();
+         const bool gap=haveTime && now-lastPrepare>std::chrono::milliseconds(250);
+         lastPrepare=now;haveTime=true;
+-        const bool reset=forceReset||!prior||gap||exposure!=priorExposure||scale!=priorScale;
++        const bool reset=forceReset||!prior||gap||troca||exposure!=priorExposure||scale!=priorScale;
+         if(reset)seed=0;
+         parameters.useHistory=!reset;
+         void*p{};D3D12_RANGE none{};
+@@ -100,15 +124,19 @@ public:
+     }
+     unsigned Seed()const{return seed;}
+     bool UsesHistory()const{return current&&parameters.useHistory;}
++    /* [DLSS5 Overlay] o host deixa movimento e profundidade em NON_PIXEL_SHADER_RESOURCE nas listas de RecordInputs e
++       RecordOutputs e nao os escreve ate o Retire */
++    void SetGuides(const Guides&g){guides=g;}
+     void Inputs(ID3D12GraphicsCommandList*c,ID3D12Resource*raw,ID3D12Resource*out){
+         if(!current)throw std::runtime_error("Runtime mode1 inputs without Prepare");
+-        history.RecordInputs(c,raw,out,nullptr,nullptr,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,parameters,bindings.Get(),current->control->GetGPUVirtualAddress());
++        history.RecordInputs(c,raw,out,current->motion.Get(),current->depth.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
++            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,parameters,current->heap?current->heap.Get():bindings.Get(),
++            current->control->GetGPUVirtualAddress());
+     }
+     void Outputs(ID3D12GraphicsCommandList*c,ID3D12Resource*raw,ID3D12Resource*out){
+         if(!current||pending)throw std::runtime_error("Runtime mode1 output recording contract");
+-        history.RecordOutputs(c,raw,out,nullptr,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+-            parameters,bindings.Get(),current->control->GetGPUVirtualAddress());pending=true;
++        history.RecordOutputs(c,raw,out,current->depth.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
++            parameters,current->heap?current->heap.Get():bindings.Get(),current->control->GetGPUVirtualAddress());pending=true;
+     }
+     void Submitted(ID3D12CommandQueue*q){
+         if(!pending)return;
+@@ -117,8 +145,9 @@ public:
+         current->completion=++serial;
+         if(serial<=2 || serial%100==0){
+             if(FILE*f=_wfopen(NativeLabPath(L"logs\\temporal-mode.txt").c_str(),L"ab")){
+-                fprintf(f,"runtime temporal_mode=1 submitted=%llu motion=static depth=none history_enabled=%u seed=%u invalid=%u\n",
+-                    static_cast<unsigned long long>(serial),parameters.useHistory,seed,unsigned(invalidFrame));fclose(f);
++                fprintf(f,"runtime temporal_mode=1 submitted=%llu motion=%s depth=%s history_enabled=%u seed=%u invalid=%u\n",
++                    static_cast<unsigned long long>(serial),parameters.reserved[0]?"host":"static",parameters.hasDepth?"host":"none",
++                    parameters.useHistory,seed,unsigned(invalidFrame));fclose(f);
+             }
+         }
+         current=nullptr;pending=false;prior=!invalidFrame;forceReset=invalidFrame;
+@@ -449,6 +478,40 @@ hip_reference::Options RuntimeOptions(unsigned w, unsigned h, const std::wstring
                                        const std::wstring &weightsDir, std::string *note)
  {
      auto opt = LmxxfProductionOptions(w, h, Utf8(modulesDir), Utf8(weightsDir));
@@ -619,7 +703,7 @@ index 01c88a5..91a6e57 100644
      // The bridge picks HIP\gfx1200 or HIP\gfx1201 by device when those folders exist; require the module in every
      // architecture folder present (conservative: off rather than a load failure), else in the folder itself.
      auto has = [&](const wchar_t *f) {
-@@ -495,6 +529,10 @@ hip_reference::Options RuntimeOptions(unsigned w, unsigned h, const std::wstring
+@@ -495,6 +558,12 @@ hip_reference::Options RuntimeOptions(unsigned w, unsigned h, const std::wstring
  
  struct Session
  {
@@ -627,10 +711,12 @@ index 01c88a5..91a6e57 100644
 +    std::set<unsigned> pendingSkip;
 +    bool hasPendingSkip = false;
 +    uint32_t pendingPasses = 0;
++    /* [DLSS5 Overlay] guias do historico (LmxxfNrSetHistoryGuides): valem tambem para o historico criado depois */
++    RuntimeMode1History::Guides historyGuides;
      ID3D12Device *device = nullptr;
      ID3D12CommandQueue *queue = nullptr;
      ID3D12CommandQueue *fallbackConsumerQueue = nullptr;
-@@ -1055,8 +1093,12 @@ int32_t PrepareFrame(void *context, const LmxxfNrFrameInfo *info, LmxxfNrJob *jo
+@@ -1055,8 +1124,12 @@ int32_t PrepareFrame(void *context, const LmxxfNrFrameInfo *info, LmxxfNrJob *jo
                  session->bridge->NotifyOutputSubmitted(session->queue);
                  session->DrainGpu();
              }
@@ -644,7 +730,7 @@ index 01c88a5..91a6e57 100644
          }
          const uint32_t allowedFlags = LMXXF_NR_FRAME_FLAG_STRENGTH | LMXXF_NR_FRAME_FLAG_DEBUG_VIEW | LMXXF_NR_FRAME_FLAG_CODEC_PASSTHROUGH;
          if ((info->flags & ~allowedFlags) != 0)
-@@ -1136,6 +1178,9 @@ int32_t PrepareFrame(void *context, const LmxxfNrFrameInfo *info, LmxxfNrJob *jo
+@@ -1136,6 +1209,9 @@ int32_t PrepareFrame(void *context, const LmxxfNrFrameInfo *info, LmxxfNrJob *jo
                  }
              session->bridge->Create(session->queue, opt, {});
              if (session->timingRequested) session->bridge->EnableNetworkTiming(); /* kept across a recreate once a host asked */
@@ -654,7 +740,7 @@ index 01c88a5..91a6e57 100644
              session->builtProcW=geo.processing_width; session->builtProcH=geo.processing_height;
              session->hipPrepared = true;
              char geoMsg[192] {};
-@@ -1339,6 +1384,9 @@ int32_t PrepareFrame(void *context, const LmxxfNrFrameInfo *info, LmxxfNrJob *jo
+@@ -1339,6 +1415,9 @@ int32_t PrepareFrame(void *context, const LmxxfNrFrameInfo *info, LmxxfNrJob *jo
                  }
                  session->bridge->Create(session->queue, opt, {});
                  if (session->timingRequested) session->bridge->EnableNetworkTiming(); /* kept across a recreate once a host asked */
@@ -664,7 +750,15 @@ index 01c88a5..91a6e57 100644
                  session->builtProcW=geo.processing_width; session->builtProcH=geo.processing_height;
                  session->hipPrepared = true;
                  char geoMsg[192] {};
-@@ -1959,6 +2007,84 @@ int32_t EnqueueHipTwoArgument(void *context, void *job)
+@@ -1440,6 +1519,7 @@ int32_t PrepareFrame(void *context, const LmxxfNrFrameInfo *info, LmxxfNrJob *jo
+         if (temporalMode == NativeTemporalMode::FastHistory && !session->fastHistory) {
+             session->bridge->SetAdaptiveReuseAllowed(false);
+             session->fastHistory=new RuntimeMode1History(session->device,NativeCurrentNetworkGeometry(),*session->bridge);
++            session->fastHistory->SetGuides(session->historyGuides);
+             CreateDirectoryW(NativeLabPath(L"logs").c_str(),nullptr);
+             if(FILE*f=_wfopen(NativeLabPath(L"logs\\temporal-mode.txt").c_str(),L"ab")){
+                 fprintf(f,"runtime temporal_mode=1 active domain=encoded motion=static depth=none frame_id=unverified gate=model-row77\n");fclose(f);
+@@ -1959,6 +2039,124 @@ int32_t EnqueueHipTwoArgument(void *context, void *job)
  static_assert(offsetof(LmxxfNrApi, GetTimings) == LMXXF_NR_API_V1_SIZE, "LMXXF_NR_API_V1_SIZE must end before GetTimings");
  static_assert(sizeof(LmxxfNrTimings) == 24, "LmxxfNrTimings layout");
  
@@ -726,6 +820,46 @@ index 01c88a5..91a6e57 100644
 +            return int32_t(LMXXF_NR_OK);
 +        if (!s->bridge->SetDynamicSkip(set))
 +            return Fail(LMXXF_NR_INVALID_ARGUMENT, "SetDynamicSkip: a listed block cannot be skipped by this pipeline");
++        return int32_t(LMXXF_NR_OK);
++    });
++}
++
++/* [DLSS5 Overlay] Guias do historico da propria rede (DLSS5_TEMPORAL_MODE=1): motion = textura 2D (RG/RGBA 16F ou 32F) com
++   xy = pixels da entrada da rede deste quadro ate o quadro do trabalho anterior (NaN = sem historico no pixel), alinhada
++   no canto superior esquerdo da entrada; depth = opcional (R32F, R16F, R16 UNORM...), na mesma grade; depth_inverted = 1
++   quando maior e mais perto. Os dois ficam em NON_PIXEL_SHADER_RESOURCE nas listas de RecordInputs e RecordOutputs, sem
++   escrita ate o Retire. motion nulo = o historico estatico de antes. Vale a partir do proximo PrepareFrame. Fora da tabela
++   da API (ABI inalterada). */
++extern "C" LMXXF_NR_EXPORT int32_t LmxxfNrSetHistoryGuides(void *context, void *motion, void *depth, uint32_t depth_inverted)
++{
++    return Guard([&] {
++        if (!context)
++            return Fail(LMXXF_NR_INVALID_ARGUMENT, "SetHistoryGuides: null context");
++        auto *m = static_cast<ID3D12Resource *>(motion);
++        auto *z = static_cast<ID3D12Resource *>(depth);
++        if (!m && z)
++            return Fail(LMXXF_NR_INVALID_ARGUMENT, "SetHistoryGuides: depth needs motion");
++        if (m)
++        {
++            const auto md = m->GetDesc();
++            if (NativeFastHistorySupport::TextureIssue(md) || NativeFastHistorySupport::MotionFormat(md.Format) == DXGI_FORMAT_UNKNOWN)
++                return Fail(LMXXF_NR_INVALID_ARGUMENT, "SetHistoryGuides: motion must be a 2D RG/RGBA float texture");
++            if (z)
++            {
++                const auto zd = z->GetDesc();
++                if (NativeFastHistorySupport::TextureIssue(zd) || NativeFastHistorySupport::DepthFormat(zd.Format) == DXGI_FORMAT_UNKNOWN ||
++                    zd.Width != md.Width || zd.Height != md.Height)
++                    return Fail(LMXXF_NR_INVALID_ARGUMENT, "SetHistoryGuides: depth must be a 2D depth-format texture of the motion size");
++            }
++        }
++        auto *s = static_cast<Session *>(context);
++        RuntimeMode1History::Guides g;
++        g.motion = m;
++        g.depth = m ? z : nullptr;
++        g.depthInverted = depth_inverted ? 1u : 0u;
++        s->historyGuides = g;
++        if (s->fastHistory)
++            s->fastHistory->SetGuides(g);
 +        return int32_t(LMXXF_NR_OK);
 +    });
 +}

@@ -133,6 +133,10 @@ Requisitos: placa AMD RDNA 4 (RX 9070 / 9060) e driver AMD com `amdhip64_7.dll` 
 3. **Rede DLSS 5** (runtime HIP do lmxxf) no tamanho escolhido (720p a 2160p), numa **fila própria da GPU**: o quadro
    capturado vai para a tela na hora, sem esperar a rede (sem atraso de entrada, no ritmo do jogo); a resposta entra
    quando fica pronta, trazida pelo movimento acumulado desde o quadro que a rede viu.
+   O que a rede vê (as 16 entradas da primeira camada, `hip/prefix_fast.hip` do lmxxf): 3 canais de ruído, a cor (RGB),
+   um segundo RGB que é a entrada de histórico (sem o histórico ligado ela recebe a cor de novo), 5 controles da NVIDIA,
+   1 constante e 1 zerada. Não há entrada de luz, profundidade ou normal: na captura de buffer, o movimento e a
+   profundidade do jogo chegam à rede só pelo histórico (`temporalRede`).
 4. **Composição**: a *edição* da rede (resposta − entrada) é acumulada no tempo num espaço comprimido (x / (1 + luma),
    como o TAA dos jogos, para o realce HDR não virar pontos), reprojetada pelo movimento simulado (menos cintilação) e
    somada ao quadro nativo, que mantém o próprio detalhe. Onde a edição não pode ser trazida (conteúdo animado, oclusão,
@@ -161,12 +165,13 @@ Os parâmetros do DLSS 5 seguem os nomes que a NVIDIA expõe no NGX (os mesmos d
 | `alturaRede` | 720..2160 | altura em que a rede roda (limitada pela janela); vale ao religar |
 | `redeCompleta` | true/false | os 71 blocos (camadas) da rede; false pula 42/43/46 (~1 ms); vale ao religar |
 | `passes` | 1..3 | quantas vezes a rede inteira roda por quadro (1 = normal); vale ao religar |
-| `profundidade` | 0..4 | blocos da rede grande: 0 = 71, 1 = 68 (sem 42/43/46), 2 = 63 (sem 40–47), 3 = 55 (e sem 23–30), 4 = 47 (e sem o ViT 31–38; só com `reusoVit` desligado). Só blocos residuais saem; muda na hora. Não se aplica à rede pequena, que é outro modelo |
+| `profundidade` | 0..4 | blocos da rede grande: 0 = 71, 1 = 68 (sem 42/43/46), 2 = 63 (sem 40–47), 3 = 55 (e sem 23–30), 4 = 47 (e sem o ViT 31–38; só com `reusoVit` desligado). Só blocos residuais saem; muda na hora; só no `config.json`. Não se aplica à rede pequena, que é outro modelo |
 | `movimento`, `usaConfianca` | true/false | movimento simulado por fluxo óptico; descartar o acúmulo onde ida e volta não conferem |
 | `estabilidade`, `rejeicao` | 1..16, 2..40 | quadros que a edição acumula; quão rápido mudança de cor derruba o acúmulo |
 | `mediaMovimento` | 0..32 px | captura de buffer: a média cai pela metade a cada tantos px/quadro de movimento (padrão 8; 0 = fixa) |
 | `ritmo` | 1..4 | 1 = a rede recomeça assim que termina; N = no máximo uma vez a cada N quadros (libera GPU para o jogo) |
 | `reusoVit` | true/false | reuso adaptativo do ViT do runtime lmxxf (vale ao reabrir) |
+| `temporalRede` | 0..3 | histórico da própria rede (`DLSS5_TEMPORAL_MODE` do runtime; vale ao reabrir, força 1 passe e desliga o `reusoVit`). 1 = a entrada de histórico da rede recebe a resposta anterior trazida pelo movimento (captura de buffer: movimento e profundidade do jogo; captura de vídeo: fluxo óptico) e a cabeça de histórico do bloco 70 decide a mistura; precisa do runtime deste branch (`LmxxfNrSetHistoryGuides`) e do `post70-history-head.f16` que o `monta_runtime.ps1` extrai. 2 e 3 = suavização de baixa frequência / realce na saída do runtime |
 | `forca` | 0..4 | força da edição final (1 = a da rede) |
 | `modo`, `fpsMax`, `ocultaDeGravacoes` | | modo de exibição, teto de FPS, esconder de prints/OBS |
 

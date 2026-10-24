@@ -59,7 +59,8 @@ struct Config
     int profundidade = 0;   // blocos da rede grande: 0 = 71, 1 = 68, 2 = 63, 3 = 55, 4 = 47 (residuais pulados); mais rapido
     bool profundidadeAuto = false; // a profundidade segue a velocidade (medido: corta no maximo ~4,7 ms e estraga a imagem)
     int profundidadeMax = 3;      // no automatico, o nivel mais raso permitido
-    int temporalRede = 0;   // historico da propria rede (runtime lmxxf DLSS5_TEMPORAL_MODE): 0 desligado, 1 historico, 2 baixa freq., 3 realce
+    int temporalRede = 0;   // historico da propria rede (runtime lmxxf DLSS5_TEMPORAL_MODE): 0 desligado, 1 historico (com as
+                            // guias de movimento e profundidade do overlay), 2 baixa freq., 3 realce; vale ao reabrir
     float realceTemporal = 1.f; // forca do modo 3 (0..2)
     bool reusoVit = true;   // reuso adaptativo do ViT do lmxxf (com perda pequena; vale ao reabrir o programa)
     float divisao = 0.5f;   // posicao da divisao no modo comparacao

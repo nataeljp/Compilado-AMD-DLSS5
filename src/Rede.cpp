@@ -107,6 +107,9 @@ bool Rede::Inicia(Gpu& g, const std::wstring& pasta, bool pequena)
                         cap.max_input_height, cap.hip_ready, cap.gfx1201_target));
     setSkip = reinterpret_cast<int32_t (*)(void*, const uint32_t*, uint32_t)>(GetProcAddress(mod, "LmxxfNrSetDynamicSkip"));
     Log("rede", setSkip ? "profundidade dinamica disponivel (runtime v3)" : "runtime sem profundidade dinamica");
+    setGuias = reinterpret_cast<int32_t (*)(void*, void*, void*, uint32_t)>(GetProcAddress(mod, "LmxxfNrSetHistoryGuides"));
+    Log("rede", setGuias ? "guias do historico da rede disponiveis (LmxxfNrSetHistoryGuides)"
+                         : "runtime sem LmxxfNrSetHistoryGuides: o historico da rede, se ligado, fica estatico");
     assets = pasta + L"\\native-game-tiled-assets";
     if (pequena && !MontaAssetsPequena(pasta, assets))
     {
@@ -145,6 +148,20 @@ bool Rede::Inicia(Gpu& g, const std::wstring& pasta, bool pequena)
         return false;
     Log("rede", "runtime pronto: " + Utf8(assets));
     return true;
+}
+
+void Rede::GaranteGuias(UINT w, UINT h)
+{
+    if (guiaMov.w == w && guiaMov.h == h)
+        return;
+    guiaMov.Cria(dev, w, h, DXGI_FORMAT_R32G32_FLOAT, L"guia de movimento do historico da rede");
+    guiaProf.Cria(dev, w, h, DXGI_FORMAT_R32_FLOAT, L"guia de profundidade do historico da rede");
+}
+
+void Rede::ZeraHistorico()
+{
+    if (ctx && api.ResetHistory)
+        Erro(api.ResetHistory(ctx), "ResetHistory");
 }
 
 bool Rede::DefineProfundidade(const std::vector<uint32_t>& blocos)
@@ -203,14 +220,41 @@ bool Rede::Envia(ID3D12Fence* cercaOverlay, UINT64 valorOverlay, const ParamsRed
     const D3D12_RESOURCE_STATES SRV =
         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     Ck(fila->Wait(cercaOverlay, valorOverlay), "Wait(overlay)");
+    // guias do historico da rede: as deste envio, ou nenhuma (o runtime volta ao historico estatico)
+    const bool comMov = setGuias && usaMov && guiaMov.r, comProf = comMov && usaProf && guiaProf.r;
+    if (setGuias)
+    {
+        const int32_t r = setGuias(ctx, comMov ? guiaMov.r.Get() : nullptr, comProf ? guiaProf.r.Get() : nullptr, 1);
+        if (r == LMXXF_NR_NOT_IMPLEMENTED)
+        {
+            // adaptador novo com um lmxxf_upstream.dll anterior a este branch: o historico fica estatico
+            Log("rede", "lmxxf_upstream.dll sem LmxxfNrSetHistoryGuides: o historico da rede fica estatico");
+            setGuias = nullptr;
+        }
+        else if (!avisouGuias && (r != LMXXF_NR_OK || comMov))
+        {
+            avisouGuias = true;
+            if (r != LMXXF_NR_OK)
+                Erro(r, "SetHistoryGuides");
+            else
+                Log("rede", comProf ? "historico da rede: guias de movimento e profundidade entregues ao adaptador"
+                                    : "historico da rede: guia de movimento entregue ao adaptador");
+        }
+    }
     // entrada
     Ck(al[0]->Reset(), "reset(rede0)");
     Ck(cl[0]->Reset(al[0].Get(), nullptr), "list(rede0)");
     entrada.Para(cl[0].Get(), SRV);
+    // o runtime le as guias em NON_PIXEL_SHADER_RESOURCE nas duas listas do trabalho
+    if (comMov)
+        guiaMov.Para(cl[0].Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    if (comProf)
+        guiaProf.Para(cl[0].Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     if (!Prepara(cl[0].Get(), p))
     {
         cl[0]->Close();
         entrada.estado = D3D12_RESOURCE_STATE_COMMON; // a lista nao vai rodar
+        guiaMov.estado = guiaProf.estado = D3D12_RESOURCE_STATE_COMMON;
         return false;
     }
     entrada.Para(cl[0].Get(), D3D12_RESOURCE_STATE_COMMON);
@@ -243,6 +287,10 @@ bool Rede::Envia(ID3D12Fence* cercaOverlay, UINT64 valorOverlay, const ParamsRed
     cl[1]->CopyResource(resposta.r.Get(), out);
     resposta.Para(cl[1].Get(), D3D12_RESOURCE_STATE_COMMON);
     Barreira(cl[1].Get(), out, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    if (comMov)
+        guiaMov.Para(cl[1].Get(), D3D12_RESOURCE_STATE_COMMON);
+    if (comProf)
+        guiaProf.Para(cl[1].Get(), D3D12_RESOURCE_STATE_COMMON);
     Ck(cl[1]->Close(), "close(rede1)");
     ID3D12CommandList* l1[] = {cl[1].Get()};
     fila->ExecuteCommandLists(1, l1);
@@ -283,8 +331,8 @@ bool Rede::Prepara(ID3D12GraphicsCommandList* c, const ParamsRede& p)
     if (fi.control_tone != 1.f || fi.control_structure != 1.f || fi.control_skin != 1.f || fi.control_other != 1.f ||
         fi.control_style != 1.f)
         fi.flags |= LMXXF_NR_FRAME_FLAG_CONTROLS;
-    // sem movimento para o runtime: o adaptador ignora FLAG_TEMPORAL/motion/history_reset (adaptador.cpp), e o
-    // historico do proprio runtime (DLSS5_TEMPORAL_MODE) e de movimento estatico. A estabilidade e a do host (Temporal).
+    // o adaptador ignora FLAG_TEMPORAL/motion/history_reset (adaptador.cpp): o historico da propria rede e o
+    // DLSS5_TEMPORAL_MODE do ambiente, com as guias de LmxxfNrSetHistoryGuides (Envia) e o ResetHistory (ZeraHistorico)
     fi.history_reset = 1;
     job = {};
     job.struct_size = sizeof job;

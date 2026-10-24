@@ -10,7 +10,9 @@
 //                             links físicos para tudo e só o block0-ffn.f32 reescrito.
 //   EnqueueHipAsync        -> EnqueueHip (espera na fila; sem atraso de quadro)
 //   OutputReady            -> sempre pronto;  AbandonJob -> Drain + Retire
-//   FLAG_TEMPORAL / VULKAN -> ignoradas; GetStatus acrescenta "hist=off"
+//   FLAG_TEMPORAL / VULKAN -> ignoradas (o historico da propria rede e o DLSS5_TEMPORAL_MODE do ambiente, lido pelo
+//                             upstream ao carregar); GetStatus acrescenta "hist=<DLSS5_TEMPORAL_MODE>"
+//   LmxxfNrSetHistoryGuides -> repassado ao upstream antes de cada PrepareFrame em que mudou (e depois de recriar a rede)
 #include <windows.h>
 #include <cmath>
 #include <cstdarg>
@@ -71,6 +73,9 @@ struct Ctx {
     std::vector<uint32_t> dynSkip; // [overlay] blocos pulados pela profundidade dinamica (pedido do host)
     bool skipSujo = true;          // o conjunto pulado (rede completa + dinamico) tem de ser reenviado ao runtime
     bool passesSujo = false;       // os passes mudaram e vao pela chamada direta (sem recriar a rede)
+    void *guiaMov = nullptr, *guiaProf = nullptr; // [overlay] guias do historico da rede (pedido do host)
+    uint32_t guiaInvertida = 1;
+    bool guiasSujas = false;       // as guias tem de ser reenviadas ao runtime (mudaram, ou a rede foi recriada)
 };
 
 static std::wstring dirOf(HMODULE m) {
@@ -145,6 +150,7 @@ static int32_t constroi(Ctx *c) {
     if (r) return r;
     r = U.PrepareSession(c->inner);
     c->built = r == LMXXF_NR_OK;
+    c->guiasSujas = c->guiaMov != nullptr; // sessao nova: as guias do host valem para ela tambem
     return r;
 }
 
@@ -154,6 +160,7 @@ static int32_t (*g_override)(void *, const char *, const float *, uint64_t); // 
 // [overlay] runtime v3: blocos pulados e passes por quadro, sem recriar a rede (o ambiente o runtime so le ao carregar)
 static int32_t (*g_setSkip)(void *, const uint32_t *, uint32_t);
 static int32_t (*g_setPasses)(void *, uint32_t);
+static int32_t (*g_setGuias)(void *, void *, void *, uint32_t); // [overlay] LmxxfNrSetHistoryGuides do upstream
 // envia ao runtime o conjunto pulado: rede completa (sem 42,43,46) + profundidade dinamica
 static void aplicaSkip(Ctx *c) {
     if (!g_setSkip || !c->inner || !c->skipSujo) return;
@@ -250,6 +257,9 @@ static int32_t A_PrepareFrame(void *ctx, const LmxxfNrFrameInfo *fi, LmxxfNrJob 
     // (primeiro quadro), o runtime recusa e fica sujo para o proximo.
     aplicaSkip(c);
     if (c->passesSujo && g_setPasses && g_setPasses(c->inner, (uint32_t)c->passes) == LMXXF_NR_OK) c->passesSujo = false;
+    if (c->guiasSujas && g_setGuias && c->inner &&
+        confere(g_setGuias(c->inner, c->guiaMov, c->guiaProf, c->guiaInvertida), "SetHistoryGuides") == LMXXF_NR_OK)
+        c->guiasSujas = false;
     int32_t r = U.PrepareFrame(c->inner, &u, job);
     // [lmxxf2] trabalho anterior largado sem AbandonJob (lista descartada pelo jogo): o runtime fica "not Ready" para
     // sempre e a rede para de agir. Destrava (Drain + CancelUnsubmitted) e tenta de novo neste mesmo quadro.
@@ -288,7 +298,11 @@ static int32_t A_ResetHistory(void *ctx) { return U.ResetHistory(((Ctx *)ctx)->i
 static int32_t A_Drain(void *ctx) { return U.Drain(((Ctx *)ctx)->inner); }
 static int32_t A_GetStatus(void *ctx, char *buf, uint32_t n) {
     int32_t r = U.GetStatus(((Ctx *)ctx)->inner, buf, n);
-    if (buf && n) { size_t l = std::strlen(buf); std::snprintf(buf + l, n > l ? n - l : 0, " hist=off adaptador=1"); }
+    if (buf && n) {
+        char modo[8] = {};
+        if (!GetEnvironmentVariableA("DLSS5_TEMPORAL_MODE", modo, sizeof modo)) std::snprintf(modo, sizeof modo, "0");
+        size_t l = std::strlen(buf); std::snprintf(buf + l, n > l ? n - l : 0, " hist=%s adaptador=1", modo);
+    }
     return r;
 }
 static int32_t A_GetLastError(char *buf, uint32_t n) {
@@ -312,6 +326,19 @@ __declspec(dllexport) int32_t LmxxfNrSetDynamicSkip(void *ctx, const uint32_t *b
 }
 // [overlay 2026-10-20] mascara por pixel na entrada da rede: liga e tabela de 40 floats (grupo g em table[g*8 + k], k =
 // tom, estrutura, pele, outro, estilo/128); o alfa da cor leva grupo e peso. O runtime aplica antes do proximo quadro.
+// [overlay] guias do historico da propria rede: movimento (pixels da entrada ate o quadro do trabalho anterior, NaN = sem
+// historico) e profundidade opcional; repassadas ao upstream no proximo PrepareFrame. LMXXF_NR_NOT_IMPLEMENTED = upstream sem
+// LmxxfNrSetHistoryGuides (runtime anterior ao deste branch).
+__declspec(dllexport) int32_t LmxxfNrSetHistoryGuides(void *ctx, void *motion, void *depth, uint32_t depthInverted) {
+    auto *c = (Ctx *)ctx;
+    if (!c || (!motion && depth)) return LMXXF_NR_INVALID_ARGUMENT;
+    if (!g_setGuias) return LMXXF_NR_NOT_IMPLEMENTED;
+    const uint32_t inv = depthInverted ? 1u : 0u;
+    if (motion != c->guiaMov || depth != c->guiaProf || inv != c->guiaInvertida) {
+        c->guiaMov = motion; c->guiaProf = depth; c->guiaInvertida = inv; c->guiasSujas = true;
+    }
+    return LMXXF_NR_OK;
+}
 // LMXXF_NR_NOT_IMPLEMENTED = runtime sem a funcao (anterior ao v4).
 static int32_t (*g_setMask)(void *, uint32_t, const float *, uint32_t);
 __declspec(dllexport) int32_t LmxxfNrSetMask(void *ctx, uint32_t on, const float *table, uint32_t count) {
@@ -332,6 +359,7 @@ __declspec(dllexport) int32_t LmxxfNrGetApi(uint32_t abi, LmxxfNrApi *out) {
         g_override = (int32_t (*)(void *, const char *, const float *, uint64_t))GetProcAddress(inner, "LmxxfNrOverrideWeight");
         g_setSkip = (int32_t (*)(void *, const uint32_t *, uint32_t))GetProcAddress(inner, "LmxxfNrSetDynamicSkip");
         g_setPasses = (int32_t (*)(void *, uint32_t))GetProcAddress(inner, "LmxxfNrSetPasses");
+        g_setGuias = (int32_t (*)(void *, void *, void *, uint32_t))GetProcAddress(inner, "LmxxfNrSetHistoryGuides");
         g_setMask = (int32_t (*)(void *, uint32_t, const float *, uint32_t))GetProcAddress(inner, "LmxxfNrSetMask");
     }
     LmxxfNrApi a{};

@@ -28,7 +28,7 @@ struct EstadoPainel
     bool pequenaSessao = false;
     int passesSessao = 1;
     bool completaSessao = true;
-    bool vitAdaptativo = false;  // reuso adaptativo do ViT ativo no runtime: a rede nao roda sem os blocos 31..38
+    std::string historicoRede;   // estado do historico da propria rede ("" = desligado e sem mudanca pendente)
     std::string memoria;         // uso e orcamento de VRAM do overlay
     std::string avisoMemoria;    // a rede foi desligada por falta de VRAM ("" = nao)
 };

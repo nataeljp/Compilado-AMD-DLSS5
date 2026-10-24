@@ -106,7 +106,7 @@ struct App
     std::chrono::steady_clock::time_point marcaFps = std::chrono::steady_clock::now();
     UINT64 quadrosMarca = 0;
     Config cfg;
-    Passe pInteiro, pReduz, pCompoe, pExporta;
+    Passe pInteiro, pReduz, pCompoe, pExporta, pGuias;
     // ---- captura de buffer (Modo de Rede): a DLSS5Buffer.dll no jogo aberto entrega cor sem HUD, movimento e
     // profundidade do upscaler dele; a edicao volta para o jogo, que a soma no quadro seguinte ----
     FonteBuffer fb;
@@ -128,6 +128,9 @@ struct App
     int trocaRedeNoQuadro = -1; // --troca-rede N: modo imagem troca grande <-> pequena no quadro N (teste da troca ao vivo)
     bool redePequenaAtiva = false;
     bool vitAdaptativo = false; // reuso adaptativo do ViT ligado no ambiente do runtime (so muda ao reabrir o programa)
+    int temporalSessao = 0;     // DLSS5_TEMPORAL_MODE passado ao runtime ao abrir (so muda ao reabrir o programa)
+    // historico da propria rede com as guias (modo 1 e um runtime com LmxxfNrSetHistoryGuides)
+    bool HistoricoRede() const { return temporalSessao == 1 && rede.TemGuias(); }
     std::wstring PastaRede() const { return pastaRuntime.empty() ? pasta + L"\\runtime" : pastaRuntime; }
     // A rede da sessao: tamanho, rede grande ou pequena, passes e rede completa valem do Liga ate o proximo Liga; mudar
     // no painel vale ao religar. Durante o jogo nada disso muda: cada tamanho novo de rede prende buffers que o driver
@@ -140,7 +143,11 @@ struct App
         int passes = 1;
         bool redeCompleta = true;
     } sessao;
-    Sessao SessaoDoConfig() const { return {cfg.alturaRede, cfg.redePequena, cfg.rede.passes, cfg.rede.redeCompleta}; }
+    // os modos temporais do runtime so rodam com 1 passe (native_fast_history_policy.h)
+    Sessao SessaoDoConfig() const
+    {
+        return {cfg.alturaRede, cfg.redePequena, temporalSessao > 0 ? 1 : cfg.rede.passes, cfg.rede.redeCompleta};
+    }
     // ao ligar: os valores do painel (e do perfil do jogo) passam a valer; a rede e recriada so se a escolha grande /
     // pequena mudou ou se ela tinha sido desligada (emergencia de memoria)
     void IniciaSessao()
@@ -209,13 +216,15 @@ struct App
         pCompoe.Cria(gpu.dev.Get(), compoe.c_str(), "CSCompoe", 4, 1, 40, "compoe");
         pExporta.Cria(gpu.dev.Get(), (std::string(hlsl::Comum) + hlsl::Exporta).c_str(), "CSExporta", 3, 1, 12,
                       "edicao para o jogo");
+        pGuias.Cria(gpu.dev.Get(), hlsl::Guias, "CSGuias", 2, 2, 4, "guias do historico da rede");
         fluxo.Cria(gpu.dev.Get());
         temporal.Cria(gpu.dev.Get());
         EsperaPasses();
         if (cfg.temporalRede > 0)
         {
             // historico temporal da propria rede (o runtime le o ambiente que copiou ao carregar: tem de vir antes)
-            SetEnvironmentVariableW(L"DLSS5_TEMPORAL_MODE", std::to_wstring(std::clamp(cfg.temporalRede, 0, 3)).c_str());
+            temporalSessao = std::clamp(cfg.temporalRede, 0, 3);
+            SetEnvironmentVariableW(L"DLSS5_TEMPORAL_MODE", std::to_wstring(temporalSessao).c_str());
             SetEnvironmentVariableW(L"DLSS5_TEMPORAL_ENHANCE_STRENGTH",
                                     std::to_wstring(std::clamp(cfg.realceTemporal, 0.f, 2.f)).c_str());
             cfg.reusoVit = false; // incompativel com o historico
@@ -958,7 +967,9 @@ struct App
         // sincrono (imagem, reproducao sem --atraso): a rede ve este quadro e responde nele mesmo, como antes.
         const bool sincrono = atraso == 0;
         Tex* deslocamento = nullptr;
-        if (!sincrono && rede.EmVoo())
+        // com o historico da rede o deslocamento segue tambem com a rede parada: no proximo envio ele e o movimento ate o
+        // quadro do envio anterior (as guias)
+        if (!sincrono && (rede.EmVoo() || (HistoricoRede() && jaEnviou)))
         {
             deslocamento = temporal.Acumula(c, desc, gpu.dev.Get(), temMov ? &fluxo.Movimento() : nullptr,
                                             temMov ? &fluxo.Confianca() : nullptr, deslZerado);
@@ -973,7 +984,7 @@ struct App
         if (envia)
         {
             AjustaProfundidade(temMov);
-            CopiaParaRede(c);
+            CopiaParaRede(c, nullptr, temMov, true);
         }
         Ck(c->Close(), "close0");
         ID3D12CommandList* l0[] = {c};
@@ -1031,7 +1042,7 @@ struct App
         if (envia)
         {
             AjustaProfundidade(temMov);
-            CopiaParaRede(c);
+            CopiaParaRede(c, deslocamento, temMov, false);
         }
         // gradacao do Model B/C (constantes do kernel da NVIDIA), escalada pelo tom local
         const float tg = std::clamp(cfg.ngx.tomLocal, 0.f, 2.f);
@@ -1200,15 +1211,20 @@ struct App
     Tex origRede;            // o quadro que a rede esta vendo (t0), no tamanho da rede
     Tex zRede;               // captura de buffer: a distancia da camera em t0 (grade por camada)
     UINT64 quadroEnvio = 0;  // t0
+    bool jaEnviou = false;   // quadroEnvio ja e de um envio (o primeiro pode ser o quadro 0)
     UINT64 quadroCorte = 0;  // ultimo corte de cena: respostas enviadas antes dele sao da cena velha
     UINT64 cortes = 0;
     bool deslZerado = false; // o deslocamento acumulado recomeca em t0
     std::chrono::steady_clock::time_point tEnvio;
     double somaAtrasoQ = 0, somaAtrasoMs = 0;
     int chegadas = 0;
-    void CopiaParaRede(ID3D12GraphicsCommandList* c)
+    // deslocamento: o acumulado ate o quadro do envio anterior (ao vivo); sincrono: a rede viu o quadro anterior se ele foi
+    // enviado, e o movimento do quadro e o caminho ate ele
+    void CopiaParaRede(ID3D12GraphicsCommandList* c, Tex* deslocamento, bool temMov, bool sincrono)
     {
         rede.CopiaEntrada(c, fed);
+        if (HistoricoRede())
+            GuiasDaRede(c, deslocamento, temMov, sincrono);
         if (origRede.w != orig.w || origRede.h != orig.h)
             origRede.Cria(gpu.dev.Get(), orig.w, orig.h, orig.fmt, L"original que a rede viu", false);
         const auto antes = orig.estado;
@@ -1227,9 +1243,56 @@ struct App
             z->Para(c, antesZ);
         }
     }
+    // guias do historico da propria rede para o envio deste quadro (Rede::Envia as repassa ao runtime)
+    void GuiasDaRede(ID3D12GraphicsCommandList* c, Tex* deslocamento, bool temMov, bool sincrono)
+    {
+        const D3D12_RESOURCE_STATES SRV =
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        if (zeraHistorico)
+            rede.ZeraHistorico();
+        rede.GaranteGuias(fed.w, fed.h);
+        UINT modo = 2; // sem historico
+        Tex* fonte = nullptr;
+        if (!sincrono && deslocamento)
+            modo = 1, fonte = deslocamento;
+        else if (sincrono && jaEnviou && quadros == quadroEnvio + 1)
+        {
+            if (temMov)
+                modo = 1, fonte = &fluxo.Movimento();
+            else
+                modo = 0; // sem movimento (modo imagem): parado
+        }
+        Tex* z = Exata() ? fluxo.DistanciaAtual() : nullptr;
+        Tex& gm = rede.GuiaMov();
+        Tex& gp = rede.GuiaProf();
+        const auto antesF = fonte ? fonte->estado : D3D12_RESOURCE_STATE_COMMON;
+        const auto antesZ = z ? z->estado : D3D12_RESOURCE_STATE_COMMON;
+        const auto antesFed = fed.estado;
+        if (fonte)
+            fonte->Para(c, SRV);
+        if (z)
+            z->Para(c, SRV);
+        fed.Para(c, SRV); // no lugar das fontes que faltam (o shader nao as le)
+        gm.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        gp.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        const UINT k[4] = {gm.w, gm.h, modo, z ? 1u : 0u};
+        pGuias.Roda(c, desc, gpu.dev.Get(), {{fonte ? fonte->r.Get() : fed.r.Get(), fonte ? fonte->fmt : fed.fmt},
+                                             {z ? z->r.Get() : fed.r.Get(), z ? z->fmt : fed.fmt}},
+                    {{gm.r.Get(), gm.fmt}, {gp.r.Get(), gp.fmt}}, k, (gm.w + 7) / 8, (gm.h + 7) / 8);
+        gm.Para(c, D3D12_RESOURCE_STATE_COMMON); // a fila da rede pega daqui
+        gp.Para(c, D3D12_RESOURCE_STATE_COMMON);
+        if (fonte)
+            fonte->Para(c, antesF);
+        if (z)
+            z->Para(c, antesZ);
+        fed.Para(c, antesFed);
+        // o movimento vai sempre, tambem no modo 2 (NaN em tudo: o runtime descarta o historico em vez de usa-lo parado)
+        rede.UsaGuias(true, z != nullptr);
+    }
     void MarcaEnvio()
     {
         quadroEnvio = quadros;
+        jaEnviou = true;
         deslZerado = true;
         zeraHistorico = false;
         tEnvio = std::chrono::steady_clock::now();
@@ -1340,7 +1403,14 @@ struct App
             e.completaSessao = sessao.redeCompleta;
         }
         e.memoria = memoriaTexto;
-        e.vitAdaptativo = vitAdaptativo;
+        e.historicoRede.clear();
+        if (temporalSessao == 1)
+            e.historicoRede = rede.TemGuias() ? (Exata() ? "Em uso: com o movimento e a profundidade do jogo."
+                                                         : "Em uso: com o movimento do fluxo optico.")
+                                              : "Ligado, mas o runtime nao tem LmxxfNrSetHistoryGuides: o historico fica "
+                                                "parado (sem movimento). Recompile o runtime deste branch.";
+        if ((cfg.temporalRede == 1) != (temporalSessao == 1))
+            e.historicoRede += (e.historicoRede.empty() ? "" : " ") + std::string("A mudança vale ao reabrir o programa.");
         e.avisoMemoria = emergenciaMemoria;
         e.exe = Utf8(exeAlvo);
         painel.DicaBandeja(Ligado() && !exeAlvo.empty() ? L"DLSS 5 Overlay - " + exeAlvo : L"DLSS 5 Overlay - sem jogo");

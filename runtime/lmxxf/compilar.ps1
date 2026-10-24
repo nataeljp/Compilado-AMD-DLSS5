@@ -1,5 +1,6 @@
 # Runtime da rede (lmxxf, de Kien, MIT) com as mudancas deste projeto: clona o lmxxf no commit base a9b7a52, aplica
-# lmxxf_a9b7a52.patch (pulos por quadro, rede pequena, passes sem recriar, mascara por pixel, Streamline) e compila
+# lmxxf_a9b7a52.patch (pulos por quadro, rede pequena, passes sem recriar, mascara por pixel, Streamline, guias do
+# historico da rede) e compila
 # LmxxfNrRuntime_v4.dll (no runtime ela vai com o nome lmxxf_upstream.dll; o monta_runtime.ps1 cuida disso).
 # -Modulos: compila tambem os 7 modulos HIP com a mascara por pixel (gfx1201). O rtc_compile usa o amd_comgr do driver
 # da AMD, sem HIP SDK. Os outros modulos vem prontos no pacote de pesos (native-game-tiled-assets\HIP).
@@ -11,9 +12,19 @@ param([string]$Fonte = (Join-Path $PSScriptRoot 'fonte'),
 $ErrorActionPreference = 'Stop'
 if (-not (Test-Path (Join-Path $Fonte '.git'))) {
     git clone --quiet $Repositorio $Fonte
+}
+# a fonte guarda o hash do patch aplicado: com um patch novo (ou uma fonte de antes desta marca) volta ao commit base e
+# aplica o atual. So os arquivos do git voltam; build_msvc (e os modulos ja compilados) ficam.
+$patch = Join-Path $PSScriptRoot 'lmxxf_a9b7a52.patch'
+$hash = (Get-FileHash $patch -Algorithm SHA256).Hash
+$marca = Join-Path $Fonte '.patch_aplicado'
+if (-not (Test-Path $marca) -or (Get-Content $marca -Raw).Trim() -ne $hash) {
     git -C $Fonte checkout --quiet a9b7a52
-    git -C $Fonte apply --whitespace=nowarn (Join-Path $PSScriptRoot 'lmxxf_a9b7a52.patch')
+    git -C $Fonte reset --quiet --hard a9b7a52
+    git -C $Fonte apply --whitespace=nowarn $patch
     if ($LASTEXITCODE -ne 0) { "o patch nao aplicou"; exit 1 }
+    Set-Content $marca $hash
+    "patch aplicado: $hash"
 }
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath

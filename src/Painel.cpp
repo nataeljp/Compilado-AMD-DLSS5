@@ -189,10 +189,11 @@ void Dica(const char* d)
         ImGui::SetTooltip("%s", d);
 }
 
-// rotulo | trilho verde com botao redondo | valor; duplo clique volta ao padrao.
+// rotulo | trilho verde com botao redondo | valor; duplo clique volta ao padrao. cor: trilho e botao nessa cor (0 = verde).
 // Ajuste fino: Shift + arrastar anda 1/10 do normal; a roda do mouse sobre o trilho soma um passo (a penultima casa do
 // formato, ex. 0,01 em "%.3f") e, com Shift, a ultima (0,001)
-bool Deslizador(const char* rot, float* v, float a, float b, const char* fmt, const char* dica, float padrao = NAN)
+bool Deslizador(const char* rot, float* v, float a, float b, const char* fmt, const char* dica, float padrao = NAN,
+                ImU32 cor = 0)
 {
     ImGui::PushID(rot);
     const float larg = ImGui::GetContentRegionAvail().x;
@@ -238,8 +239,9 @@ bool Deslizador(const char* rot, float* v, float a, float b, const char* fmt, co
     const float t = std::clamp((*v - a) / (b - a), 0.f, 1.f), xk = x0 + t * (x1 - x0), y = p0.y + alt * 0.5f;
     dl->AddRectFilled(ImVec2(x0 - raio * 0.5f, y - 2.5f * g_e), ImVec2(x1 + raio * 0.5f, y + 2.5f * g_e), alfa(kTrilho),
                       3 * g_e);
-    dl->AddRectFilled(ImVec2(x0 - raio * 0.5f, y - 2.5f * g_e), ImVec2(xk, y + 2.5f * g_e), alfa(kVerde), 3 * g_e);
-    dl->AddCircleFilled(ImVec2(xk, y), raio + (foco ? 1.5f * g_e : 0.f), alfa(kVerde), 24);
+    const ImU32 corTrilho = cor ? cor : kVerde;
+    dl->AddRectFilled(ImVec2(x0 - raio * 0.5f, y - 2.5f * g_e), ImVec2(xk, y + 2.5f * g_e), alfa(corTrilho), 3 * g_e);
+    dl->AddCircleFilled(ImVec2(xk, y), raio + (foco ? 1.5f * g_e : 0.f), alfa(corTrilho), 24);
     dl->AddCircle(ImVec2(xk, y), raio * 0.55f, alfa(IM_COL32(20, 30, 4, 255)), 24, 2.f * g_e);
     char buf[32];
     snprintf(buf, sizeof buf, fmt, *v);
@@ -966,6 +968,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             cfg.brancoNits = 0.f;  // branco de papel do Windows: 79 nits num monitor de 240 custava 13 dB em HDR
             cfg.rede.redeCompleta = true;
             cfg.rede.passes = 1;
+            cfg.profundidade = 0; // os 71 blocos
             mc = true;
         }
         Dica("Os padroes da NVIDIA (Model A, tons e estruturas em 1, sem protecao de luz, sem ajustes antes da\n"
@@ -1059,23 +1062,6 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         Dica("Grande: a do DLSS 5 (71 blocos), a mais fiel a NVIDIA. Pequena: a rapida que a NVIDIA traz no DLSS\n"
              "310.9.16 (31 blocos): mais leve, mais diferente (36 dB contra 47 da grande em 4K). Vale ao religar:\n"
              "a troca recarrega os pesos com a GPU parada.");
-        ImGui::BeginDisabled(cfg.redePequena);
-        {
-            const char* blocos[] = {cfg.rede.redeCompleta ? "71" : "68", "68", "63", "55", "47"};
-            const int nNiveis = e.vitAdaptativo ? 4 : 5;
-            int nivel = std::clamp(cfg.profundidade, 0, nNiveis - 1);
-            if (Segmentos("blocos", blocos, nNiveis, &nivel, 30 * g_e))
-                cfg.profundidade = nivel;
-        }
-        ImGui::EndDisabled();
-        Dica("Blocos da rede grande que rodam (a pequena tem os dela). Os que saem sao blocos residuais\n"
-             "(saida = entrada + correcao), os unicos que o runtime aceita pular; a entrada, a saida e os que\n"
-             "reduzem ou ampliam a imagem ficam sempre.\n"
-             "68: sem 42/43/46 (~1 ms). 63: sem o estagio mais fundo depois do ViT (40-47). 55: e sem o mais\n"
-             "fundo antes dele (23-30). 47: e sem o ViT (31-38); so aparece com o reuso adaptativo do ViT\n"
-             "desligado, que o runtime exige para pular esses.\n"
-             "Menos blocos = mais rapido e mais longe da NVIDIA. Nao vira a rede pequena: ela tem pesos proprios,\n"
-             "treinados para 31 blocos. Muda na hora, sem recarregar a rede.");
         const int alturas[] = {720, 1080, 1440, 2160};
         const char* nomes[] = {"720p", "1080p", "1440p", "Nativa"};
         int ia = -1;
@@ -1136,14 +1122,16 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         Secao("COR POR MATIZ (DEPOIS DA REDE)");
         {
             const char* matizes[6] = {"Vermelho", "Amarelo", "Verde", "Ciano", "Azul", "Magenta"};
+            const ImU32 cores[6] = {IM_COL32(232, 72, 72, 255),  IM_COL32(236, 206, 60, 255), IM_COL32(88, 192, 80, 255),
+                                    IM_COL32(60, 202, 216, 255), IM_COL32(72, 124, 238, 255), IM_COL32(212, 82, 204, 255)};
             for (int i = 0; i < 6; ++i)
             {
                 ImGui::PushID(300 + i);
                 Deslizador((std::string(matizes[i]) + ": saturação").c_str(), &cfg.matiz.sat[i], -1.f, 1.f, "%+.3f",
-                           "Saturacao desta faixa de cor no resultado: -1 = cinza, 0 = igual, +1 = o dobro.", 0.f);
+                           "Saturacao desta faixa de cor no resultado: -1 = cinza, 0 = igual, +1 = o dobro.", 0.f, cores[i]);
                 Deslizador((std::string(matizes[i]) + ": brilho").c_str(), &cfg.matiz.luz[i], -1.f, 1.f, "%+.3f",
                            "Brilho desta faixa de cor no resultado: -1 = apaga, +1 = o dobro. Cinza e branco nao\n"
-                           "mudam (o efeito pesa pela saturacao do pixel).", 0.f);
+                           "mudam (o efeito pesa pela saturacao do pixel).", 0.f, cores[i]);
                 ImGui::PopID();
             }
             if (Botao("Zerar cores"))
@@ -1216,6 +1204,24 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         Marca("Reuso adaptativo do ViT (ao reabrir)", &cfg.reusoVit,
               "Do runtime do lmxxf: quando o quadro muda pouco, os blocos ViT reaproveitam o ultimo calculo.\n"
               "Vale na proxima vez que o programa abrir.");
+        {
+            bool hist = cfg.temporalRede == 1;
+            if (Marca("Histórico da própria rede (ao reabrir)", &hist,
+                      "A rede tem uma entrada de historico (a resposta anterior dela) e decide sozinha quanto dela\n"
+                      "mistura (a cabeca de historico do bloco 70). Sem isto essa entrada recebe o quadro atual de novo.\n"
+                      "Ligado: a resposta anterior chega trazida pelo movimento ate o quadro atual -- na captura de\n"
+                      "buffer o movimento e a profundidade do jogo, na de video o fluxo optico. Onde o caminho sai da\n"
+                      "imagem ou a cor nao confere, o runtime descarta o historico.\n"
+                      "Vale ao reabrir o programa. Forca 1 passe e desliga o reuso do ViT. Precisa do runtime\n"
+                      "compilado deste branch (runtime\\lmxxf\\compilar.ps1 e runtime\\adaptador\\compilar.ps1)."))
+                cfg.temporalRede = hist ? 1 : 0;
+            if (!e.historicoRede.empty())
+            {
+                ImGui::PushTextWrapPos(0.f);
+                ImGui::TextDisabled("%s", e.historicoRede.c_str());
+                ImGui::PopTextWrapPos();
+            }
+        }
 
         Secao("OVERLAY");
         DeslizadorInt("FPS máximo", &cfg.fpsMax, 0, 240, "%d", "Teto de quadros processados por segundo (0 = sem teto).");
