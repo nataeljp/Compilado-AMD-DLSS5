@@ -893,7 +893,7 @@ struct App
         // branco de papel: o do usuario em nits ou o branco SDR do Windows (HDR); ponte: auto = SDR direto, HDR SoftKnee
         float escK = cfg.brancoNits > 0.f ? cfg.brancoNits / 80.f : escalaSdr;
         escalaUsada = escK;
-        const UINT ponte = cfg.ponte < 0 ? (hdr ? 1u : 0u) : (UINT)std::clamp(cfg.ponte, 0, 3);
+        const UINT ponte = cfg.ponte < 0 ? (hdr ? 1u : 0u) : (UINT)std::clamp(cfg.ponte, 0, 4);
         pontePassada = ponte;
         UINT k[16] = {inteiro.w, inteiro.h, fed.w, fed.h, hdr ? 1u : 0u, 0, ponte, 0, 0, 0, 0, 0, 0, 0, 0, 0};
         memcpy(&k[11], &cfg.preLimiarSombra, 4);

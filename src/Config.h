@@ -26,7 +26,8 @@ struct Config
     int alturaRede = 1080;  // altura em que a rede roda (720..2160); a largura segue a proporcao da janela
     bool redePequena = false; // a rede pequena da 310.9.16 (31 blocos, mais rapida) no lugar da grande (71 blocos)
     float forca = 1.f;      // quanto da edicao final entra no quadro (0..4)
-    int ponte = -1;         // ponte do quadro para a rede: -1 auto (SDR direto, HDR SoftKnee), 0 direto, 1 SoftKnee, 2 ACES
+    int ponte = -1;         // ponte do quadro para a rede: -1 auto (SDR direto, HDR SoftKnee), 0 direto, 1 SoftKnee, 2 ACES,
+                            // 3 curva do jogo, 4 luz de cena direta (so o ombro do codificador da NVIDIA)
     float brancoNits = 0.f; // branco de papel em nits (0 = o branco SDR do Windows)
     float preLuz = 0.f;     // antes da rede: ganho das luzes acima do limiar (ideia do Shadow-Light-Scattering.fx)
     float preSombra = 0.f;  // antes da rede: escurece (>0) ou levanta (<0) as sombras abaixo do limiar

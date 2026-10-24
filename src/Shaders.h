@@ -79,12 +79,16 @@ float3 FilmicaInv(float3 y)
 }
 
 // ponte do quadro (linear, branco de papel = 1) para o proxy que a rede ve: 0 direto, 1 SoftKnee, 2 ACES,
-// 3 luz de cena sem corte (o codificador do runtime aplica o joelho e o sRGB da NVIDIA)
+// 3 luz de cena sem corte (o codificador do runtime aplica o joelho e o sRGB da NVIDIA), 4 luz como chega, sem corte
+// nem curva. A 4 e o contrato do modo 1 do codificador da NVIDIA (native_codec_encode.hlsl: luz / branco de papel,
+// ombro acima de 0,75, sRGB): na captura de buffer a cor do jogo ja e luz de cena antes do tonemap, e so o ombro do
+// codificador deve comprimir os realces. Com a SoftKnee (a automatica em HDR) ou a direta, todo realce acima de ~1,25x o
+// branco chegava a rede como o mesmo 0,974 (sRGB) e nada nunca chegava a 1,0.
 float3 Proxy(float3 o, uint ponte)
 {
     if (ponte == 1) return SoftKnee(o);
     if (ponte == 2) return AcesFittedAP1(o);
-    if (ponte == 3) return max(o, 0.0);
+    if (ponte == 3 || ponte == 4) return max(o, 0.0);
     return saturate(o);
 }
 

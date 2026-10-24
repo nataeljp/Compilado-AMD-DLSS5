@@ -155,7 +155,7 @@ Os parâmetros do DLSS 5 seguem os nomes que a NVIDIA expõe no NGX (os mesmos d
 | `gradacao` | true/false | aplica a gradação do Model B/C (exposição, contraste, saturação do kernel da NVIDIA) |
 | `composicao` | 0/1 | 0 crua (resposta − proxy), 1 referência NVIDIA/RenoDX (razão de luz em dois ramos, piso 1/512, proteção, cor) |
 | `corComposicao`, `protecao` | 0..2, 1..16 | mistura de cor e proteção bilateral de luz da composição (padrão 1 e 16 = desligada) |
-| `ponte` | −1..2 | quadro → proxy da rede: −1 automática (SDR direta, HDR SoftKnee), 0 direta, 1 SoftKnee, 2 ACES (RRT+ODT, RenoDX) |
+| `ponte` | −1..4 | quadro → proxy da rede: −1 automática (SDR direta, HDR SoftKnee), 0 direta, 1 SoftKnee, 2 ACES (RRT+ODT, RenoDX), 3 curva do jogo, 4 luz de cena direta (captura de buffer: só o ombro do codificador da NVIDIA comprime os realces) |
 | `brancoNits` | 0..400 | branco de papel do HDR (0 = o branco SDR do Windows) |
 | `alturaRede` | 720..2160 | altura em que a rede roda (limitada pela janela); vale ao religar |
 | `redeCompleta` | true/false | os 71 blocos (camadas) da rede; false pula 42/43/46 (~1 ms); vale ao religar |
