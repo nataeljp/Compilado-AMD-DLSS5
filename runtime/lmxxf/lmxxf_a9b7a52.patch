@@ -575,10 +575,10 @@ index 9eefc67..d763b51 100644
 +    Output[id.xy] = float4(value,alphaIn);
  }
 diff --git a/src/LmxxfNrRuntime.cpp b/src/LmxxfNrRuntime.cpp
-index 01c88a5..2c72d52 100644
+index 01c88a5..5e5bb01 100644
 --- a/src/LmxxfNrRuntime.cpp
 +++ b/src/LmxxfNrRuntime.cpp
-@@ -33,11 +33,24 @@ namespace
+@@ -33,11 +33,25 @@ namespace
  // Runtime ABI has no trustworthy motion/depth guides. This is explicitly the
  // static, raw-change-rejected consumer of the same model-gated mode 1 shader.
  // Retire acknowledges an actual consumer submission; it never means GPU idle.
@@ -600,10 +600,11 @@ index 01c88a5..2c72d52 100644
      };
 +    Guides guides; // [DLSS5 Overlay] valem a partir do proximo Prepare
 +    float strength{1}; // [DLSS5 Overlay] LmxxfNrSetHistoryStrength: escala do peso que a cabeca de historico decide (0..1)
++    float clip{0};     // [DLSS5 Overlay] LmxxfNrSetHistoryClip: gama do recorte pela vizinhanca (0 = sem recorte)
      std::array<Slot,64> slots{};
      Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> bindings;
      Microsoft::WRL::ComPtr<ID3D12Fence> fence;
-@@ -87,10 +100,23 @@ public:
+@@ -87,10 +101,24 @@ public:
              rd.Height=1;rd.DepthOrArraySize=rd.MipLevels=1;rd.SampleDesc.Count=1;rd.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
              NativeFastHistorySupport::Check(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&rd,D3D12_RESOURCE_STATE_GENERIC_READ,nullptr,IID_PPV_ARGS(&s.control)),"runtime history control");
          }
@@ -620,6 +621,7 @@ index 01c88a5..2c72d52 100644
 +        parameters.scaleX=real?1.f/float(parameters.width):0.f;parameters.scaleY=real?1.f/float(parameters.height):0.f;
 +        parameters.depthInverted=real?guides.depthInverted:0u;
 +        parameters.historyStrength=strength;
++        std::memcpy(&parameters.reserved[1],&clip,sizeof clip); // [DLSS5 Overlay] o shader le asfloat(reserved.y)
          const auto now=std::chrono::steady_clock::now();
          const bool gap=haveTime && now-lastPrepare>std::chrono::milliseconds(250);
          lastPrepare=now;haveTime=true;
@@ -628,7 +630,7 @@ index 01c88a5..2c72d52 100644
          if(reset)seed=0;
          parameters.useHistory=!reset;
          void*p{};D3D12_RANGE none{};
-@@ -100,15 +126,20 @@ public:
+@@ -100,15 +128,21 @@ public:
      }
      unsigned Seed()const{return seed;}
      bool UsesHistory()const{return current&&parameters.useHistory;}
@@ -636,6 +638,7 @@ index 01c88a5..2c72d52 100644
 +       RecordOutputs e nao os escreve ate o Retire */
 +    void SetGuides(const Guides&g){guides=g;}
 +    void SetStrength(float v){strength=v;}
++    void SetClip(float v){clip=v;}
      void Inputs(ID3D12GraphicsCommandList*c,ID3D12Resource*raw,ID3D12Resource*out){
          if(!current)throw std::runtime_error("Runtime mode1 inputs without Prepare");
 -        history.RecordInputs(c,raw,out,nullptr,nullptr,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
@@ -653,7 +656,7 @@ index 01c88a5..2c72d52 100644
      }
      void Submitted(ID3D12CommandQueue*q){
          if(!pending)return;
-@@ -117,8 +148,9 @@ public:
+@@ -117,8 +151,9 @@ public:
          current->completion=++serial;
          if(serial<=2 || serial%100==0){
              if(FILE*f=_wfopen(NativeLabPath(L"logs\\temporal-mode.txt").c_str(),L"ab")){
@@ -665,7 +668,7 @@ index 01c88a5..2c72d52 100644
              }
          }
          current=nullptr;pending=false;prior=!invalidFrame;forceReset=invalidFrame;
-@@ -449,6 +481,40 @@ hip_reference::Options RuntimeOptions(unsigned w, unsigned h, const std::wstring
+@@ -449,6 +484,40 @@ hip_reference::Options RuntimeOptions(unsigned w, unsigned h, const std::wstring
                                        const std::wstring &weightsDir, std::string *note)
  {
      auto opt = LmxxfProductionOptions(w, h, Utf8(modulesDir), Utf8(weightsDir));
@@ -706,7 +709,7 @@ index 01c88a5..2c72d52 100644
      // The bridge picks HIP\gfx1200 or HIP\gfx1201 by device when those folders exist; require the module in every
      // architecture folder present (conservative: off rather than a load failure), else in the folder itself.
      auto has = [&](const wchar_t *f) {
-@@ -495,6 +561,13 @@ hip_reference::Options RuntimeOptions(unsigned w, unsigned h, const std::wstring
+@@ -495,6 +564,14 @@ hip_reference::Options RuntimeOptions(unsigned w, unsigned h, const std::wstring
  
  struct Session
  {
@@ -717,10 +720,11 @@ index 01c88a5..2c72d52 100644
 +    /* [DLSS5 Overlay] guias do historico (LmxxfNrSetHistoryGuides): valem tambem para o historico criado depois */
 +    RuntimeMode1History::Guides historyGuides;
 +    float historyStrength = 1.f; /* [DLSS5 Overlay] LmxxfNrSetHistoryStrength */
++    float historyClip = 0.f;     /* [DLSS5 Overlay] LmxxfNrSetHistoryClip */
      ID3D12Device *device = nullptr;
      ID3D12CommandQueue *queue = nullptr;
      ID3D12CommandQueue *fallbackConsumerQueue = nullptr;
-@@ -1055,8 +1128,12 @@ int32_t PrepareFrame(void *context, const LmxxfNrFrameInfo *info, LmxxfNrJob *jo
+@@ -1055,8 +1132,12 @@ int32_t PrepareFrame(void *context, const LmxxfNrFrameInfo *info, LmxxfNrJob *jo
                  session->bridge->NotifyOutputSubmitted(session->queue);
                  session->DrainGpu();
              }
@@ -734,7 +738,7 @@ index 01c88a5..2c72d52 100644
          }
          const uint32_t allowedFlags = LMXXF_NR_FRAME_FLAG_STRENGTH | LMXXF_NR_FRAME_FLAG_DEBUG_VIEW | LMXXF_NR_FRAME_FLAG_CODEC_PASSTHROUGH;
          if ((info->flags & ~allowedFlags) != 0)
-@@ -1136,6 +1213,9 @@ int32_t PrepareFrame(void *context, const LmxxfNrFrameInfo *info, LmxxfNrJob *jo
+@@ -1136,6 +1217,9 @@ int32_t PrepareFrame(void *context, const LmxxfNrFrameInfo *info, LmxxfNrJob *jo
                  }
              session->bridge->Create(session->queue, opt, {});
              if (session->timingRequested) session->bridge->EnableNetworkTiming(); /* kept across a recreate once a host asked */
@@ -744,7 +748,7 @@ index 01c88a5..2c72d52 100644
              session->builtProcW=geo.processing_width; session->builtProcH=geo.processing_height;
              session->hipPrepared = true;
              char geoMsg[192] {};
-@@ -1339,6 +1419,9 @@ int32_t PrepareFrame(void *context, const LmxxfNrFrameInfo *info, LmxxfNrJob *jo
+@@ -1339,6 +1423,9 @@ int32_t PrepareFrame(void *context, const LmxxfNrFrameInfo *info, LmxxfNrJob *jo
                  }
                  session->bridge->Create(session->queue, opt, {});
                  if (session->timingRequested) session->bridge->EnableNetworkTiming(); /* kept across a recreate once a host asked */
@@ -754,16 +758,17 @@ index 01c88a5..2c72d52 100644
                  session->builtProcW=geo.processing_width; session->builtProcH=geo.processing_height;
                  session->hipPrepared = true;
                  char geoMsg[192] {};
-@@ -1440,6 +1523,8 @@ int32_t PrepareFrame(void *context, const LmxxfNrFrameInfo *info, LmxxfNrJob *jo
+@@ -1440,6 +1527,9 @@ int32_t PrepareFrame(void *context, const LmxxfNrFrameInfo *info, LmxxfNrJob *jo
          if (temporalMode == NativeTemporalMode::FastHistory && !session->fastHistory) {
              session->bridge->SetAdaptiveReuseAllowed(false);
              session->fastHistory=new RuntimeMode1History(session->device,NativeCurrentNetworkGeometry(),*session->bridge);
 +            session->fastHistory->SetGuides(session->historyGuides);
 +            session->fastHistory->SetStrength(session->historyStrength);
++            session->fastHistory->SetClip(session->historyClip);
              CreateDirectoryW(NativeLabPath(L"logs").c_str(),nullptr);
              if(FILE*f=_wfopen(NativeLabPath(L"logs\\temporal-mode.txt").c_str(),L"ab")){
                  fprintf(f,"runtime temporal_mode=1 active domain=encoded motion=static depth=none frame_id=unverified gate=model-row77\n");fclose(f);
-@@ -1959,6 +2044,140 @@ int32_t EnqueueHipTwoArgument(void *context, void *job)
+@@ -1959,6 +2049,157 @@ int32_t EnqueueHipTwoArgument(void *context, void *job)
  static_assert(offsetof(LmxxfNrApi, GetTimings) == LMXXF_NR_API_V1_SIZE, "LMXXF_NR_API_V1_SIZE must end before GetTimings");
  static_assert(sizeof(LmxxfNrTimings) == 24, "LmxxfNrTimings layout");
  
@@ -885,6 +890,23 @@ index 01c88a5..2c72d52 100644
 +    });
 +}
 +
++/* [DLSS5 Overlay] Recorte do historico da propria rede pela vizinhanca (DLSS5_TEMPORAL_MODE=1): a saida anterior
++   reprojetada so entra dentro de media +- gama * desvio da saida crua deste quadro no 3x3 (YCoCg), antes da mistura pelo
++   logit. 0 = sem recorte (a mistura de antes); 0..8. Vale a partir do proximo PrepareFrame. Fora da tabela da API (ABI
++   inalterada). */
++extern "C" LMXXF_NR_EXPORT int32_t LmxxfNrSetHistoryClip(void *context, float gamma)
++{
++    return Guard([&] {
++        if (!context || !std::isfinite(gamma) || gamma < 0.f || gamma > 8.f)
++            return Fail(LMXXF_NR_INVALID_ARGUMENT, "SetHistoryClip: gamma must be 0..8");
++        auto *s = static_cast<Session *>(context);
++        s->historyClip = gamma;
++        if (s->fastHistory)
++            s->fastHistory->SetClip(gamma);
++        return int32_t(LMXXF_NR_OK);
++    });
++}
++
 +/* [dlssnr_rebuild] Passes (1..3) a partir do proximo quadro, sem recriar a rede (o DLSS5_MULTI_PASS do ambiente so e lido
 +   quando a DLL carrega). */
 +extern "C" LMXXF_NR_EXPORT int32_t LmxxfNrSetPasses(void *context, uint32_t passes)
@@ -923,6 +945,123 @@ index 6721262..ac1f666 100644
   IUnknown*identity=nullptr;
   HRESULT identity_hr=(raw?raw:object)->QueryInterface(IID_IUnknown,reinterpret_cast<void**>(&identity));
   if(raw)raw->Release();
+diff --git a/src/native_fast_history.h b/src/native_fast_history.h
+index ff938a0..ac4b012 100644
+--- a/src/native_fast_history.h
++++ b/src/native_fast_history.h
+@@ -119,6 +119,30 @@ void ReprojectPixel(uint i,out float4 preValue,out float4 postValue) {
+     if(pre.w>0)preValue=pre;
+     if(post.w>0)postValue=post;
+ }
++// [DLSS5 Overlay] Recorte do historico pela vizinhanca (reserved.y = gama em bits de float; 0 = desligado, a mistura de
++// antes). A saida anterior reprojetada so entra dentro de media +- gama * desvio da saida crua DESTE quadro no 3x3
++// (YCoCg), como o recorte por variancia do TAA. Sem ele, o que a rede pinta em volta de um objeto em movimento ficava no
++// fundo que passa atras dele (mesma cor de entrada e mesma profundidade: as guardas raw/depth aceitam) e andava com esse
++// fundo, uma copia por quadro da rede.
++float3 ToYCoCg(float3 c){return float3(dot(c,float3(.25,.5,.25)),dot(c,float3(.5,0,-.5)),dot(c,float3(-.25,.5,-.25)));}
++float3 FromYCoCg(float3 y){return float3(y.x+y.y-y.z,y.x+y.z,y.x-y.y-y.z);}
++float3 ClipHistory(uint i,float3 old) {
++    float gamma=asfloat(reserved.y);
++    if(!(gamma>0))return old;
++    int2 p=int2(i%width,i/width),hi=int2(width,processingHeight)-1;
++    float3 m1=0,m2=0;float n=0;
++    [unroll]for(int dy=-1;dy<=1;++dy)[unroll]for(int dx=-1;dx<=1;++dx) {
++        uint j=uint(clamp(p.y+dy,0,hi.y))*width+uint(clamp(p.x+dx,0,hi.x));
++        float3 c=float3(Network[j*3],Network[j*3+1],Network[j*3+2]);
++        if(!all(isfinite(c)))continue;
++        c=ToYCoCg(c);m1+=c;m2+=c*c;n+=1;
++    }
++    if(n<1)return old;
++    float3 mu=m1/n,extent=gamma*sqrt(max(m2/n-mu*mu,0))+.001;
++    float3 v=ToYCoCg(old)-mu,a=abs(v)/extent;
++    float k=max(a.x,max(a.y,a.z));
++    return k>1?FromYCoCg(mu+v/k):old;
++}
+ [numthreads(64,1,1)]
+ void Reproject(uint3 id:SV_DispatchThreadID) {
+     if(id.x>=width||id.y>=processingHeight)return;
+@@ -141,13 +165,21 @@ void Finish(uint3 id:SV_DispatchThreadID) {
+         float logit=Network[logitOffset+i*2];
+         if(isfinite(logit)) {
+             float weight=saturate(historyStrength)*.73974609375/(1+exp(-logit));
+-            value=lerp(value,old.rgb,weight);
+-            Network[i*3]=value.x;Network[i*3+1]=value.y;Network[i*3+2]=value.z;
++            value=lerp(value,ClipHistory(i,old.rgb),weight);
+         }else good=false;
+     }
++    // [DLSS5 Overlay] o Network e regravado no Commit: o ClipHistory le a saida crua dos vizinhos neste passe
+     ModelOut[i]=float4(value,good&&InView(Mirror(i))?1:0);
+ 
+ }
++// [DLSS5 Overlay] Network = ModelOut.rgb: a mistura onde o historico entrou, a saida crua no resto (como antes)
++[numthreads(64,1,1)]
++void Commit(uint3 id:SV_DispatchThreadID) {
++    if(id.x>=width||id.y>=processingHeight)return;
++    uint i=id.y*width+id.x;
++    float3 value=ModelOut[i].rgb;
++    Network[i*3]=value.x;Network[i*3+1]=value.y;Network[i*3+2]=value.z;
++}
+ 
+ )hlsl";
+ struct Parameters
+@@ -157,14 +189,14 @@ struct Parameters
+     UINT renderWidth{}, renderHeight{}, motionWidth{}, motionHeight{};
+     float scaleX{}, scaleY{}, jitterX{}, jitterY{};
+     float historyStrength{1}; UINT logitOffset{}, depthInverted{}, hasDepth{1};
+-    UINT reserved[4]{1,0,0,0}; // bit 0: read real motion; zero is static fallback
++    UINT reserved[4]{1,0,0,0}; // bit 0: read real motion; zero is static fallback. [DLSS5 Overlay] [1]: gama do recorte (bits de float)
+ };
+ static_assert(sizeof(Parameters)==96);
+ class History
+ {
+     ID3D12Resource *postWarp{}, *previousModel{}, *preWarp{}, *previousRaw{};
+     ID3D12RootSignature *root{};
+-    ID3D12PipelineState *reproject{}, *finish{};
++    ID3D12PipelineState *reproject{}, *finish{}, *commit{};
+     UINT width{}, height{}, processingHeight{};
+     D3D12_RESOURCE_STATES preState=D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+ 
+@@ -202,6 +234,7 @@ public:
+         if(root) root->Release();
+         if(reproject) reproject->Release();
+         if(finish) finish->Release();
++        if(commit) commit->Release();
+     }
+     bool Matches(UINT w,UINT h,UINT ph) const { return width==w && height==h && processingHeight==ph; }
+     void Create(ID3D12Device *device, UINT w, UINT h, UINT ph, ID3D12Resource* sharedPre=nullptr,NativeShaderCompiler* compiler=nullptr)
+@@ -234,17 +267,19 @@ public:
+         if(error) error->Release(); Check(hr,"root serialize");
+         hr=device->CreateRootSignature(0,blob->GetBufferPointer(),blob->GetBufferSize(),IID_PPV_ARGS(&root));
+         blob->Release(); Check(hr,"root create");
+-        for(unsigned i=0;i<2;++i)
++        const char *entries[3]={"Reproject","Finish","Commit"};
++        ID3D12PipelineState **states[3]={&reproject,&finish,&commit};
++        for(unsigned i=0;i<3;++i)
+         {
+             blob=nullptr; error=nullptr;
+             hr=NativeCompileShaderBlob(kShader,sizeof(kShader)-1,"NativeFastHistory",nullptr,nullptr,
+-                                       i?"Finish":"Reproject",&blob,&error,"cs_5_0",D3DCOMPILE_OPTIMIZATION_LEVEL3,compiler);
++                                       entries[i],&blob,&error,"cs_5_0",D3DCOMPILE_OPTIMIZATION_LEVEL3,compiler);
+             std::string diagnostic;
+             if(error) {diagnostic.assign(static_cast<const char*>(error->GetBufferPointer()),error->GetBufferSize()); error->Release();}
+             if(FAILED(hr)) throw std::runtime_error("temporal shader: "+diagnostic);
+             D3D12_COMPUTE_PIPELINE_STATE_DESC pso{}; pso.pRootSignature=root;
+             pso.CS={blob->GetBufferPointer(),blob->GetBufferSize()};
+-            hr=device->CreateComputePipelineState(&pso,IID_PPV_ARGS(i?&finish:&reproject));
++            hr=device->CreateComputePipelineState(&pso,IID_PPV_ARGS(states[i]));
+             blob->Release(); Check(hr,"pipeline");
+         }
+     }
+@@ -284,6 +319,9 @@ public:
+         if(depth) Transition(cmd,depth,ds,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,0);
+         for(auto *r:{previousRaw,previousModel,output}) Transition(cmd,r,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+         Bind(cmd,raw,output,p,heap,control); cmd->SetPipelineState(finish); cmd->Dispatch((width+63)/64,processingHeight,1);
++        // [DLSS5 Overlay] o Finish le o Network e grava o ModelOut; o Commit le o ModelOut e grava o Network
++        D3D12_RESOURCE_BARRIER uav{}; uav.Type=D3D12_RESOURCE_BARRIER_TYPE_UAV; cmd->ResourceBarrier(1,&uav);
++        cmd->SetPipelineState(commit); cmd->Dispatch((width+63)/64,processingHeight,1);
+         for(auto *r:{previousRaw,previousModel,output}) Transition(cmd,r,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+         if(depth) Transition(cmd,depth,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,ds,0);
+     }
 diff --git a/src/native_hip_env_options.h b/src/native_hip_env_options.h
 index d515291..4f11db8 100644
 --- a/src/native_hip_env_options.h

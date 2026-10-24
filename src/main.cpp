@@ -107,7 +107,7 @@ struct App
     std::chrono::steady_clock::time_point marcaFps = std::chrono::steady_clock::now();
     UINT64 quadrosMarca = 0;
     Config cfg;
-    Passe pInteiro, pReduz, pCompoe, pExporta, pGuias;
+    Passe pInteiro, pReduz, pCompoe, pExporta, pGuias, pNitidez;
     // ---- captura de buffer (Modo de Rede): a DLSS5Buffer.dll no jogo aberto entrega cor sem HUD, movimento e
     // profundidade do upscaler dele; a edicao volta para o jogo, que a soma no quadro seguinte ----
     FonteBuffer fb;
@@ -121,6 +121,7 @@ struct App
     bool Ligado() const { return cap.Ativa() || buffer; }
     HWND Alvo() const { return buffer ? alvoBuffer : cap.Alvo(); }
     Tex inteiro, orig, fed, saida, fedAnt, saidaAnt; // orig: quadro no tamanho da rede; fed: o proxy dele
+    Tex semNitidez; // a composicao antes da nitidez CAS (criada na primeira vez que a nitidez liga)
     std::wstring dumpPasta;
     std::wstring pastaRuntime; // --runtime: outra pasta do runtime (testes)
     std::vector<uint32_t> pulaTeste; // --pula 1,2,3: blocos pulados fixos (medicao de custo por bloco)
@@ -218,6 +219,7 @@ struct App
         pExporta.Cria(gpu.dev.Get(), (std::string(hlsl::Comum) + hlsl::Exporta).c_str(), "CSExporta", 3, 1, 12,
                       "edicao para o jogo");
         pGuias.Cria(gpu.dev.Get(), hlsl::Guias, "CSGuias", 2, 2, 4, "guias do historico da rede");
+        pNitidez.Cria(gpu.dev.Get(), hlsl::Nitidez, "CSNitidez", 1, 1, 8, "nitidez CAS");
         fluxo.Cria(gpu.dev.Get());
         temporal.Cria(gpu.dev.Get());
         EsperaPasses();
@@ -735,6 +737,7 @@ struct App
         orig.Cria(gpu.dev.Get(), dw, dh, DXGI_FORMAT_R16G16B16A16_FLOAT, L"original no tamanho da rede");
         fed.Cria(gpu.dev.Get(), dw, dh, DXGI_FORMAT_R16G16B16A16_FLOAT, L"proxy (alimentado)", true, true);
         saida.Cria(gpu.dev.Get(), fw, fh, fmtSaida, L"saida");
+        semNitidez = Tex{}; // recriada no tamanho novo quando a nitidez estiver ligada (a GPU ja esta parada aqui)
         fedAnt.Cria(gpu.dev.Get(), dw, dh, DXGI_FORMAT_R16G16B16A16_FLOAT, L"alimentado anterior", false);
         if (!dumpPasta.empty())
             saidaAnt.Cria(gpu.dev.Get(), fw, fh, fmtSaida, L"saida anterior", false);
@@ -1324,7 +1327,12 @@ struct App
             afimC->Para(c, SRV);
         if (deslGC)
             deslGC->Para(c, SRV);
-        saida.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        // nitidez CAS depois da composicao: o CSCompoe grava no semNitidez e o CSNitidez dele na saida
+        const bool nitida = cfg.nitidez > 0.f;
+        if (nitida && semNitidez.w == 0)
+            semNitidez.Cria(gpu.dev.Get(), saida.w, saida.h, saida.fmt, L"saida antes da nitidez");
+        Tex& alvo = nitida ? semNitidez : saida;
+        alvo.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         struct
         {
             UINT fw, fh, dw, dh;
@@ -1361,7 +1369,24 @@ struct App
                       crua ? Par{temporal.Crua().r.Get(), temporal.Crua().fmt} : vazio,
                       afimC ? Par{afimC->r.Get(), afimC->fmt} : vazio,
                       deslGC ? Par{deslGC->r.Get(), deslGC->fmt} : vazio},
-                     {{saida.r.Get(), saida.fmt}}, &kc, (saida.w + 7) / 8, (saida.h + 7) / 8);
+                     {{alvo.r.Get(), alvo.fmt}}, &kc, (saida.w + 7) / 8, (saida.h + 7) / 8);
+        if (nitida)
+        {
+            semNitidez.Para(c, SRV);
+            saida.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            struct
+            {
+                UINT w, h, hdr;
+                float nitidez;
+                UINT modo;
+                float divisao, escala;
+                UINT pad;
+            } kn{saida.w, saida.h, hdr ? 1u : 0u, std::clamp(cfg.nitidez, 0.f, 1.f), (UINT)cfg.modo, cfg.divisao,
+                 escalaUsada, 0};
+            static_assert(sizeof(kn) == 8 * 4, "constantes: o mesmo layout do cbuffer do CSNitidez");
+            pNitidez.Roda(c, desc, gpu.dev.Get(), {{semNitidez.r.Get(), semNitidez.fmt}}, {{saida.r.Get(), saida.fmt}}, &kn,
+                          (saida.w + 7) / 8, (saida.h + 7) / 8);
+        }
         // captura de buffer: a edicao (C(saida) - C(cor do jogo)) vai para o slot que o jogo soma no quadro seguinte
         Tex* edJogo = buffer ? fb.EdicaoLivre() : nullptr;
         if (edJogo)

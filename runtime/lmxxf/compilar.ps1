@@ -1,6 +1,6 @@
 # Runtime da rede (lmxxf, de Kien, MIT) com as mudancas deste projeto: clona o lmxxf no commit base a9b7a52, aplica
 # lmxxf_a9b7a52.patch (pulos por quadro, rede pequena, passes sem recriar, mascara por pixel, Streamline, guias do
-# historico da rede) e compila
+# historico da rede, recorte do historico pela vizinhanca) e compila
 # LmxxfNrRuntime_v4.dll (no runtime ela vai com o nome lmxxf_upstream.dll; o monta_runtime.ps1 cuida disso).
 # -Modulos: compila tambem os 7 modulos HIP com a mascara por pixel (gfx1201). O rtc_compile usa o amd_comgr do driver
 # da AMD, sem HIP SDK. Os outros modulos vem prontos no pacote de pesos (native-game-tiled-assets\HIP).

@@ -109,8 +109,11 @@ bool Rede::Inicia(Gpu& g, const std::wstring& pasta, bool pequena)
     Log("rede", setSkip ? "profundidade dinamica disponivel (runtime v3)" : "runtime sem profundidade dinamica");
     setGuias = reinterpret_cast<int32_t (*)(void*, void*, void*, uint32_t)>(GetProcAddress(mod, "LmxxfNrSetHistoryGuides"));
     setForcaHist = reinterpret_cast<int32_t (*)(void*, float)>(GetProcAddress(mod, "LmxxfNrSetHistoryStrength"));
+    setRecorteHist = reinterpret_cast<int32_t (*)(void*, float)>(GetProcAddress(mod, "LmxxfNrSetHistoryClip"));
     Log("rede", setGuias ? "guias do historico da rede disponiveis (LmxxfNrSetHistoryGuides)"
                          : "runtime sem LmxxfNrSetHistoryGuides: o historico da rede, se ligado, fica estatico");
+    if (!setRecorteHist)
+        Log("rede", "adaptador sem LmxxfNrSetHistoryClip: o historico da rede, se ligado, fica sem recorte pela vizinhanca");
     assets = pasta + L"\\native-game-tiled-assets";
     if (pequena && !MontaAssetsPequena(pasta, assets))
     {
@@ -253,6 +256,19 @@ bool Rede::Envia(ID3D12Fence* cercaOverlay, UINT64 valorOverlay, const ParamsRed
         }
         else if (r != LMXXF_NR_OK)
             Erro(r, "SetHistoryStrength");
+    }
+    // recorte do historico pela vizinhanca (o adaptador so repassa quando muda)
+    if (setRecorteHist)
+    {
+        const int32_t r = setRecorteHist(ctx, std::clamp(p.recorteHistorico, 0.f, 8.f));
+        if (r == LMXXF_NR_NOT_IMPLEMENTED)
+        {
+            Log("rede", "lmxxf_upstream.dll sem LmxxfNrSetHistoryClip: historico da rede sem recorte pela vizinhanca "
+                        "(recompile runtime\\lmxxf e runtime\\adaptador)");
+            setRecorteHist = nullptr;
+        }
+        else if (r != LMXXF_NR_OK)
+            Erro(r, "SetHistoryClip");
     }
     // entrada
     Ck(al[0]->Reset(), "reset(rede0)");

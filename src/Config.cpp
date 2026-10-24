@@ -21,6 +21,7 @@ ParamsRede Config::Rede() const
     r.detalhe = std::clamp(forcaDecodificacao, 0.f, 1.f);
     r.cor = std::clamp(corDecodificacao, 0.f, 1.f);
     r.forcaHistorico = std::clamp(forcaHistorico, 0.f, 1.f);
+    r.recorteHistorico = std::clamp(recorteHistorico, 0.f, 4.f);
     return r;
 }
 
@@ -83,6 +84,7 @@ void Config::Carrega(const std::wstring& arquivo)
     I("fonte", fonte);
     B("redePequena", redePequena);
     F("forca", forca);
+    F("nitidezCas", nitidez);
     I("ponte", ponte);
     F("brancoNits", brancoNits);
     F("preLuz", preLuz);
@@ -107,6 +109,7 @@ void Config::Carrega(const std::wstring& arquivo)
     I("profundidadeMax", profundidadeMax);
     F("realceTemporal", realceTemporal);
     F("forcaHistoricoRede", forcaHistorico);
+    F("recorteHistoricoRede", recorteHistorico);
     F("corDecodificacao", corDecodificacao);
     F("forcaDecodificacao", forcaDecodificacao);
     I("estabilidade", temporal.maxQuadros);
@@ -142,6 +145,7 @@ std::string Config::Texto() const
     f << "  \"fonte\": " << fonte << ",\n";
     f << "  \"redePequena\": " << b(redePequena) << ",\n";
     f << "  \"forca\": " << forca << ",\n";
+    f << "  \"nitidezCas\": " << nitidez << ",\n";
     f << "  \"ponte\": " << ponte << ",\n";
     f << "  \"brancoNits\": " << brancoNits << ",\n";
     f << "  \"preLuz\": " << preLuz << ",\n";
@@ -166,6 +170,7 @@ std::string Config::Texto() const
     f << "  \"profundidadeMax\": " << profundidadeMax << ",\n";
     f << "  \"realceTemporal\": " << realceTemporal << ",\n";
     f << "  \"forcaHistoricoRede\": " << forcaHistorico << ",\n";
+    f << "  \"recorteHistoricoRede\": " << recorteHistorico << ",\n";
     f << "  \"corDecodificacao\": " << corDecodificacao << ",\n";
     f << "  \"forcaDecodificacao\": " << forcaDecodificacao << ",\n";
     f << "  \"estabilidade\": " << temporal.maxQuadros << ",\n";

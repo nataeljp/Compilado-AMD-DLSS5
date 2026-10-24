@@ -20,6 +20,7 @@ struct ParamsRede
     bool redeCompleta = true; // os 71 blocos (sem pular 42/43/46)
     float suaviza = 0.f;    // suavizacao temporal da saida (precisa de movimento), 0..0,8
     float forcaHistorico = 1.f; // historico da propria rede: escala do peso que a cabeca de historico decide, 0..1
+    float recorteHistorico = 1.f; // historico da propria rede: gama do recorte pela vizinhanca da saida crua (0 = sem)
 };
 
 // A rede roda numa fila D3D12 so dela (a da sessao do runtime): a ponte do runtime faz a fila da sessao esperar o HIP
@@ -87,6 +88,7 @@ class Rede
     int32_t (*setSkip)(void*, const uint32_t*, uint32_t) = nullptr;
     int32_t (*setGuias)(void*, void*, void*, uint32_t) = nullptr;
     int32_t (*setForcaHist)(void*, float) = nullptr;
+    int32_t (*setRecorteHist)(void*, float) = nullptr;
     LmxxfNrApi api{};
     void* ctx = nullptr;
     LmxxfNrJob job{};

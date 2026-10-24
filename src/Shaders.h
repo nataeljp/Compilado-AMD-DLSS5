@@ -441,6 +441,64 @@ float3 CorPorMatiz(float3 c)
 }
 )";
 
+// Nitidez depois da composicao, pelo algoritmo do CAS (Contrast Adaptive Sharpening, AMD FidelityFX, licenca MIT;
+// escrito aqui a partir do algoritmo publicado): por canal, o peso dos 4 vizinhos em cruz e negativo e cai onde o 3x3 ja
+// tem contraste alto (amp = sqrt(min(min, 2 - max) / max) com min e max da cruz somados aos do 3x3) -- reforca o detalhe
+// fraco sem halo nas bordas fortes. nitidez: 0 = sem efeito, 1 = o maximo do CAS (pico -1/5); entre os dois o pico do
+// CAS (-1 / lerp(8, 5, n)) vezes n, para comecar do zero sem salto. SDR: nos valores sRGB da saida (o CAS espera [0,1]);
+// HDR: em c / (1 + c) por canal (c em brancos de papel) -- o realce acima do branco nao satura.
+// So no lado da rede: o modo Original, a metade original da comparacao e os modos de diagnostico ficam como estao.
+inline const char* Nitidez = R"(
+cbuffer C : register(b0) { uint w; uint h; uint hdr; float nitidez; uint modo; float divisao; float escala; uint pad; };
+Texture2D<float4> ent : register(t0);
+RWTexture2D<float4> sai : register(u0);
+float3 Le(int2 q)
+{
+    float3 c = ent.Load(int3(clamp(q, int2(0, 0), int2(w, h) - 1), 0)).rgb;
+    if (hdr)
+    {
+        c = max(c, 0.0) / escala;
+        c = c / (1.0 + c);
+    }
+    return saturate(c);
+}
+[numthreads(8, 8, 1)] void CSNitidez(uint2 p : SV_DispatchThreadID)
+{
+    if (p.x >= w || p.y >= h) return;
+    const float4 c4 = ent.Load(int3(p, 0));
+    const bool rede = modo == 0 || modo == 5 || (modo == 2 && (float)p.x >= divisao * w + 1.0);
+    if (!rede)
+    {
+        sai[p] = c4;
+        return;
+    }
+    const int2 q = int2(p);
+    // a b c
+    // d e f
+    // g k i
+    const float3 a = Le(q + int2(-1, -1)), b = Le(q + int2(0, -1)), c = Le(q + int2(1, -1));
+    const float3 d = Le(q + int2(-1, 0)), e = Le(q), f = Le(q + int2(1, 0));
+    const float3 g = Le(q + int2(-1, 1)), k = Le(q + int2(0, 1)), i = Le(q + int2(1, 1));
+    float3 mn = min(min(min(d, e), min(f, b)), k);
+    float3 mx = max(max(max(d, e), max(f, b)), k);
+    mn += min(mn, min(min(a, c), min(g, i)));
+    mx += max(mx, max(max(a, c), max(g, i)));
+    const float3 amp = sqrt(saturate(min(mn, 2.0 - mx) / max(mx, 1e-5)));
+    const float n = saturate(nitidez);
+    const float3 wv = amp * (-n / lerp(8.0, 5.0, n));
+    const float3 r = saturate((b * wv + d * wv + f * wv + k * wv + e) / (1.0 + 4.0 * wv));
+    if (!hdr)
+    {
+        sai[p] = float4(r, c4.a);
+        return;
+    }
+    // HDR: so a diferenca volta a luz linear e soma no valor original (o scRGB tem canais negativos fora do sRGB, que
+    // o dominio [0,1] cortaria; numa area lisa a diferenca e zero e o pixel fica identico)
+    const float3 r1 = min(r, 0.999), e1 = min(e, 0.999);
+    sai[p] = float4(c4.rgb + (r1 / (1.0 - r1) - e1 / (1.0 - e1)) * escala, c4.a);
+}
+)";
+
 // captura de buffer: a edicao que o jogo soma no quadro seguinte, no espaco comprimido (C(x) = x / (1 + luma), o mesmo
 // do Temporal e do modulo do jogo): C(saida) - C(cor do jogo)
 // No alfa vai log2 da distancia da camera do pixel: o jogo so reprojeta a edicao de um ponto para a MESMA superficie

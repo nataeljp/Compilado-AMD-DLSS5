@@ -222,3 +222,88 @@ Testes (captura de buffer, a cena em que a máscara aparecia):
 4. Rede em 540p ou 720p: com a grade afim aplicada na resolução cheia o resultado deve ficar menos borrado.
 5. Se aparecer uma pulsação a cada resposta da rede (a grade troca de uma vez), me diga: dá para misturar a grade
    anterior com a nova em alguns quadros.
+
+## 9. Rodada 5: o rastro em degraus, nitidez CAS e o painel
+
+### O rastro
+
+Na foto do TLOU2 (neve à esquerda da Ellie) o rastro são várias cópias do contorno dela, com o mesmo espaçamento,
+paradas no fundo e cada vez mais fracas. Esse desenho é de realimentação temporal: a câmera anda, a Ellie fica no mesmo
+lugar da tela e o fundo passa atrás dela. A rede pinta algo em volta do contorno (mais claro ou mais escuro). O
+histórico da própria rede (modo 1 do lmxxf) mistura até 74% da saída anterior trazida pelo movimento do fundo, e só
+recusa onde a cor de entrada muda mais de 0,08 ou a profundidade mais de 5%. Neve sobre neve passa nas duas guardas,
+então o que estava em volta da Ellie vai embora com o fundo, e a cada quadro da rede nasce uma cópia nova. O espaço
+entre as cópias é o quanto o fundo anda num quadro da rede: com 18–20 fps ele é maior, e muda de jogo para jogo.
+
+A **Proteção de luz** não é a causa. Ela só limita o quanto a luz de cada ponto muda, e por isso diminui a altura de
+cada cópia sem tirar nenhuma. Em 1 ela também tira a luz que a rede põe de propósito (o cabelo).
+
+A correção está no runtime: antes da mistura, a resposta anterior é recortada para dentro da faixa que a rede dá
+**agora** em volta do pixel. A faixa é média ± γ desvios da saída crua deste quadro no 3×3, em YCoCg: o recorte por
+variância do TAA. É uma medida por pixel e por quadro, e se ajusta sozinha ao jogo e ao fps. Onde a neve está lisa, a
+faixa é estreita e a cópia velha não entra. Onde há textura ou cintilação de verdade, a faixa é larga e o histórico
+continua suavizando.
+
+Para medir isso, `ferramentas\simula_recorte_historico.py` simula a cena em 1D. O fundo anda 26 px por quadro da rede
+atrás de um objeto parado na tela. A rede escurece 0,15 da neve ao lado do objeto e cintila 0,02 por quadro. Esse
+escurecimento foi construído para o teste, não saiu da rede. O rastro é medido no fundo longe do objeto e a
+cintilação no fundo:
+
+| limite (γ) | rastro médio | rastro máx | cintilação | desvio da resposta junto ao objeto |
+|---|---|---|---|---|
+| sem (antes) | 0,0076 | 0,0563 | 0,0108 | 0,0290 |
+| 0,5 | 0,0004 | 0,0239 | 0,0120 | 0,0142 |
+| **1 (padrão)** | **0,0008** | 0,0395 | **0,0114** | **0,0148** |
+| 2 | 0,0020 | 0,0449 | 0,0110 | 0,0168 |
+| 4 | 0,0040 | 0,0563 | 0,0109 | 0,0213 |
+
+Sem histórico nenhum, o rastro seria 0 e a cintilação 0,0200. Sem limite, as cópias são 0,054, 0,029, 0,016, 0,010,
+0,006… e se estendem por ~150 px. Com γ = 1 sobra só a primeira, colada no objeto.
+
+### Mudanças
+
+| Mudança | O que muda |
+|---|---|
+| limite do histórico | Avançado → Movimento → **Limite do histórico** (com o histórico da rede ligado), padrão 1. 0 = como antes. Novo `LmxxfNrSetHistoryClip` no runtime e no adaptador. O runtime agora roda um passe a mais (`Commit`), porque o recorte lê a saída crua dos vizinhos e ela não pode ser regravada no mesmo passe. |
+| nitidez CAS | Controles globais → **Nitidez (CAS)**: algoritmo do CAS da AMD FidelityFX, escrito aqui. Roda depois da composição e só no lado da rede. Em HDR roda em c / (1 + c) e só a diferença volta, então os canais negativos do scRGB ficam. 0 = desligada. O "Padrão NVIDIA" volta a nitidez para 0. |
+| seção JOGO | Agora é a primeira seção da aba DLSS 5 (a janela, Ligar/Desligar/Atualizar). |
+| rótulos | "Cor da rede (NVIDIA)" virou **Cor NVIDIA** e "Força da decodificação (NVIDIA)" virou **Força NVIDIA**. O rótulo que não cabe antes do trilho fica cortado com "...", e o nome inteiro aparece na dica. |
+
+Como antes: checado com MinGW (overlay, adaptador e o `LmxxfNrRuntime.cpp` do runtime com o patch) e glslang (os três
+passes do histórico, o CAS e os outros), **não compilado com o MSVC nem rodado**. O patch novo aplica limpo no commit
+base do lmxxf.
+
+### 9.1 Compilar
+
+O runtime e o adaptador mudaram (o limite do histórico). Feche o overlay antes.
+
+```powershell
+cd D:\AI_Claude\DLSS5-Overlay
+git pull
+powershell -ExecutionPolicy Bypass -File build.ps1
+powershell -ExecutionPolicy Bypass -File runtime\lmxxf\compilar.ps1
+powershell -ExecutionPolicy Bypass -File runtime\adaptador\compilar.ps1
+Remove-Item bin\runtime\lmxxf_upstream.dll, bin\runtime\LmxxfNrRuntime.dll
+Copy-Item runtime\lmxxf\fonte\build_msvc\LmxxfNrRuntime_v4.dll bin\runtime\lmxxf_upstream.dll
+Copy-Item runtime\adaptador\LmxxfNrRuntime.dll bin\runtime\LmxxfNrRuntime.dll
+```
+
+O `compilar.ps1` do lmxxf vê que o patch mudou (o hash) e reaplica sozinho. A DLL do jogo (`build_buffer.ps1`) não
+mudou.
+
+### 9.2 Testes
+
+Faça na mesma cena do TLOU2, com a captura de buffer e o histórico da rede ligado. Ande para o lado para o fundo
+passar atrás da Ellie.
+
+1. **Confirmar a causa**: **Limite do histórico** em 0, depois **Força do histórico** em 0. Se as cópias em degrau
+   somem com a força em 0, elas vêm do histórico da rede.
+2. **A correção**: força de volta em 1 e **Limite do histórico** em 1 (padrão), depois 0,5 e 2. Em 1 as cópias devem
+   sumir e a imagem parada deve continuar estável. Se cintilar mais que antes, suba para 1,5–2.
+3. **Proteção de luz** de volta a 16 (desligada). Com o limite ligado, a luz do cabelo deve voltar sem o rastro.
+4. Se o `bin\runtime\lmxxf_adaptador.log` disser `ERRO SetHistoryClip`, ou o `overlay.jsonl` disser
+   `sem LmxxfNrSetHistoryClip`, o runtime ou o adaptador novo não foi copiado.
+5. Se sobrar **uma** cópia fraca que anda com o fundo e volta para o lugar a cada resposta da rede, é outra coisa. É o
+   que a rede pinta em volta do contorno sendo levado pelo movimento entre uma resposta e outra, e não o histórico. Me
+   mande uma foto disso.
+6. **Nitidez (CAS)**: 0,3 a 0,6. A borda forte não deve ganhar halo. Em Comparação, só o lado da rede fica mais nítido.

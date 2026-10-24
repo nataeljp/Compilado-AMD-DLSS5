@@ -203,7 +203,30 @@ bool Deslizador(const char* rot, float* v, float a, float b, const char* fmt, co
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float a1 = ImGui::GetStyle().Alpha;
     auto alfa = [&](ImU32 c) { return (c & 0x00FFFFFF) | (ImU32(((c >> 24) & 0xFF) * a1) << 24); };
-    dl->AddText(g_texto, g_tTexto, ImVec2(p0.x, p0.y + (alt - g_tTexto) * 0.5f), alfa(kTexto2), rot);
+    // rotulo: o que nao cabe antes do trilho vira "..." (o nome inteiro aparece na dica, sobre o rotulo ou o trilho)
+    const float maxRot = colRot - 6 * g_e;
+    const char* fimRot = rot + strlen(rot);
+    const bool cortado = g_texto->CalcTextSizeA(g_tTexto, FLT_MAX, 0, rot).x > maxRot;
+    if (cortado)
+    {
+        const float lp = g_texto->CalcTextSizeA(g_tTexto, FLT_MAX, 0, "...").x;
+        fimRot = rot;
+        for (const char* c = rot; *c;)
+        {
+            const char* prox = c + BytesUtf8((unsigned char)*c);
+            if (g_texto->CalcTextSizeA(g_tTexto, FLT_MAX, 0, rot, prox).x + lp > maxRot)
+                break;
+            fimRot = c = prox;
+        }
+    }
+    const ImVec2 pRot(p0.x, p0.y + (alt - g_tTexto) * 0.5f);
+    dl->AddText(g_texto, g_tTexto, pRot, alfa(kTexto2), rot, fimRot);
+    if (cortado)
+        dl->AddText(g_texto, g_tTexto, ImVec2(pRot.x + g_texto->CalcTextSizeA(g_tTexto, FLT_MAX, 0, rot, fimRot).x, pRot.y),
+                    alfa(kTexto2), "...");
+    const std::string dicaRot = cortado ? std::string(rot) + (dica ? std::string("\n\n") + dica : std::string()) : std::string();
+    if (cortado && ImGui::IsMouseHoveringRect(p0, ImVec2(p0.x + colRot, p0.y + alt)) && ImGui::IsWindowHovered())
+        ImGui::SetTooltip("%s", dicaRot.c_str());
     ImGui::SetCursorScreenPos(ImVec2(p0.x + colRot, p0.y));
     ImGui::InvisibleButton("##t", ImVec2(trilho, alt));
     ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY); // a roda sobre o trilho ajusta o valor, nao rola o painel
@@ -234,7 +257,7 @@ bool Deslizador(const char* rot, float* v, float a, float b, const char* fmt, co
     }
     if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0) && !std::isnan(padrao))
         *v = padrao, mudou = true;
-    Dica(dica);
+    Dica(cortado ? dicaRot.c_str() : dica);
     const bool foco = ImGui::IsItemHovered() || ImGui::IsItemActive();
     const float t = std::clamp((*v - a) / (b - a), 0.f, 1.f), xk = x0 + t * (x1 - x0), y = p0.y + alt * 0.5f;
     dl->AddRectFilled(ImVec2(x0 - raio * 0.5f, y - 2.5f * g_e), ImVec2(x1 + raio * 0.5f, y + 2.5f * g_e), alfa(kTrilho),
@@ -1169,6 +1192,32 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         AbaPerfis(e, a, lc);
     else
     {
+        // ---- jogo (escolher a janela sem o atalho): a primeira secao da aba ----
+        Secao("JOGO", false);
+        {
+            const char* atual = escolhida >= 0 ? janelas[escolhida].nome.c_str() : "(nenhuma)";
+            ImGui::SetNextItemWidth(lc);
+            if (ImGui::BeginCombo("##janela", atual))
+            {
+                for (int i = 0; i < int(janelas.size()); ++i)
+                    if (ImGui::Selectable(janelas[i].nome.c_str(), i == escolhida))
+                        escolhida = i;
+                ImGui::EndCombo();
+            }
+            if (ImGui::IsItemClicked())
+                AtualizaJanelas();
+            const float b3 = (lc - 16 * g_e) / 3;
+            if (Botao("Ligar", b3, true) && escolhida >= 0)
+                a.ligar = janelas[escolhida].h;
+            ImGui::SameLine(0, 8 * g_e);
+            if (Botao("Desligar", b3))
+                a.desligar = true;
+            ImGui::SameLine(0, 8 * g_e);
+            if (Botao("Atualizar", b3))
+                AtualizaJanelas();
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kTexto2), "Jogo em janela ou tela cheia sem borda.");
+        }
+
         // ---- predefinicoes ----
         Secao("PREDEFINIÇÕES");
         {
@@ -1183,6 +1232,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                 cfg.temporal.guarda = 16.f;
                 cfg.temporal.exposicao = 1.f;
                 cfg.forca = 1.f;
+                cfg.nitidez = 0.f; // a saida da NVIDIA nao tem nitidez extra
                 cfg.ponte = -1;
                 cfg.preLuz = cfg.preSombra = cfg.preCor = 0.f;
                 cfg.alturaRede = 2160; // a rede na resolucao da janela (abaixo da nativa e a maior perda: 1080 num 4K = 32,7 dB)
@@ -1193,8 +1243,8 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                 mc = true;
             }
             Dica("Os padroes da NVIDIA (Model A, tons e estruturas em 1, sem protecao de luz, sem ajustes antes da\n"
-                 "rede, branco de papel do Windows, rede na resolucao da janela). Medido contra a saida real da\n"
-                 "NVIDIA para a mesma imagem: 45,8 dB em 1080p e 47,4 dB em 4K, SDR e HDR (sem rede: 26-29 dB).\n"
+                 "rede, sem nitidez CAS, branco de papel do Windows, rede na resolucao da janela). Medido contra a\n"
+                 "saida real da NVIDIA para a mesma imagem: 45,8 dB em 1080p e 47,4 dB em 4K, SDR e HDR (sem rede: 26-29 dB).\n"
                  "A rede pequena e outro modelo (o rapido da NVIDIA): 36 dB em 4K, nao chega a 47 com nenhum ajuste.");
             ImGui::SameLine(0, 8 * g_e);
             if (Botao("Visual Zorah", b2))
@@ -1230,6 +1280,12 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         Deslizador("Intensidade", &cfg.ngx.intensidade, 0.f, 4.f, "%.3f",
                    "DLSSNR.Intensity: quanto da resposta da rede entra (acima de 1 reforca a luz).", 1.f);
         Deslizador("Força da edição", &cfg.forca, 0.f, 4.f, "%.3f", "Quanto da mudanca da rede entra no quadro (1 = a da rede).", 1.f);
+        Deslizador("Nitidez (CAS)", &cfg.nitidez, 0.f, 1.f, "%.2f",
+                   "Nitidez adaptativa ao contraste (o algoritmo do CAS da AMD FidelityFX) na imagem final, so no lado da\n"
+                   "rede: reforca o detalhe fraco e quase nao mexe nas bordas fortes (sem halo). 0 = desligada (padrao),\n"
+                   "1 = o maximo do CAS. Em HDR age acima do branco sem saturar. Na captura de buffer vai junto com a\n"
+                   "edicao que volta ao jogo. Original, a metade original da comparacao e os modos de diagnostico ficam\n"
+                   "sem nitidez. Custo: um passe 3x3 na resolucao da tela.", 0.f);
 
         {
             const char* modelos[] = {"Model A", "Model B", "Model C"};
@@ -1306,13 +1362,13 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                        "2,0 afastava 1,5-2 dB.", 16.f);
             ImGui::EndDisabled();
             // a decodificacao da propria NVIDIA (modo 1, no runtime): antes da composicao do overlay
-            Deslizador("Cor da rede (NVIDIA)", &cfg.corDecodificacao, 0.f, 1.f, "%.3f",
-                       "ColorStrength da decodificacao da NVIDIA: 0 = as cores do jogo com a luz da rede (o croma e a matiz\n"
-                       "vem do jogo; so o brilho muda), 1 = as cores da rede (padrao). Abaixo de 1 tira o tom que a rede\n"
-                       "puxa (o ciano com intensidade alta) sem perder a luz.", 1.f);
-            Deslizador("Força da decodificação (NVIDIA)", &cfg.forcaDecodificacao, 0.f, 1.f, "%.3f",
-                       "TransferStrength da decodificacao da NVIDIA: quanto do resultado da rede substitui o quadro na\n"
-                       "resposta (0 = o quadro original, 1 = padrao).", 1.f);
+            Deslizador("Cor NVIDIA", &cfg.corDecodificacao, 0.f, 1.f, "%.3f",
+                       "Cor da decodificacao da NVIDIA (ColorStrength): 0 = as cores do jogo com a luz da rede (o croma\n"
+                       "e a matiz vem do jogo; so o brilho muda), 1 = as cores da rede (padrao). Abaixo de 1 tira o tom\n"
+                       "que a rede puxa (o ciano com intensidade alta) sem perder a luz.", 1.f);
+            Deslizador("Força NVIDIA", &cfg.forcaDecodificacao, 0.f, 1.f, "%.3f",
+                       "Forca da decodificacao da NVIDIA (TransferStrength): quanto do resultado da rede substitui o\n"
+                       "quadro na resposta (0 = o quadro original, 1 = padrao).", 1.f);
 
             Secao("COR POR MATIZ (DEPOIS DA REDE)");
             {
@@ -1466,6 +1522,14 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                 Deslizador("Força do histórico", &cfg.forcaHistorico, 0.f, 1.f, "%.3f",
                            "Escala do peso que a propria rede da a resposta anterior (forca x 0,74 x a decisao da cabeca de\n"
                            "historico). 1 = o da rede; menor = menos rastro e mais cintilacao; 0 = sem historico.", 1.f);
+                Deslizador("Limite do histórico", &cfg.recorteHistorico, 0.f, 4.f, "%.2f",
+                           "A resposta anterior da rede so entra dentro da faixa que a propria rede da AGORA em volta do\n"
+                           "pixel: media +- este numero de desvios da saida crua no 3x3 (o recorte por variancia do TAA).\n"
+                           "Corta o rastro em degraus: o que a rede pinta em volta de um objeto em movimento ficava no fundo\n"
+                           "que passa atras dele (mesma cor e profundidade, as guardas aceitavam) e andava com esse fundo,\n"
+                           "uma copia por quadro da rede. Medido a cada pixel e quadro: vale em qualquer jogo e fps.\n"
+                           "Menor = menos rastro e um pouco mais de cintilacao; 0 = sem limite (como antes).\n"
+                           "Precisa do runtime e do adaptador deste branch recompilados.", 1.f);
                 ImGui::EndDisabled();
                 if (!e.historicoRede.empty())
                 {
@@ -1480,32 +1544,6 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             if (Marca("Ocultar de prints e gravações", &cfg.ocultaDeGravacoes,
                       "O overlay fica fora de prints, OBS e da propria Game Bar."))
                 a.ocultaMudou = true;
-        }
-
-        // ---- jogo (escolher a janela sem o atalho) ----
-        Secao("JOGO");
-        {
-            const char* atual = escolhida >= 0 ? janelas[escolhida].nome.c_str() : "(nenhuma)";
-            ImGui::SetNextItemWidth(lc);
-            if (ImGui::BeginCombo("##janela", atual))
-            {
-                for (int i = 0; i < int(janelas.size()); ++i)
-                    if (ImGui::Selectable(janelas[i].nome.c_str(), i == escolhida))
-                        escolhida = i;
-                ImGui::EndCombo();
-            }
-            if (ImGui::IsItemClicked())
-                AtualizaJanelas();
-            const float b3 = (lc - 16 * g_e) / 3;
-            if (Botao("Ligar", b3, true) && escolhida >= 0)
-                a.ligar = janelas[escolhida].h;
-            ImGui::SameLine(0, 8 * g_e);
-            if (Botao("Desligar", b3))
-                a.desligar = true;
-            ImGui::SameLine(0, 8 * g_e);
-            if (Botao("Atualizar", b3))
-                AtualizaJanelas();
-            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kTexto2), "Jogo em janela ou tela cheia sem borda.");
         }
     }
 

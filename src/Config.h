@@ -40,6 +40,7 @@ struct Config
     int alturaRede = 1080;  // altura em que a rede roda (720..2160); a largura segue a proporcao da janela
     bool redePequena = false; // a rede pequena da 310.9.16 (31 blocos, mais rapida) no lugar da grande (71 blocos)
     float forca = 1.f;      // quanto da edicao final entra no quadro (0..4)
+    float nitidez = 0.f;    // nitidez CAS depois da composicao, so no lado da rede (0 = desligada, 1 = o maximo do CAS)
     int ponte = -1;         // ponte do quadro para a rede: -1 auto (SDR direto, HDR SoftKnee), 0 direto, 1 SoftKnee, 2 ACES,
                             // 3 curva do jogo, 4 luz de cena direta (so o ombro do codificador da NVIDIA)
     float brancoNits = 0.f; // branco de papel em nits (0 = o branco SDR do Windows)
@@ -63,6 +64,7 @@ struct Config
                             // guias de movimento e profundidade do overlay), 2 baixa freq., 3 realce; vale ao reabrir
     float realceTemporal = 1.f; // forca do modo 3 (0..2)
     float forcaHistorico = 1.f; // modo 1: escala do peso que a cabeca de historico da rede decide (0..1; 1 = o da rede)
+    float recorteHistorico = 1.f; // modo 1: recorte do historico pela vizinhanca da saida crua, desvios (0 = sem recorte)
     // decodificacao da NVIDIA (modo 1, native_codec_decode.hlsl): 0..1, 1 = a resposta inteira da rede
     float corDecodificacao = 1.f;    // ColorStrength: 0 = as cores do jogo com a luz da rede (croma do jogo em OKLab)
     float forcaDecodificacao = 1.f;  // TransferStrength: quanto do resultado da rede substitui o quadro (0 = o original)
