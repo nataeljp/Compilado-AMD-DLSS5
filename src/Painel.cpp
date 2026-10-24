@@ -1116,6 +1116,23 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                    "2,0 afastava 1,5-2 dB.", 16.f);
         ImGui::EndDisabled();
 
+        Secao("COR POR MATIZ (DEPOIS DA REDE)");
+        {
+            const char* matizes[6] = {"Vermelho", "Amarelo", "Verde", "Ciano", "Azul", "Magenta"};
+            for (int i = 0; i < 6; ++i)
+            {
+                ImGui::PushID(300 + i);
+                Deslizador((std::string(matizes[i]) + ": saturação").c_str(), &cfg.matiz.sat[i], -1.f, 1.f, "%+.3f",
+                           "Saturacao desta faixa de cor no resultado: -1 = cinza, 0 = igual, +1 = o dobro.", 0.f);
+                Deslizador((std::string(matizes[i]) + ": brilho").c_str(), &cfg.matiz.luz[i], -1.f, 1.f, "%+.3f",
+                           "Brilho desta faixa de cor no resultado: -1 = apaga, +1 = o dobro. Cinza e branco nao\n"
+                           "mudam (o efeito pesa pela saturacao do pixel).", 0.f);
+                ImGui::PopID();
+            }
+            if (Botao("Zerar cores"))
+                cfg.matiz = CorMatiz{};
+        }
+
         Secao("PONTE HDR -> REDE");
         const char* pontes[] = {"Automatica (SDR direta, HDR SoftKnee)", "Direta", "SoftKnee", "ACES (RRT+ODT, RenoDX)",
                                 "Curva do jogo (luz de cena, SDR)", "Luz direta sem joelho (buffer ou HDR)"};

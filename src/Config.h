@@ -18,6 +18,20 @@ struct ParamsNgx
     bool gradacao = true;       // a gradacao final do Model B/C (exposicao, contraste, saturacao)
 };
 
+// cor por matiz depois da rede (seis eixos): -1..1, 0 = sem mudanca
+struct CorMatiz
+{
+    float sat[6] = {}; // vermelho, amarelo, verde, ciano, azul, magenta: -1 = cinza, +1 = o dobro de saturacao
+    float luz[6] = {}; // brilho de cada faixa: -1 = apaga, +1 = o dobro (pesa pelo croma: cinza e branco nao mudam)
+    bool Ativa() const
+    {
+        for (int i = 0; i < 6; ++i)
+            if (sat[i] != 0.f || luz[i] != 0.f)
+                return true;
+        return false;
+    }
+};
+
 struct Config
 {
     ParamsNgx ngx;
@@ -34,6 +48,7 @@ struct Config
     float preLimiar = 0.5f; // limiar em luma de tela (0..1) a partir do qual as luzes sobem
     float preLimiarSombra = 0.2f; // abaixo dele as sombras descem (preSombra > 0) ou sobem (< 0)
     float preCor = 0.f;     // antes da rede: saturacao (-1..2)
+    CorMatiz matiz;         // depois da rede: saturacao e brilho por matiz
     int modo = 0;           // 0 rede, 1 original, 2 comparacao, 3 so a edicao, 4 movimento
     int fonte = 0;          // Modo de Rede: 0 captura de video (WGC), 1 captura de buffer (cor sem HUD, profundidade e
                             // movimento do upscaler do proprio jogo, pela DLSS5Buffer.dll colocada no jogo aberto)

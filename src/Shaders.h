@@ -223,7 +223,10 @@ inline const char* Compoe = R"(
 cbuffer C : register(b0) { uint fw; uint fh; uint dw; uint dh; float forca; uint modo; float divisao; uint usaEdicao;
                            uint hdr; float escala; float kExp; float kCon; float kSat; uint grada; uint filmica; uint sanduiche;
                            float preLuz; float preSombra; float preLimiar; float preLimiarSombra; float preCor; uint pad2;
-                           uint pad3; uint pad4; };
+                           uint pad3; uint pad4;
+                           float satR; float satY; float satG; float satC; float satB; float satM;
+                           float luzR; float luzY; float luzG; float luzC; float luzB; float luzM;
+                           uint usaMatiz; uint padM0; uint padM1; uint padM2; };
 Texture2D<float4> inteiro : register(t0);
 Texture2D<float4> fed : register(t1);
 Texture2D<float4> edicao : register(t2);
@@ -285,6 +288,33 @@ float3 Tela(float3 lin, bool grade, float folga)
     return SoftKneeInv(Linear(c)) * escala;
 }
 
+// cor por matiz depois da rede, em seis eixos (0 vermelho, 1 amarelo, 2 verde, 3 ciano, 4 azul, 5 magenta): saturacao e
+// brilho de cada faixa. Os pesos sao triangulos entre eixos vizinhos (somam 1), e o brilho pesa pelo croma: cinza e
+// branco nao mudam.
+float3 CorPorMatiz(float3 c)
+{
+    c = max(c, 0.0);
+    const float mx = Max3(c), d = mx - Min3(c);
+    if (d <= 1e-6 * max(mx, 1e-6)) return c;
+    float h = mx == c.r ? (c.g - c.b) / d : (mx == c.g ? 2.0 + (c.b - c.r) / d : 4.0 + (c.r - c.g) / d);
+    h = h < 0.0 ? h + 6.0 : h;
+    const float sat[6] = {satR, satY, satG, satC, satB, satM};
+    const float luz[6] = {luzR, luzY, luzG, luzC, luzB, luzM};
+    float s = 0, l = 0;
+    [unroll] for (int k = 0; k < 6; ++k)
+    {
+        float dist = abs(h - k);
+        dist = min(dist, 6.0 - dist);
+        const float w = saturate(1.0 - dist);
+        s += w * sat[k];
+        l += w * luz[k];
+    }
+    const float Y = Lum(c);
+    c = Y + (c - Y) * max(1.0 + s, 0.0);
+    c *= max(1.0 + l * (d / max(mx, 1e-6)), 0.0);
+    return max(c, 0.0);
+}
+
 [numthreads(8, 8, 1)] void CSCompoe(uint2 p : SV_DispatchThreadID)
 {
     if (p.x >= fw || p.y >= fh) return;
@@ -301,6 +331,7 @@ float3 Tela(float3 lin, bool grade, float folga)
     // o resultado parte do quadro com o mesmo ajuste que a rede viu; o lado "original" fica intacto
     float3 r = PreAjuste(o, TelaDe(o, hdr != 0 && sanduiche == 0, filmica != 0), preLuz, preSombra, preLimiar, preLimiarSombra, preCor) +
                forca * e;
+    if (usaMatiz) r = CorPorMatiz(r);
     bool orig = modo == 1 || (modo == 2 && (float)p.x < divisao * fw);
     float3 c = orig ? Tela(o, false, oi.a) : Tela(r, grada != 0, oi.a);
     float hs = hdr ? escala : 1.0;

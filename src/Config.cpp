@@ -6,6 +6,9 @@
 
 namespace ov {
 
+// nomes das chaves de cor por matiz no config.json (matizVermelhoSat, matizVermelhoLuz, ...)
+static const char* const kNomesMatiz[6] = {"Vermelho", "Amarelo", "Verde", "Ciano", "Azul", "Magenta"};
+
 ParamsRede Config::Rede() const
 {
     ParamsRede r = rede;
@@ -84,6 +87,11 @@ void Config::Carrega(const std::wstring& arquivo)
     F("preLimiar", preLimiar);
     F("preLimiarSombra", preLimiarSombra);
     F("preCor", preCor);
+    for (int i = 0; i < 6; ++i)
+    {
+        F((std::string("matiz") + kNomesMatiz[i] + "Sat").c_str(), matiz.sat[i]);
+        F((std::string("matiz") + kNomesMatiz[i] + "Luz").c_str(), matiz.luz[i]);
+    }
     I("modo", modo);
     B("movimento", movimento);
     B("usaConfianca", usaConfianca);
@@ -132,6 +140,11 @@ void Config::Salva(const std::wstring& arquivo) const
     f << "  \"preLimiar\": " << preLimiar << ",\n";
     f << "  \"preLimiarSombra\": " << preLimiarSombra << ",\n";
     f << "  \"preCor\": " << preCor << ",\n";
+    for (int i = 0; i < 6; ++i)
+    {
+        f << "  \"matiz" << kNomesMatiz[i] << "Sat\": " << matiz.sat[i] << ",\n";
+        f << "  \"matiz" << kNomesMatiz[i] << "Luz\": " << matiz.luz[i] << ",\n";
+    }
     f << "  \"modo\": " << modo << ",\n";
     f << "  \"movimento\": " << b(movimento) << ",\n";
     f << "  \"usaConfianca\": " << b(usaConfianca) << ",\n";

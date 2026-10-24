@@ -205,7 +205,7 @@ struct App
         const std::string compoe = std::string(hlsl::Comum) + hlsl::Compoe;
         pInteiro.Cria(gpu.dev.Get(), prepara.c_str(), "CSInteiro", 1, 1, 16, "inteiro");
         pReduz.Cria(gpu.dev.Get(), prepara.c_str(), "CSReduz", 1, 2, 16, "reduz");
-        pCompoe.Cria(gpu.dev.Get(), compoe.c_str(), "CSCompoe", 4, 1, 24, "compoe");
+        pCompoe.Cria(gpu.dev.Get(), compoe.c_str(), "CSCompoe", 4, 1, 40, "compoe");
         pExporta.Cria(gpu.dev.Get(), (std::string(hlsl::Comum) + hlsl::Exporta).c_str(), "CSExporta", 3, 1, 12,
                       "edicao para o jogo");
         fluxo.Cria(gpu.dev.Get());
@@ -1050,10 +1050,18 @@ struct App
             UINT grada, filmica, pad1;
             float preLuz, preSombra, preLimiar, preLimiarSombra, preCor;
             UINT pad2, pad3, pad4;
+            float satMatiz[6], luzMatiz[6];
+            UINT usaMatiz, padM0, padM1, padM2;
         } kc{inteiro.w,      inteiro.h,      fed.w, fed.h, edicao ? cfg.forca : 0.f, (UINT)cfg.modo, cfg.divisao,
              edicao ? 1u : 0u, hdr ? 1u : 0u, escalaUsada, kExp, kCon, kSat, grada ? 1u : 0u,
              pontePassada == 3 ? 1u : 0u, (hdr && pontePassada == 1) ? 1u : 0u, cfg.preLuz, cfg.preSombra, cfg.preLimiar, cfg.preLimiarSombra, cfg.preCor,
-             0, 0, 0};
+             0, 0, 0, {}, {}, cfg.matiz.Ativa() ? 1u : 0u, 0, 0, 0};
+        static_assert(sizeof(kc) == 40 * 4, "constantes: o mesmo layout do cbuffer do CSCompoe");
+        for (int i = 0; i < 6; ++i)
+        {
+            kc.satMatiz[i] = std::clamp(cfg.matiz.sat[i], -1.f, 1.f);
+            kc.luzMatiz[i] = std::clamp(cfg.matiz.luz[i], -1.f, 1.f);
+        }
         pCompoe.Roda(c, desc, gpu.dev.Get(),
                      {{inteiro.r.Get(), inteiro.fmt},
                       {fed.r.Get(), fed.fmt},
