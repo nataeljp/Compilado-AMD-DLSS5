@@ -127,6 +127,7 @@ struct App
     int alternaAltura = 0; // --alterna 720: modo imagem troca a altura da rede a cada 4 quadros e registra cada quadro
     int trocaRedeNoQuadro = -1; // --troca-rede N: modo imagem troca grande <-> pequena no quadro N (teste da troca ao vivo)
     bool redePequenaAtiva = false;
+    bool vitAdaptativo = false; // reuso adaptativo do ViT ligado no ambiente do runtime (so muda ao reabrir o programa)
     std::wstring PastaRede() const { return pastaRuntime.empty() ? pasta + L"\\runtime" : pastaRuntime; }
     // A rede da sessao: tamanho, rede grande ou pequena, passes e rede completa valem do Liga ate o proximo Liga; mudar
     // no painel vale ao religar. Durante o jogo nada disso muda: cada tamanho novo de rede prende buffers que o driver
@@ -223,6 +224,7 @@ struct App
         {
             // reuso adaptativo do ViT (lmxxf): o runtime le uma vez, ao criar a rede
             SetEnvironmentVariableW(L"DLSS5_VIT_ADAPTIVE", L"1");
+            vitAdaptativo = true;
             SetEnvironmentVariableW(L"DLSS5_VIT_REUSE_PERIOD", L"4");
             SetEnvironmentVariableW(L"DLSS5_HIP_GRAPH", L"0");
             SetEnvironmentVariableW(L"DLSS5_HIP_VIT_BYTE_STREAM", L"0");
@@ -759,6 +761,10 @@ struct App
     }
 
     // ---- profundidade da rede: niveis de blocos residuais pulados (do mais barato de perder ao mais caro) ----
+    // 0 = 71 blocos, 1 = 68, 2 = 63, 3 = 55, 4 = 47. O runtime (SetDynamicSkip) recusa 31..38 com o reuso adaptativo
+    // do ViT e exige um bloco vivo em cada cadeia C32 (1..4, 66..69); o adaptador aceita a lista e so a reenvia, entao
+    // um nivel recusado nao avisa: o teto fica aqui.
+    int NivelMaximo() const { return vitAdaptativo ? 3 : 4; }
     static std::vector<uint32_t> BlocosDoNivel(int n)
     {
         std::vector<uint32_t> v;
@@ -771,8 +777,6 @@ struct App
             faixa(23, 30);
         if (n >= 4)
             faixa(31, 38);
-        if (n >= 5)
-            faixa(1, 4), faixa(66, 69);
         return v;
     }
     int nivelAtual = -1, nivelAlvo = 0, quadrosNoNivel = 0;
@@ -788,13 +792,13 @@ struct App
             nivelAtual = 99;
             return;
         }
-        int alvo = std::clamp(cfg.profundidade, 0, 5);
+        int alvo = std::clamp(cfg.profundidade, 0, NivelMaximo());
         if (cfg.profundidadeAuto && temMov && estat.valida)
         {
             // velocidade em pixels de uma rede de 1080 linhas
             const float v = estat.velocidade * 1080.f / float(std::max(1u, fed.h));
             const int pelaVelocidade = v < 3.f ? 0 : v < 8.f ? 1 : v < 16.f ? 2 : v < 32.f ? 3 : v < 64.f ? 4 : 5;
-            alvo = std::min(std::max(alvo, pelaVelocidade), std::clamp(cfg.profundidadeMax, 0, 5));
+            alvo = std::min(std::max(alvo, pelaVelocidade), std::clamp(cfg.profundidadeMax, 0, NivelMaximo()));
         }
         // histerese: fica mais raso na hora; volta a fundo so depois de 8 quadros no mesmo nivel pedido
         if (alvo != nivelAlvo)
@@ -1336,6 +1340,7 @@ struct App
             e.completaSessao = sessao.redeCompleta;
         }
         e.memoria = memoriaTexto;
+        e.vitAdaptativo = vitAdaptativo;
         e.avisoMemoria = emergenciaMemoria;
         e.exe = Utf8(exeAlvo);
         painel.DicaBandeja(Ligado() && !exeAlvo.empty() ? L"DLSS 5 Overlay - " + exeAlvo : L"DLSS 5 Overlay - sem jogo");

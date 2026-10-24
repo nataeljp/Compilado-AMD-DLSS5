@@ -1059,6 +1059,23 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         Dica("Grande: a do DLSS 5 (71 blocos), a mais fiel a NVIDIA. Pequena: a rapida que a NVIDIA traz no DLSS\n"
              "310.9.16 (31 blocos): mais leve, mais diferente (36 dB contra 47 da grande em 4K). Vale ao religar:\n"
              "a troca recarrega os pesos com a GPU parada.");
+        ImGui::BeginDisabled(cfg.redePequena);
+        {
+            const char* blocos[] = {cfg.rede.redeCompleta ? "71" : "68", "68", "63", "55", "47"};
+            const int nNiveis = e.vitAdaptativo ? 4 : 5;
+            int nivel = std::clamp(cfg.profundidade, 0, nNiveis - 1);
+            if (Segmentos("blocos", blocos, nNiveis, &nivel, 30 * g_e))
+                cfg.profundidade = nivel;
+        }
+        ImGui::EndDisabled();
+        Dica("Blocos da rede grande que rodam (a pequena tem os dela). Os que saem sao blocos residuais\n"
+             "(saida = entrada + correcao), os unicos que o runtime aceita pular; a entrada, a saida e os que\n"
+             "reduzem ou ampliam a imagem ficam sempre.\n"
+             "68: sem 42/43/46 (~1 ms). 63: sem o estagio mais fundo depois do ViT (40-47). 55: e sem o mais\n"
+             "fundo antes dele (23-30). 47: e sem o ViT (31-38); so aparece com o reuso adaptativo do ViT\n"
+             "desligado, que o runtime exige para pular esses.\n"
+             "Menos blocos = mais rapido e mais longe da NVIDIA. Nao vira a rede pequena: ela tem pesos proprios,\n"
+             "treinados para 31 blocos. Muda na hora, sem recarregar a rede.");
         const int alturas[] = {720, 1080, 1440, 2160};
         const char* nomes[] = {"720p", "1080p", "1440p", "Nativa"};
         int ia = -1;

@@ -161,6 +161,7 @@ Os parâmetros do DLSS 5 seguem os nomes que a NVIDIA expõe no NGX (os mesmos d
 | `alturaRede` | 720..2160 | altura em que a rede roda (limitada pela janela); vale ao religar |
 | `redeCompleta` | true/false | os 71 blocos (camadas) da rede; false pula 42/43/46 (~1 ms); vale ao religar |
 | `passes` | 1..3 | quantas vezes a rede inteira roda por quadro (1 = normal); vale ao religar |
+| `profundidade` | 0..4 | blocos da rede grande: 0 = 71, 1 = 68 (sem 42/43/46), 2 = 63 (sem 40–47), 3 = 55 (e sem 23–30), 4 = 47 (e sem o ViT 31–38; só com `reusoVit` desligado). Só blocos residuais saem; muda na hora. Não se aplica à rede pequena, que é outro modelo |
 | `movimento`, `usaConfianca` | true/false | movimento simulado por fluxo óptico; descartar o acúmulo onde ida e volta não conferem |
 | `estabilidade`, `rejeicao` | 1..16, 2..40 | quadros que a edição acumula; quão rápido mudança de cor derruba o acúmulo |
 | `mediaMovimento` | 0..32 px | captura de buffer: a média cai pela metade a cada tantos px/quadro de movimento (padrão 8; 0 = fixa) |
