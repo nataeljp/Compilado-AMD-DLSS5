@@ -62,6 +62,10 @@ struct Config
     int temporalRede = 0;   // historico da propria rede (runtime lmxxf DLSS5_TEMPORAL_MODE): 0 desligado, 1 historico (com as
                             // guias de movimento e profundidade do overlay), 2 baixa freq., 3 realce; vale ao reabrir
     float realceTemporal = 1.f; // forca do modo 3 (0..2)
+    float forcaHistorico = 1.f; // modo 1: escala do peso que a cabeca de historico da rede decide (0..1; 1 = o da rede)
+    // decodificacao da NVIDIA (modo 1, native_codec_decode.hlsl): 0..1, 1 = a resposta inteira da rede
+    float corDecodificacao = 1.f;    // ColorStrength: 0 = as cores do jogo com a luz da rede (croma do jogo em OKLab)
+    float forcaDecodificacao = 1.f;  // TransferStrength: quanto do resultado da rede substitui o quadro (0 = o original)
     bool reusoVit = true;   // reuso adaptativo do ViT do lmxxf (com perda pequena; vale ao reabrir o programa)
     float divisao = 0.5f;   // posicao da divisao no modo comparacao
     int fpsMax = 60;        // teto de quadros processados por segundo (0 = sem teto)
@@ -71,6 +75,7 @@ struct Config
     ParamsRede Rede() const;
     void Carrega(const std::wstring& arquivo);
     void Salva(const std::wstring& arquivo) const;
+    std::string Texto() const; // o JSON que Salva grava (comparar dois Config: os mesmos ajustes = o mesmo texto)
 };
 
 } // namespace ov

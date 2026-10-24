@@ -23,6 +23,8 @@ struct ParamsTemporal
     float guarda = 16.f;      // protecao bilateral: a luz muda no maximo esse fator (16 = desligada; medido contra a
                               // saida real da NVIDIA, 2,0 custava 1,5-2 dB)
     float exposicao = 1.f;    // ganho do quadro antes da rede (ponto de operacao); desfeito na composicao
+    bool vizinhos = true;     // captura de video: onde a reprojecao nao confere, a edicao dos vizinhos de cor parecida
+                              // (false = so a grade bilateral, como antes)
 };
 
 class Temporal

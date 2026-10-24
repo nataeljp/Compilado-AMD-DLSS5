@@ -727,6 +727,237 @@ void Painel::AtualizaJanelas()
     escolhida = janelas.empty() ? -1 : std::clamp(escolhida, 0, int(janelas.size()) - 1);
 }
 
+// aba PERFIS: os perfis do exe ligado (bin\perfis\<exe>\<nome>.json) e o padrao do programa (config.json). Apagar,
+// sobrescrever e carregar por cima de alteracoes nao salvas pedem confirmacao.
+void Painel::AbaPerfis(const EstadoPainel& e, AcoesPainel& a, float lc)
+{
+    const ImVec4 cinza = ImGui::ColorConvertU32ToFloat4(kTexto2), amarelo(1, 0.78f, 0.3f, 1);
+    const float b2 = (lc - 8 * g_e) / 2, b3 = (lc - 16 * g_e) / 3;
+    auto pede = [&](int qual, const std::string& nome) {
+        confirma = qual;
+        confirmaNome = nome;
+        abreConfirma = true;
+    };
+
+    Secao("EM USO", false);
+    ImGui::PushTextWrapPos(0.f);
+    if (e.semDestino)
+        ImGui::TextColored(amarelo, "Ajustes do perfil apagado: não são gravados ao sair (salve como novo para guardar).");
+    else
+    {
+        ImGui::Text("%s", e.perfilAtivo.empty() ? "Padrão do programa (config.json)" : e.perfilAtivo.c_str());
+        if (e.perfilAlterado)
+        {
+            ImGui::SameLine();
+            ImGui::TextColored(amarelo, "·  alterado");
+        }
+    }
+    ImGui::TextColored(cinza, "Ao sair do programa ou trocar de jogo, os ajustes são gravados no que está em uso.");
+    ImGui::PopTextWrapPos();
+
+    if (e.exe.empty())
+    {
+        Secao("PERFIS DO JOGO");
+        ImGui::PushTextWrapPos(0.f);
+        ImGui::TextColored(cinza, "Ligue um jogo (Ctrl+Shift+D com ele em foco, ou JOGO na aba DLSS 5) para ver, salvar e "
+                                  "carregar os perfis dele.");
+        ImGui::PopTextWrapPos();
+    }
+    else
+    {
+        // nome do jogo: o exe nem sempre tem o nome dele (tlou-ii.exe); a sugestao e o titulo da janela
+        if (exeNomeJogo != e.exe)
+        {
+            exeNomeJogo = e.exe;
+            snprintf(nomeJogo, sizeof nomeJogo, "%s", e.nomeJogo.c_str());
+        }
+        const std::string titulo = Utf8(e.alvo);
+        Secao("JOGO");
+        ImGui::TextColored(cinza, "%s", e.exe.c_str());
+        ImGui::SetNextItemWidth(lc);
+        ImGui::InputTextWithHint("##jogo", titulo.empty() ? "nome do jogo" : titulo.c_str(), nomeJogo, sizeof nomeJogo);
+        Dica("Nome do jogo para este exe (aparece no titulo da lista). Digitar precisa do painel com o foco do teclado.");
+        if (Botao("Salvar nome", b2))
+        {
+            a.nomeJogoMuda = true;
+            a.nomeJogo = nomeJogo;
+        }
+        ImGui::SameLine(0, 8 * g_e);
+        ImGui::BeginDisabled(titulo.empty());
+        if (Botao("Usar o título da janela", b2))
+        {
+            snprintf(nomeJogo, sizeof nomeJogo, "%s", titulo.c_str());
+            a.nomeJogoMuda = true;
+            a.nomeJogo = nomeJogo;
+        }
+        ImGui::EndDisabled();
+
+        Secao(("PERFIS DE " + (e.nomeJogo.empty() ? e.exe : e.nomeJogo)).c_str());
+        if (std::find(e.perfis.begin(), e.perfis.end(), perfilSel) == e.perfis.end())
+            perfilSel = std::find(e.perfis.begin(), e.perfis.end(), e.perfilAtivo) != e.perfis.end()
+                            ? e.perfilAtivo
+                            : (e.perfis.empty() ? std::string() : e.perfis.front());
+        // com alteracoes nao salvas, ou com os ajustes do perfil apagado (so na memoria), pergunta antes
+        auto carrega = [&](const std::string& n) {
+            if (e.perfilAlterado || e.semDestino)
+                pede(2, n);
+            else
+                a.perfilCarregar = n;
+        };
+        if (e.perfis.empty())
+            ImGui::TextColored(cinza, "Nenhum perfil salvo para este jogo.");
+        else
+        {
+            const float alt = float(std::min<size_t>(e.perfis.size(), 6)) * ImGui::GetTextLineHeightWithSpacing() +
+                              ImGui::GetStyle().WindowPadding.y * 2;
+            ImGui::BeginChild("##perfis", ImVec2(lc, alt), ImGuiChildFlags_Borders);
+            for (const auto& n : e.perfis)
+            {
+                std::string rot = n;
+                if (n == e.perfilAtivo)
+                    rot += "   · em uso";
+                if (n == e.perfilAoLigar)
+                    rot += "   · ao ligar";
+                if (ImGui::Selectable((rot + "##" + n).c_str(), n == perfilSel))
+                    perfilSel = n;
+                if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0))
+                    carrega(n);
+            }
+            ImGui::EndChild();
+        }
+        ImGui::BeginDisabled(perfilSel.empty());
+        if (Botao("Carregar", b3, true))
+            carrega(perfilSel);
+        Dica("Carrega o perfil escolhido (duplo clique na lista faz o mesmo). Tamanho e rede valem ao religar.");
+        ImGui::SameLine(0, 8 * g_e);
+        if (Botao("Apagar", b3))
+            pede(1, perfilSel);
+        ImGui::SameLine(0, 8 * g_e);
+        const bool aoLigar = !perfilSel.empty() && perfilSel == e.perfilAoLigar;
+        if (Botao(aoLigar ? "Não ao ligar" : "Usar ao ligar", b3))
+        {
+            a.perfilAoLigarMuda = true;
+            a.perfilAoLigar = aoLigar ? std::string() : perfilSel;
+        }
+        Dica("O perfil marcado 'ao ligar' carrega sozinho quando o overlay liga neste jogo (vindo de outro jogo ou ao\n"
+             "abrir o programa). Religar o mesmo jogo mantem os ajustes da tela.");
+        ImGui::EndDisabled();
+
+        Secao("SALVAR");
+        ImGui::SetNextItemWidth(lc);
+        ImGui::InputTextWithHint("##nome", e.nomeLivre.c_str(), nomePerfil, sizeof nomePerfil);
+        Dica("Nome do perfil novo (ou o novo nome ao renomear); vazio = o sugerido. Digitar precisa do painel com o foco\n"
+             "do teclado: com o jogo em foco as teclas vao para o jogo (abra o painel pela bandeja ou com o jogo fora de\n"
+             "foco).");
+        if (Botao("Salvar como novo", b2, true))
+        {
+            const std::string n = nomePerfil[0] ? std::string(nomePerfil) : e.nomeLivre;
+            if (std::find(e.perfis.begin(), e.perfis.end(), n) != e.perfis.end())
+                pede(4, n);
+            else if (!n.empty())
+            {
+                a.perfilSalvarComo = n;
+                perfilSel = n;
+                nomePerfil[0] = 0;
+            }
+        }
+        ImGui::SameLine(0, 8 * g_e);
+        const std::string novoNome = nomePerfil;
+        const bool nomeLivre = !novoNome.empty() && std::find(e.perfis.begin(), e.perfis.end(), novoNome) == e.perfis.end();
+        ImGui::BeginDisabled(perfilSel.empty() || !nomeLivre);
+        if (Botao("Renomear", b2))
+        {
+            a.perfilRenomear = perfilSel;
+            a.perfilNovoNome = novoNome;
+            perfilSel = novoNome;
+            nomePerfil[0] = 0;
+        }
+        ImGui::EndDisabled();
+        Dica("Troca o nome do perfil escolhido na lista pelo nome digitado (que ainda nao pode existir).");
+        ImGui::BeginDisabled(e.perfilAtivo.empty());
+        if (Botao("Salvar no perfil em uso", lc))
+            a.perfilSalvar = true;
+        Dica("Grava os ajustes atuais por cima do perfil em uso.");
+        ImGui::EndDisabled();
+    }
+
+    Secao("PADRÃO DO PROGRAMA");
+    if (Botao("Carregar padrão", b3))
+    {
+        if (e.perfilAlterado || e.semDestino)
+            pede(3, std::string());
+        else
+            a.carregarPadrao = true;
+    }
+    Dica("Os ajustes de config.json (o de quem nao tem perfil); ele passa a ser o que esta em uso.");
+    ImGui::SameLine(0, 8 * g_e);
+    if (Botao("Salvar padrão", b3))
+        a.salvar = true;
+    Dica("Grava os ajustes atuais em config.json. Com um perfil em uso, ele continua sendo o destino ao sair.");
+    ImGui::SameLine(0, 8 * g_e);
+    if (Botao("Redefinir", b3))
+        a.redefinir = true;
+    Dica("Volta os ajustes aos padroes de fabrica do programa (nada e gravado ate salvar, sair ou trocar de jogo).");
+
+    // confirmacoes
+    if (abreConfirma)
+    {
+        ImGui::OpenPopup("Confirmar");
+        abreConfirma = false;
+    }
+    ImGui::SetNextWindowSize(ImVec2(lc, 0));
+    if (ImGui::BeginPopupModal("Confirmar", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove))
+    {
+        const float lb = ImGui::GetContentRegionAvail().x;
+        const char* alvo = confirmaNome.empty() ? "o padrão do programa" : confirmaNome.c_str();
+        ImGui::PushTextWrapPos(0.f);
+        if (confirma == 1)
+            ImGui::Text("Apagar o perfil \"%s\"? Não dá para desfazer.", confirmaNome.c_str());
+        else if (confirma == 4)
+            ImGui::Text("Já existe o perfil \"%s\". Gravar os ajustes atuais por cima dele?", confirmaNome.c_str());
+        else
+            ImGui::Text("%s Carregar %s%s%s mesmo assim?",
+                        e.semDestino ? "Os ajustes em uso são do perfil apagado (só na memória)."
+                                     : "Os ajustes em uso têm alterações não salvas.",
+                        confirmaNome.empty() ? "" : "\"", alvo, confirmaNome.empty() ? "" : "\"");
+        ImGui::PopTextWrapPos();
+        bool fecha = false;
+        if (confirma == 1 && Botao("Apagar", lb))
+            a.perfilApagar = confirmaNome, fecha = true;
+        if (confirma == 4 && Botao("Gravar por cima", lb, true))
+            a.perfilSalvarComo = confirmaNome, perfilSel = confirmaNome, nomePerfil[0] = 0, fecha = true;
+        if (confirma == 2 || confirma == 3)
+        {
+            // salvar primeiro: o app trata o salvar antes do carregar (sem destino: salvar como novo pela lista)
+            if (!e.semDestino && Botao(e.perfilAtivo.empty() ? "Salvar no padrão e carregar" : "Salvar e carregar", lb, true))
+            {
+                if (e.perfilAtivo.empty())
+                    a.salvar = true;
+                else
+                    a.perfilSalvar = true;
+                fecha = true;
+            }
+            if (Botao("Descartar e carregar", lb))
+                fecha = true;
+            if (fecha)
+            {
+                if (confirma == 2)
+                    a.perfilCarregar = confirmaNome;
+                else
+                    a.carregarPadrao = true;
+            }
+        }
+        if (Botao("Cancelar", lb))
+            fecha = true;
+        if (fecha)
+        {
+            confirma = 0;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+}
+
 AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
 {
     AcoesPainel a;
@@ -862,17 +1093,25 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
     const float larg = ImGui::GetContentRegionAvail().x;
     bool mc = false; // mudou algo que a rede ve: o historico recomeca
 
-    // ---- cabecalho: DLSS 5, fechar, estado ----
+    // ---- cabecalho: abas DLSS 5 | PERFIS, fechar, estado ----
     {
         const ImVec2 p = ImGui::GetCursorScreenPos();
-        dl->AddText(g_texto, g_tTitulo, p, kTexto, "DLSS 5");
-        const float tw = g_texto->CalcTextSizeA(g_tTitulo, FLT_MAX, 0, "DLSS 5").x;
-        float x = p.x + tw + 12 * g_e;
-        const char* sub = "CONTROLES";
-        for (const char* c = sub; *c; ++c)
+        const char* abas[] = {"DLSS 5", "PERFIS"};
+        float x = p.x;
+        for (int i = 0; i < 2; ++i)
         {
-            dl->AddText(g_secao, g_tSecao, ImVec2(x, p.y + g_tTitulo - g_tSecao - 4 * g_e), kTexto2, c, c + 1);
-            x += g_secao->CalcTextSizeA(g_tSecao, FLT_MAX, 0, c, c + 1).x + 1.8f * g_e;
+            const float tw = g_texto->CalcTextSizeA(g_tTitulo, FLT_MAX, 0, abas[i]).x;
+            ImGui::SetCursorScreenPos(ImVec2(x, p.y));
+            ImGui::PushID(i);
+            if (ImGui::InvisibleButton("##aba", ImVec2(tw, g_tTitulo + 8 * g_e)))
+                aba = i;
+            const bool hov = ImGui::IsItemHovered();
+            ImGui::PopID();
+            dl->AddText(g_texto, g_tTitulo, ImVec2(x, p.y), aba == i ? kTexto : (hov ? kTexto : kTexto2), abas[i]);
+            if (aba == i)
+                dl->AddRectFilled(ImVec2(x, p.y + g_tTitulo + 4 * g_e), ImVec2(x + tw, p.y + g_tTitulo + 7 * g_e), kVerde,
+                                  1.5f * g_e);
+            x += tw + 24 * g_e;
         }
         ImGui::SetCursorScreenPos(ImVec2(p.x + larg - 28 * g_e, p.y));
         if (ImGui::InvisibleButton("##fecha", ImVec2(28 * g_e, 28 * g_e)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false))
@@ -882,15 +1121,16 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         dl->AddLine(ImVec2(c.x - 6 * g_e, c.y - 6 * g_e), ImVec2(c.x + 6 * g_e, c.y + 6 * g_e), cx, 1.8f * g_e);
         dl->AddLine(ImVec2(c.x - 6 * g_e, c.y + 6 * g_e), ImVec2(c.x + 6 * g_e, c.y - 6 * g_e), cx, 1.8f * g_e);
         Dica("Esconde o painel e devolve o jogo (Esc; Ctrl+Shift+P mostra de novo)");
+        ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + g_tTitulo + 14 * g_e));
+        ImGui::Dummy(ImVec2(0, 0));
         if (gancho.Ligado())
         {
-            // aviso discreto ao lado do titulo: o jogo continua em foco e o mouse esta no painel
-            const char* t = "jogo em foco  ·  Esc devolve o mouse";
-            const float tw2 = g_texto->CalcTextSizeA(g_tSecao, FLT_MAX, 0, t).x;
-            dl->AddText(g_texto, g_tSecao, ImVec2(p.x + larg - 36 * g_e - tw2, p.y + g_tTitulo - g_tSecao - 4 * g_e), kVerde, t);
+            // o jogo continua em foco e o mouse esta no painel: aviso numa linha propria (ao lado das abas ele cobria
+            // o titulo em paineis estreitos)
+            const ImVec2 q = ImGui::GetCursorScreenPos();
+            dl->AddText(g_texto, g_tSecao, q, kVerde, "jogo em foco  ·  Esc devolve o mouse");
+            ImGui::Dummy(ImVec2(0, g_tSecao + 4 * g_e));
         }
-        ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + g_tTitulo + 10 * g_e));
-        ImGui::Dummy(ImVec2(0, 0));
         if (e.alvo.empty())
             ImGui::TextColored(ImVec4(1, 0.78f, 0.3f, 1), "Nenhum jogo  ·  Ctrl+Shift+D com o jogo em foco");
         else
@@ -925,346 +1165,341 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
     ImGui::PushFont(g_texto, g_tTexto);
     const float lc = ImGui::GetContentRegionAvail().x;
 
-    // ---- perfil do jogo ----
-    if (!e.exe.empty())
+    if (aba == 1)
+        AbaPerfis(e, a, lc);
+    else
     {
-        Secao("PERFIL DO JOGO");
-        ImGui::Text("%s", e.exe.c_str());
-        ImGui::SameLine();
-        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(e.perfilCarregado ? kVerde : kTexto2), "%s",
-                           e.perfilCarregado ? "perfil carregado" : (e.perfilExiste ? "perfil salvo" : "sem perfil"));
-        const float b3 = (lc - 16 * g_e) / 3;
-        if (Botao("Salvar perfil", b3, true))
-            a.salvarPerfil = true;
-        Dica("Grava estes ajustes para este exe: carregam sozinhos quando o overlay ligar neste jogo de novo.");
-        ImGui::SameLine(0, 8 * g_e);
-        ImGui::BeginDisabled(!e.perfilExiste);
-        if (Botao("Apagar perfil", b3))
-            a.apagarPerfil = true;
-        ImGui::EndDisabled();
-        ImGui::SameLine(0, 8 * g_e);
-        if (Botao("Redefinir", b3))
-            a.redefinir = true;
-        Dica("Volta todos os ajustes aos padroes do programa (o perfil salvo so muda se voce salvar).");
-    }
-
-    // ---- predefinicoes ----
-    Secao("PREDEFINIÇÕES");
-    {
-        const float b2 = (lc - 8 * g_e) / 2;
-        if (Botao("Padrão NVIDIA", b2))
+        // ---- predefinicoes ----
+        Secao("PREDEFINIÇÕES");
         {
-            // medido contra a saida REAL da NVIDIA (RTX 5090, mesma entrada; ferramentas/compara_ref.py):
-            // 45,8 / 45,3 / 47,4 dB em 1080p / 1440p / 4K, edicao com correlacao 0,99
-            cfg.ngx = ParamsNgx{};
-            cfg.temporal.composicao = 1;
-            cfg.temporal.cor = 1.f;
-            cfg.temporal.guarda = 16.f;
-            cfg.temporal.exposicao = 1.f;
-            cfg.forca = 1.f;
-            cfg.ponte = -1;
-            cfg.preLuz = cfg.preSombra = cfg.preCor = 0.f;
-            cfg.alturaRede = 2160; // a rede na resolucao da janela (abaixo da nativa e a maior perda: 1080 num 4K = 32,7 dB)
-            cfg.brancoNits = 0.f;  // branco de papel do Windows: 79 nits num monitor de 240 custava 13 dB em HDR
-            cfg.rede.redeCompleta = true;
-            cfg.rede.passes = 1;
-            cfg.profundidade = 0; // os 71 blocos
-            mc = true;
-        }
-        Dica("Os padroes da NVIDIA (Model A, tons e estruturas em 1, sem protecao de luz, sem ajustes antes da\n"
-             "rede, branco de papel do Windows, rede na resolucao da janela). Medido contra a saida real da\n"
-             "NVIDIA para a mesma imagem: 45,8 dB em 1080p e 47,4 dB em 4K, SDR e HDR (sem rede: 26-29 dB).\n"
-             "A rede pequena e outro modelo (o rapido da NVIDIA): 36 dB em 4K, nao chega a 47 com nenhum ajuste.");
-        ImGui::SameLine(0, 8 * g_e);
-        if (Botao("Visual Zorah", b2))
-        {
-            // medido na Zorah (fotos on/off da NVIDIA): curva de tom, croma por faixa e detalhe (ferramentas/placar_nvidia.py)
-            cfg.ngx = ParamsNgx{};
-            cfg.ngx.modelo = 2;
-            cfg.ngx.tomLocal = 0.f;
-            cfg.ponte = 3;
-            cfg.preLuz = 0.5f;
-            cfg.preSombra = 0.f;
-            cfg.preLimiar = 0.4f;
-            cfg.preLimiarSombra = 0.2f;
-            cfg.preCor = 0.f;
-            cfg.forca = 1.f;
-            cfg.temporal.composicao = 1;
-            cfg.temporal.cor = 1.f;
-            cfg.temporal.guarda = 2.f;
-            cfg.temporal.exposicao = 1.f;
-            mc = true;
-        }
-        Dica("Model C, tom 0, ponte 'Curva do jogo', luzes 0,5 antes da rede: imita a foto Zorah do jogo (o DLSS 5\n"
-             "dentro do jogo, antes do tonemap). Se afasta do que a rede da NVIDIA faz numa imagem capturada\n"
-             "(24 dB contra a saida real da NVIDIA; o 'Padrao NVIDIA' da 45-47 dB).");
-    }
-
-    // ---- controles globais (os da NVIDIA) ----
-    Secao("CONTROLES GLOBAIS");
-    mc |= Deslizador("Estrutura", &cfg.ngx.estruturaLocal, -2.f, 4.f, "%.3f",
-                     "DLSSNR.LocalStructureStrength: detalhe e forma locais. Duplo clique: 1.", 1.f);
-    mc |= Deslizador("Tom", &cfg.ngx.tomLocal, 0.f, 2.f, "%.3f",
-                     "DLSSNR.LocalToneStrength: luz e cor em grande escala; tambem escala a gradacao do modelo.", 1.f);
-    Deslizador("Intensidade", &cfg.ngx.intensidade, 0.f, 4.f, "%.3f",
-               "DLSSNR.Intensity: quanto da resposta da rede entra (acima de 1 reforca a luz).", 1.f);
-    Deslizador("Força da edição", &cfg.forca, 0.f, 4.f, "%.3f", "Quanto da mudanca da rede entra no quadro (1 = a da rede).", 1.f);
-
-    {
-        const char* modelos[] = {"Model A", "Model B", "Model C"};
-        if (Segmentos("modelo", modelos, 3, &cfg.ngx.modelo))
-            mc = true;
-        Dica("A: o padrao da NVIDIA. B: natural (-0,1 EV, contraste -25%, saturacao x0,90). C: cinematico (saturacao x0,85).");
-        Marca("Gradação do modelo (B/C)", &cfg.ngx.gradacao, "A gradacao final do kernel da NVIDIA para os Models B e C.");
-    }
-
-    // ---- pele: a separacao que a propria rede da NVIDIA faz (UseAutoMask) e o ajuste fino dela ----
-    Secao("PELE (NVIDIA)");
-    {
-        mc |= Marca("Pele separada pela rede", &cfg.ngx.mascara,
-                    "DLSSNR.UseAutoMask: a propria rede acha a pele e separa do resto da cena. Desligada, os canais de\n"
-                    "pele e de cena vao a -1. Padrao: ligada.");
-        ImGui::BeginDisabled(!cfg.ngx.mascara);
-        mc |= Deslizador("Estrutura da pele", &cfg.ngx.estruturaPele, -2.f, 4.f, "%.3f",
-                         "DLSSNR.SkinStructureStrength: a estrutura so na pele que a rede achou (padrao 1). O resto da\n"
-                         "cena segue a Estrutura local.", 1.f);
-        ImGui::EndDisabled();
-    }
-
-    Secao("MODO DE REDE");
-    {
-        const char* fontes[] = {"Captura de vídeo", "Captura de buffer"};
-        int f = cfg.fonte == 1 ? 1 : 0;
-        if (Segmentos("fonte", fontes, 2, &f, 32 * g_e))
-            cfg.fonte = f;
-        Dica("Video: le a janela como o OBS (qualquer jogo, inclusive online); a rede ve o HUD e o movimento e estimado.\n"
-             "Buffer: o overlay coloca uma DLL no jogo aberto (nada e gravado na pasta dele) e pega o que o jogo entrega\n"
-             "ao FSR/XeSS: a cor sem HUD, a profundidade e o movimento exato; o resultado volta para o proprio jogo.\n"
-             "So jogos DirectX 12 com FSR ou XeSS ligado no menu grafico. Jogo com anti-cheat e recusado (banimento).");
-        if (cfg.fonte == 1)
-        {
-            const std::string& s = e.estadoBuffer;
-            const ImVec4 cor = s.rfind("conectado", 0) == 0     ? ImGui::ColorConvertU32ToFloat4(kVerde)
-                               : s.rfind("nao conectou", 0) == 0 ? ImVec4(1, 0.45f, 0.4f, 1)
-                                                                 : ImVec4(1, 0.78f, 0.3f, 1);
-            ImGui::PushTextWrapPos(0.f);
-            ImGui::TextColored(cor, "%s", s.empty() ? "Ctrl+Shift+D com o jogo em foco (FSR ou XeSS ligado no jogo)" : s.c_str());
-            ImGui::PopTextWrapPos();
-        }
-    }
-
-    Secao("REDE");
-    {
-        const char* redes[] = {"Grande", "Pequena (rápida)"};
-        int ir = cfg.redePequena ? 1 : 0;
-        if (Segmentos("rede", redes, 2, &ir, 32 * g_e))
-            cfg.redePequena = ir == 1;
-        Dica("Grande: a do DLSS 5 (71 blocos), a mais fiel a NVIDIA. Pequena: a rapida que a NVIDIA traz no DLSS\n"
-             "310.9.16 (31 blocos): mais leve, mais diferente (36 dB contra 47 da grande em 4K). Vale ao religar:\n"
-             "a troca recarrega os pesos com a GPU parada.");
-        const int alturas[] = {720, 1080, 1440, 2160};
-        const char* nomes[] = {"720p", "1080p", "1440p", "Nativa"};
-        int ia = -1;
-        for (int i = 0; i < 4; ++i)
-            if (alturas[i] == cfg.alturaRede)
-                ia = i;
-        int novo = ia;
-        if (Segmentos("tamanho", nomes, 4, &novo, 30 * g_e) && novo >= 0)
-            cfg.alturaRede = alturas[novo];
-        Dica("Altura em que a rede roda (limitada pela janela). Menor = mais rapido e a resposta chega antes; a\n"
-             "edicao e ampliada sobre o quadro nativo. 'Nativa' (ate 2160) e a mais fiel a NVIDIA. Vale ao religar:\n"
-             "cada tamanho novo prende memoria de video que o driver so devolve ao fechar o overlay.");
-        if (!e.alvo.empty() && (cfg.redePequena != e.pequenaSessao || cfg.alturaRede != e.alturaSessao ||
-                                cfg.rede.passes != e.passesSessao || cfg.rede.redeCompleta != e.completaSessao))
-        {
-            ImGui::PushTextWrapPos(0.f);
-            ImGui::TextColored(ImVec4(1, 0.78f, 0.3f, 1),
-                               "Em uso: rede %s, %dp, %d passe(s)%s. As mudanças de rede, tamanho e passes valem ao "
-                               "religar (Ctrl+Shift+D duas vezes).",
-                               e.pequenaSessao ? "pequena" : "grande", e.alturaSessao, e.passesSessao,
-                               e.completaSessao ? "" : ", sem os blocos 42/43/46");
-            ImGui::PopTextWrapPos();
-        }
-        DeslizadorInt("Ritmo", &cfg.ritmo, 1, 4, "%d",
-                      "A rede roda numa fila propria: todo quadro vai para a tela na hora, sem esperar a rede, e a\n"
-                      "resposta entra quando fica pronta, trazida pelo movimento ate o quadro atual.\n"
-                      "1: a rede recomeca assim que termina. N: no maximo uma vez a cada N quadros (libera a GPU).");
-    }
-
-    Secao("EXIBIÇÃO");
-    {
-        const char* modos[] = {"Rede", "Original", "Comparação (lado a lado)", "Só a edição da rede", "Movimento simulado"};
-        ImGui::SetNextItemWidth(lc);
-        ImGui::Combo("##modo", &cfg.modo, modos, 5);
-        Dica("Ctrl+Shift+N troca o modo.");
-        if (cfg.modo == 2)
-            Deslizador("Divisão", &cfg.divisao, 0.f, 1.f, "%.2f", nullptr, 0.5f);
-    }
-
-    // ---- avancado (o resto, recolhido) ----
-    ImGui::Dummy(ImVec2(0, 6 * g_e));
-    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0, 0, 0, 0));
-    avancado = ImGui::CollapsingHeader("AVANÇADO", avancado ? ImGuiTreeNodeFlags_DefaultOpen : 0);
-    ImGui::PopStyleColor();
-    if (avancado)
-    {
-        Secao("COMPOSIÇÃO", false);
-        const char* comps[] = {"Crua (resposta - proxy)", "Referencia NVIDIA/RenoDX"};
-        ImGui::SetNextItemWidth(lc);
-        ImGui::Combo("##comp", &cfg.temporal.composicao, comps, 2);
-        ImGui::BeginDisabled(cfg.temporal.composicao == 0);
-        Deslizador("Cor", &cfg.temporal.cor, 0.f, 2.f, "%.3f", "0 = cores do jogo na luz da rede, 1 = cores da rede (padrao).", 1.f);
-        Deslizador("Proteção de luz", &cfg.temporal.guarda, 1.f, 16.f, "%.1fx",
-                   "A luz de cada ponto muda no maximo esse fator. 16 = desligada (padrao): medido contra a NVIDIA,\n"
-                   "2,0 afastava 1,5-2 dB.", 16.f);
-        ImGui::EndDisabled();
-
-        Secao("COR POR MATIZ (DEPOIS DA REDE)");
-        {
-            const char* matizes[6] = {"Vermelho", "Amarelo", "Verde", "Ciano", "Azul", "Magenta"};
-            const ImU32 cores[6] = {IM_COL32(232, 72, 72, 255),  IM_COL32(236, 206, 60, 255), IM_COL32(88, 192, 80, 255),
-                                    IM_COL32(60, 202, 216, 255), IM_COL32(72, 124, 238, 255), IM_COL32(212, 82, 204, 255)};
-            for (int i = 0; i < 6; ++i)
+            const float b2 = (lc - 8 * g_e) / 2;
+            if (Botao("Padrão NVIDIA", b2))
             {
-                ImGui::PushID(300 + i);
-                Deslizador((std::string(matizes[i]) + ": saturação").c_str(), &cfg.matiz.sat[i], -1.f, 1.f, "%+.3f",
-                           "Saturacao desta faixa de cor no resultado: -1 = cinza, 0 = igual, +1 = o dobro.", 0.f, cores[i]);
-                Deslizador((std::string(matizes[i]) + ": brilho").c_str(), &cfg.matiz.luz[i], -1.f, 1.f, "%+.3f",
-                           "Brilho desta faixa de cor no resultado: -1 = apaga, +1 = o dobro. Cinza e branco nao\n"
-                           "mudam (o efeito pesa pela saturacao do pixel).", 0.f, cores[i]);
-                ImGui::PopID();
+                // medido contra a saida REAL da NVIDIA (RTX 5090, mesma entrada; ferramentas/compara_ref.py):
+                // 45,8 / 45,3 / 47,4 dB em 1080p / 1440p / 4K, edicao com correlacao 0,99
+                cfg.ngx = ParamsNgx{};
+                cfg.temporal.composicao = 1;
+                cfg.temporal.cor = 1.f;
+                cfg.temporal.guarda = 16.f;
+                cfg.temporal.exposicao = 1.f;
+                cfg.forca = 1.f;
+                cfg.ponte = -1;
+                cfg.preLuz = cfg.preSombra = cfg.preCor = 0.f;
+                cfg.alturaRede = 2160; // a rede na resolucao da janela (abaixo da nativa e a maior perda: 1080 num 4K = 32,7 dB)
+                cfg.brancoNits = 0.f;  // branco de papel do Windows: 79 nits num monitor de 240 custava 13 dB em HDR
+                cfg.rede.redeCompleta = true;
+                cfg.rede.passes = 1;
+                cfg.profundidade = 0; // os 71 blocos
+                mc = true;
             }
-            if (Botao("Zerar cores"))
-                cfg.matiz = CorMatiz{};
-        }
-
-        Secao("PONTE HDR -> REDE");
-        const char* pontes[] = {"Automatica (SDR direta, HDR SoftKnee)", "Direta", "SoftKnee", "ACES (RRT+ODT, RenoDX)",
-                                "Curva do jogo (luz de cena, SDR)", "Luz direta sem joelho (buffer ou HDR)"};
-        int ip = cfg.ponte + 1;
-        ImGui::SetNextItemWidth(lc);
-        if (ImGui::Combo("##ponte", &ip, pontes, 6))
-        {
-            cfg.ponte = ip - 1;
-            mc = true;
-        }
-        Dica("Como o quadro vira o proxy SDR que a rede ve; em HDR a cadeia trabalha nele e so a saida volta ao HDR.\n"
-             "Curva do jogo: a curva filmica e desfeita na entrada (a rede ve luz de cena) e refeita na saida.\n"
-             "Luz direta sem joelho: a luz vai sem corte e so o ombro do codificador da NVIDIA comprime os realces (o\n"
-             "contrato do modo 1 dela). Para a captura de buffer (cor antes do tonemap) e para jogo em HDR, em que os\n"
-             "realces passam do branco; com o Branco (nits) igual ao branco de papel do jogo.");
-        Deslizador("Branco (nits)", &cfg.brancoNits, 0.f, 400.f, cfg.brancoNits > 0.f ? "%.0f" : "Windows",
-                   "Branco de papel do jogo em HDR (0 = o branco SDR do Windows, o certo para a rede).", 0.f);
-
-        Secao("ANTES DA REDE: LUZES E SOMBRAS");
-        mc |= Deslizador("Luzes", &cfg.preLuz, 0.f, 8.f, "%.3f",
-                         "Ganho das areas acima do limiar antes da rede (ideia do Shadow-Light-Scattering.fx).", 0.f);
-        mc |= Deslizador("Sombras", &cfg.preSombra, -2.f, 2.f, "%.3f",
-                         "Acima de 0 escurece as areas abaixo do limiar antes da rede; abaixo de 0 levanta.", 0.f);
-        mc |= Deslizador("Limiar luzes", &cfg.preLimiar, 0.05f, 0.95f, "%.3f", "Luma de tela a partir da qual as luzes sobem.", 0.5f);
-        mc |= Deslizador("Limiar sombras", &cfg.preLimiarSombra, 0.02f, 0.6f, "%.3f",
-                         "Luma de tela abaixo da qual as sombras descem.", 0.2f);
-        mc |= Deslizador("Saturação", &cfg.preCor, -1.f, 2.f, "%.3f",
-                         "Saturacao antes da rede: a rede ve e devolve a cena mais (ou menos) colorida.", 0.f);
-
-        Secao("EXECUÇÃO DA REDE");
-        const int alturas[] = {540, 600, 720, 900, 1080, 1440, 2160};
-        const char* nomes[] = {"540p", "600p", "720p", "900p", "1080p", "1440p", "2160p"};
-        int ia = 4;
-        for (int i = 0; i < 7; ++i)
-            if (alturas[i] == cfg.alturaRede)
-                ia = i;
-        ImGui::SetNextItemWidth(lc);
-        if (ImGui::Combo("##altura", &ia, nomes, 7))
-            cfg.alturaRede = alturas[ia];
-        ImGui::BeginDisabled(cfg.redePequena);
-        Marca("Rede completa (71 blocos)", &cfg.rede.redeCompleta,
-              "Desligado pula 3 blocos (42, 43, 46): ~1 ms mais rapido. So na rede grande.");
-        ImGui::EndDisabled();
-        DeslizadorInt("Passes", &cfg.rede.passes, 1, 3, "%d",
-                      "Quantas vezes a rede inteira roda por resposta (1 = normal); mais = estilo mais forte e mais caro.\n"
-                      "Vale ao religar, como a rede completa e o tamanho.");
-
-        Secao("MOVIMENTO E ESTABILIDADE");
-        if (Marca("Movimento simulado (fluxo óptico)", &cfg.movimento,
-                  "Vetores de movimento estimados entre os quadros capturados, sem buffer do jogo."))
-            mc = true;
-        ImGui::BeginDisabled(!cfg.movimento);
-        DeslizadorInt("Estabilidade", &cfg.temporal.maxQuadros, 1, 16, "%d",
-                      "Quantos quadros a edicao da rede acumula (menos cintilacao; 1 = sem acumulo).");
-        Deslizador("Média em movimento", &cfg.temporal.pxEstab, 0.f, 32.f, "%.1f px",
-                   "Captura de buffer: a media temporal cai pela metade a cada tantos pixels de movimento por quadro.\n"
-                   "Menor = menos rastro em movimento (a edicao acompanha a cena), um pouco mais de cintilacao so em\n"
-                   "movimento; parado vale a Estabilidade inteira. 0 = media fixa. Padrao 8.", 8.f);
-        Deslizador("Rejeição", &cfg.temporal.rejeicao, 2.f, 40.f, "%.1f",
-                   "Quao rapido uma mudanca de cor derruba o acumulo (mais alto = menos fantasma).", 12.f);
-        Marca("Descartar onde o movimento não confere", &cfg.usaConfianca,
-              "Fluxo de ida e volta: onde nao confere e a cor tambem diverge, o acumulo do pixel e descartado.");
-        ImGui::EndDisabled();
-        Marca("Reuso adaptativo do ViT (ao reabrir)", &cfg.reusoVit,
-              "Do runtime do lmxxf: quando o quadro muda pouco, os blocos ViT reaproveitam o ultimo calculo.\n"
-              "Vale na proxima vez que o programa abrir.");
-        {
-            bool hist = cfg.temporalRede == 1;
-            if (Marca("Histórico da própria rede (ao reabrir)", &hist,
-                      "A rede tem uma entrada de historico (a resposta anterior dela) e decide sozinha quanto dela\n"
-                      "mistura (a cabeca de historico do bloco 70). Sem isto essa entrada recebe o quadro atual de novo.\n"
-                      "Ligado: a resposta anterior chega trazida pelo movimento ate o quadro atual -- na captura de\n"
-                      "buffer o movimento e a profundidade do jogo, na de video o fluxo optico. Onde o caminho sai da\n"
-                      "imagem ou a cor nao confere, o runtime descarta o historico.\n"
-                      "Vale ao reabrir o programa. Forca 1 passe e desliga o reuso do ViT. Precisa do runtime\n"
-                      "compilado deste branch (runtime\\lmxxf\\compilar.ps1 e runtime\\adaptador\\compilar.ps1)."))
-                cfg.temporalRede = hist ? 1 : 0;
-            if (!e.historicoRede.empty())
+            Dica("Os padroes da NVIDIA (Model A, tons e estruturas em 1, sem protecao de luz, sem ajustes antes da\n"
+                 "rede, branco de papel do Windows, rede na resolucao da janela). Medido contra a saida real da\n"
+                 "NVIDIA para a mesma imagem: 45,8 dB em 1080p e 47,4 dB em 4K, SDR e HDR (sem rede: 26-29 dB).\n"
+                 "A rede pequena e outro modelo (o rapido da NVIDIA): 36 dB em 4K, nao chega a 47 com nenhum ajuste.");
+            ImGui::SameLine(0, 8 * g_e);
+            if (Botao("Visual Zorah", b2))
             {
+                // medido na Zorah (fotos on/off da NVIDIA): curva de tom, croma por faixa e detalhe (ferramentas/placar_nvidia.py)
+                cfg.ngx = ParamsNgx{};
+                cfg.ngx.modelo = 2;
+                cfg.ngx.tomLocal = 0.f;
+                cfg.ponte = 3;
+                cfg.preLuz = 0.5f;
+                cfg.preSombra = 0.f;
+                cfg.preLimiar = 0.4f;
+                cfg.preLimiarSombra = 0.2f;
+                cfg.preCor = 0.f;
+                cfg.forca = 1.f;
+                cfg.temporal.composicao = 1;
+                cfg.temporal.cor = 1.f;
+                cfg.temporal.guarda = 2.f;
+                cfg.temporal.exposicao = 1.f;
+                mc = true;
+            }
+            Dica("Model C, tom 0, ponte 'Curva do jogo', luzes 0,5 antes da rede: imita a foto Zorah do jogo (o DLSS 5\n"
+                 "dentro do jogo, antes do tonemap). Se afasta do que a rede da NVIDIA faz numa imagem capturada\n"
+                 "(24 dB contra a saida real da NVIDIA; o 'Padrao NVIDIA' da 45-47 dB).");
+        }
+
+        // ---- controles globais (os da NVIDIA) ----
+        Secao("CONTROLES GLOBAIS");
+        mc |= Deslizador("Estrutura", &cfg.ngx.estruturaLocal, -2.f, 4.f, "%.3f",
+                         "DLSSNR.LocalStructureStrength: detalhe e forma locais. Duplo clique: 1.", 1.f);
+        mc |= Deslizador("Tom", &cfg.ngx.tomLocal, 0.f, 2.f, "%.3f",
+                         "DLSSNR.LocalToneStrength: luz e cor em grande escala; tambem escala a gradacao do modelo.", 1.f);
+        Deslizador("Intensidade", &cfg.ngx.intensidade, 0.f, 4.f, "%.3f",
+                   "DLSSNR.Intensity: quanto da resposta da rede entra (acima de 1 reforca a luz).", 1.f);
+        Deslizador("Força da edição", &cfg.forca, 0.f, 4.f, "%.3f", "Quanto da mudanca da rede entra no quadro (1 = a da rede).", 1.f);
+
+        {
+            const char* modelos[] = {"Model A", "Model B", "Model C"};
+            if (Segmentos("modelo", modelos, 3, &cfg.ngx.modelo))
+                mc = true;
+            Dica("A: o padrao da NVIDIA. B: natural (-0,1 EV, contraste -25%, saturacao x0,90). C: cinematico (saturacao x0,85).");
+            Marca("Gradação do modelo (B/C)", &cfg.ngx.gradacao, "A gradacao final do kernel da NVIDIA para os Models B e C.");
+        }
+
+        // ---- pele: a separacao que a propria rede da NVIDIA faz (UseAutoMask) e o ajuste fino dela ----
+        Secao("PELE (NVIDIA)");
+        {
+            mc |= Marca("Pele separada pela rede", &cfg.ngx.mascara,
+                        "DLSSNR.UseAutoMask: a propria rede acha a pele e separa do resto da cena. Desligada, os canais de\n"
+                        "pele e de cena vao a -1. Padrao: ligada.");
+            ImGui::BeginDisabled(!cfg.ngx.mascara);
+            mc |= Deslizador("Estrutura da pele", &cfg.ngx.estruturaPele, -2.f, 4.f, "%.3f",
+                             "DLSSNR.SkinStructureStrength: a estrutura so na pele que a rede achou (padrao 1). O resto da\n"
+                             "cena segue a Estrutura local.", 1.f);
+            ImGui::EndDisabled();
+        }
+
+        Secao("MODO DE REDE");
+        {
+            const char* fontes[] = {"Captura de vídeo", "Captura de buffer"};
+            int f = cfg.fonte == 1 ? 1 : 0;
+            if (Segmentos("fonte", fontes, 2, &f, 32 * g_e))
+                cfg.fonte = f;
+            Dica("Video: le a janela como o OBS (qualquer jogo, inclusive online); a rede ve o HUD e o movimento e estimado.\n"
+                 "Buffer: o overlay coloca uma DLL no jogo aberto (nada e gravado na pasta dele) e pega o que o jogo entrega\n"
+                 "ao FSR/XeSS: a cor sem HUD, a profundidade e o movimento exato; o resultado volta para o proprio jogo.\n"
+                 "So jogos DirectX 12 com FSR ou XeSS ligado no menu grafico. Jogo com anti-cheat e recusado (banimento).");
+            if (cfg.fonte == 1)
+            {
+                const std::string& s = e.estadoBuffer;
+                const ImVec4 cor = s.rfind("conectado", 0) == 0     ? ImGui::ColorConvertU32ToFloat4(kVerde)
+                                   : s.rfind("nao conectou", 0) == 0 ? ImVec4(1, 0.45f, 0.4f, 1)
+                                                                     : ImVec4(1, 0.78f, 0.3f, 1);
                 ImGui::PushTextWrapPos(0.f);
-                ImGui::TextDisabled("%s", e.historicoRede.c_str());
+                ImGui::TextColored(cor, "%s", s.empty() ? "Ctrl+Shift+D com o jogo em foco (FSR ou XeSS ligado no jogo)" : s.c_str());
                 ImGui::PopTextWrapPos();
             }
         }
 
-        Secao("OVERLAY");
-        DeslizadorInt("FPS máximo", &cfg.fpsMax, 0, 240, "%d", "Teto de quadros processados por segundo (0 = sem teto).");
-        if (Marca("Ocultar de prints e gravações", &cfg.ocultaDeGravacoes,
-                  "O overlay fica fora de prints, OBS e da propria Game Bar."))
-            a.ocultaMudou = true;
-    }
-
-    // ---- jogo (escolher a janela sem o atalho) ----
-    Secao("JOGO");
-    {
-        const char* atual = escolhida >= 0 ? janelas[escolhida].nome.c_str() : "(nenhuma)";
-        ImGui::SetNextItemWidth(lc);
-        if (ImGui::BeginCombo("##janela", atual))
+        Secao("EXIBIÇÃO");
         {
-            for (int i = 0; i < int(janelas.size()); ++i)
-                if (ImGui::Selectable(janelas[i].nome.c_str(), i == escolhida))
-                    escolhida = i;
-            ImGui::EndCombo();
+            const char* modos[] = {"Rede", "Original", "Comparação (lado a lado)", "Só a edição da rede", "Movimento simulado",
+                                   "Saída crua da rede (sem movimento)"};
+            ImGui::SetNextItemWidth(lc);
+            ImGui::Combo("##modo", &cfg.modo, modos, 6);
+            Dica("Ctrl+Shift+N troca o modo.\n"
+                 "Saida crua: a ultima resposta como a rede a deu, no quadro que ela viu -- sem acumulo, movimento nem\n"
+                 "grade. Se um defeito aparece aqui, e da rede; se so aparece em 'Rede', e do movimento/acumulo. Em\n"
+                 "movimento ela fica para tras do jogo (e a resposta atrasada, sem reposicionar).");
+            if (cfg.modo == 2)
+                Deslizador("Divisão", &cfg.divisao, 0.f, 1.f, "%.2f", nullptr, 0.5f);
         }
-        if (ImGui::IsItemClicked())
-            AtualizaJanelas();
-        const float b3 = (lc - 16 * g_e) / 3;
-        if (Botao("Ligar", b3, true) && escolhida >= 0)
-            a.ligar = janelas[escolhida].h;
-        ImGui::SameLine(0, 8 * g_e);
-        if (Botao("Desligar", b3))
-            a.desligar = true;
-        ImGui::SameLine(0, 8 * g_e);
-        if (Botao("Atualizar", b3))
-            AtualizaJanelas();
-        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kTexto2), "Jogo em janela ou tela cheia sem borda.");
+
+        // ---- avancado (o resto, recolhido) ----
+        ImGui::Dummy(ImVec2(0, 6 * g_e));
+        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0, 0, 0, 0));
+        avancado = ImGui::CollapsingHeader("AVANÇADO", avancado ? ImGuiTreeNodeFlags_DefaultOpen : 0);
+        ImGui::PopStyleColor();
+        if (avancado)
+        {
+            Secao("COMPOSIÇÃO", false);
+            const char* comps[] = {"Crua (resposta - proxy)", "Referencia NVIDIA/RenoDX"};
+            ImGui::SetNextItemWidth(lc);
+            ImGui::Combo("##comp", &cfg.temporal.composicao, comps, 2);
+            ImGui::BeginDisabled(cfg.temporal.composicao == 0);
+            Deslizador("Cor", &cfg.temporal.cor, 0.f, 2.f, "%.3f", "0 = cores do jogo na luz da rede, 1 = cores da rede (padrao).", 1.f);
+            Deslizador("Proteção de luz", &cfg.temporal.guarda, 1.f, 16.f, "%.1fx",
+                       "A luz de cada ponto muda no maximo esse fator. 16 = desligada (padrao): medido contra a NVIDIA,\n"
+                       "2,0 afastava 1,5-2 dB.", 16.f);
+            ImGui::EndDisabled();
+            // a decodificacao da propria NVIDIA (modo 1, no runtime): antes da composicao do overlay
+            Deslizador("Cor da rede (NVIDIA)", &cfg.corDecodificacao, 0.f, 1.f, "%.3f",
+                       "ColorStrength da decodificacao da NVIDIA: 0 = as cores do jogo com a luz da rede (o croma e a matiz\n"
+                       "vem do jogo; so o brilho muda), 1 = as cores da rede (padrao). Abaixo de 1 tira o tom que a rede\n"
+                       "puxa (o ciano com intensidade alta) sem perder a luz.", 1.f);
+            Deslizador("Força da decodificação (NVIDIA)", &cfg.forcaDecodificacao, 0.f, 1.f, "%.3f",
+                       "TransferStrength da decodificacao da NVIDIA: quanto do resultado da rede substitui o quadro na\n"
+                       "resposta (0 = o quadro original, 1 = padrao).", 1.f);
+
+            Secao("COR POR MATIZ (DEPOIS DA REDE)");
+            {
+                const char* matizes[6] = {"Vermelho", "Amarelo", "Verde", "Ciano", "Azul", "Magenta"};
+                const ImU32 cores[6] = {IM_COL32(232, 72, 72, 255),  IM_COL32(236, 206, 60, 255), IM_COL32(88, 192, 80, 255),
+                                        IM_COL32(60, 202, 216, 255), IM_COL32(72, 124, 238, 255), IM_COL32(212, 82, 204, 255)};
+                for (int i = 0; i < 6; ++i)
+                {
+                    ImGui::PushID(300 + i);
+                    Deslizador((std::string(matizes[i]) + ": saturação").c_str(), &cfg.matiz.sat[i], -1.f, 1.f, "%+.3f",
+                               "Saturacao desta faixa de cor no resultado: -1 = cinza, 0 = igual, +1 = o dobro.", 0.f, cores[i]);
+                    Deslizador((std::string(matizes[i]) + ": brilho").c_str(), &cfg.matiz.luz[i], -1.f, 1.f, "%+.3f",
+                               "Brilho desta faixa de cor no resultado: -1 = apaga, +1 = o dobro. Cinza e branco nao\n"
+                               "mudam (o efeito pesa pela saturacao do pixel).", 0.f, cores[i]);
+                    ImGui::PopID();
+                }
+                if (Botao("Zerar cores"))
+                    cfg.matiz = CorMatiz{};
+            }
+
+            Secao("PONTE HDR -> REDE");
+            const char* pontes[] = {"Automatica (SDR direta, HDR SoftKnee)", "Direta", "SoftKnee", "ACES (RRT+ODT, RenoDX)",
+                                    "Curva do jogo (luz de cena, SDR)", "Luz direta sem joelho (só captura de buffer)"};
+            int ip = cfg.ponte + 1;
+            ImGui::SetNextItemWidth(lc);
+            if (ImGui::Combo("##ponte", &ip, pontes, 6))
+            {
+                cfg.ponte = ip - 1;
+                mc = true;
+            }
+            Dica("Como o quadro vira o proxy SDR que a rede ve; em HDR a cadeia trabalha nele e so a saida volta ao HDR.\n"
+                 "Curva do jogo: a curva filmica e desfeita na entrada (a rede ve luz de cena) e refeita na saida.\n"
+                 "Luz direta sem joelho: a luz vai sem corte e so o ombro do codificador da NVIDIA comprime os realces (o\n"
+                 "contrato do modo 1 dela). So na captura de buffer (cor antes do tonemap): na captura de video o quadro ja\n"
+                 "passou pelo tonemap do jogo e ela vira a Automatica.");
+            Deslizador("Branco (nits)", &cfg.brancoNits, 0.f, 400.f, cfg.brancoNits > 0.f ? "%.0f" : "Windows",
+                       "Branco de papel do jogo em HDR (0 = o branco SDR do Windows, o certo para a rede).", 0.f);
+
+            Secao("ANTES DA REDE: LUZES E SOMBRAS");
+            mc |= Deslizador("Luzes", &cfg.preLuz, 0.f, 8.f, "%.3f",
+                             "Ganho das areas acima do limiar antes da rede (ideia do Shadow-Light-Scattering.fx).", 0.f);
+            mc |= Deslizador("Sombras", &cfg.preSombra, -2.f, 2.f, "%.3f",
+                             "Acima de 0 escurece as areas abaixo do limiar antes da rede; abaixo de 0 levanta.", 0.f);
+            mc |= Deslizador("Limiar luzes", &cfg.preLimiar, 0.05f, 0.95f, "%.3f", "Luma de tela a partir da qual as luzes sobem.", 0.5f);
+            mc |= Deslizador("Limiar sombras", &cfg.preLimiarSombra, 0.02f, 0.6f, "%.3f",
+                             "Luma de tela abaixo da qual as sombras descem.", 0.2f);
+            mc |= Deslizador("Saturação", &cfg.preCor, -1.f, 2.f, "%.3f",
+                             "Saturacao antes da rede: a rede ve e devolve a cena mais (ou menos) colorida.", 0.f);
+
+            Secao("EXECUÇÃO DA REDE");
+            {
+                const char* redes[] = {"Grande", "Pequena (rápida)"};
+                int ir = cfg.redePequena ? 1 : 0;
+                if (Segmentos("rede", redes, 2, &ir, 32 * g_e))
+                    cfg.redePequena = ir == 1;
+                Dica("Grande: a do DLSS 5 (71 blocos), a mais fiel a NVIDIA. Pequena: a rapida que a NVIDIA traz no DLSS\n"
+                     "310.9.16 (31 blocos): mais leve, mais diferente (36 dB contra 47 da grande em 4K). Vale ao religar:\n"
+                     "a troca recarrega os pesos com a GPU parada.");
+                const int alturas[] = {540, 600, 720, 900, 1080, 1440, 2160};
+                const char* nomes[] = {"540p", "600p", "720p", "900p", "1080p", "1440p", "2160p (nativa até 4K)"};
+                int ia = 4;
+                for (int i = 0; i < 7; ++i)
+                    if (alturas[i] == cfg.alturaRede)
+                        ia = i;
+                ImGui::SetNextItemWidth(lc);
+                if (ImGui::Combo("##altura", &ia, nomes, 7))
+                    cfg.alturaRede = alturas[ia];
+                Dica("Altura em que a rede roda (limitada pela janela). Menor = mais rapido e a resposta chega antes; a\n"
+                     "edicao e ampliada sobre o quadro nativo. A da janela (ate 2160) e a mais fiel a NVIDIA. Vale ao\n"
+                     "religar: cada tamanho novo prende memoria de video que o driver so devolve ao fechar o overlay.");
+                ImGui::BeginDisabled(cfg.redePequena);
+                Marca("Rede completa (71 blocos)", &cfg.rede.redeCompleta,
+                      "Desligado pula 3 blocos (42, 43, 46): ~1 ms mais rapido. So na rede grande.");
+                ImGui::EndDisabled();
+                ImGui::BeginDisabled(e.historicoAtivo);
+                DeslizadorInt("Passes", &cfg.rede.passes, 1, 3, "%d",
+                              "Quantas vezes a rede inteira roda por resposta (1 = normal); mais = estilo mais forte e mais caro.\n"
+                              "Vale ao religar, como a rede completa e o tamanho. Com o historico da propria rede ligado o\n"
+                              "runtime so roda 1 passe.");
+                ImGui::EndDisabled();
+                if (!e.alvo.empty() && (cfg.redePequena != e.pequenaSessao || cfg.alturaRede != e.alturaSessao ||
+                                        (cfg.rede.passes != e.passesSessao && !e.historicoAtivo) ||
+                                        cfg.rede.redeCompleta != e.completaSessao))
+                {
+                    ImGui::PushTextWrapPos(0.f);
+                    ImGui::TextColored(ImVec4(1, 0.78f, 0.3f, 1),
+                                       "Em uso: rede %s, %dp, %d passe(s)%s. As mudanças de rede, tamanho e passes valem ao "
+                                       "religar (Ctrl+Shift+D duas vezes).",
+                                       e.pequenaSessao ? "pequena" : "grande", e.alturaSessao, e.passesSessao,
+                                       e.completaSessao ? "" : ", sem os blocos 42/43/46");
+                    ImGui::PopTextWrapPos();
+                }
+                DeslizadorInt("Ritmo", &cfg.ritmo, 1, 4, "%d",
+                              "A rede roda numa fila propria: todo quadro vai para a tela na hora, sem esperar a rede, e a\n"
+                              "resposta entra quando fica pronta, trazida pelo movimento ate o quadro atual.\n"
+                              "1: a rede recomeca assim que termina. N: no maximo uma vez a cada N quadros (libera a GPU).");
+            }
+
+            Secao("MOVIMENTO E ESTABILIDADE");
+            if (Marca("Movimento simulado (fluxo óptico)", &cfg.movimento,
+                      "Vetores de movimento estimados entre os quadros capturados, sem buffer do jogo."))
+                mc = true;
+            ImGui::BeginDisabled(!cfg.movimento);
+            DeslizadorInt("Estabilidade", &cfg.temporal.maxQuadros, 1, 16, "%d",
+                          "Quantos quadros a edicao da rede acumula (menos cintilacao; 1 = sem acumulo).");
+            Deslizador("Média em movimento", &cfg.temporal.pxEstab, 0.f, 32.f, "%.1f px",
+                       "Captura de buffer: a media temporal cai pela metade a cada tantos pixels de movimento por quadro.\n"
+                       "Menor = menos rastro em movimento (a edicao acompanha a cena), um pouco mais de cintilacao so em\n"
+                       "movimento; parado vale a Estabilidade inteira. 0 = media fixa. Padrao 8.", 8.f);
+            Deslizador("Rejeição", &cfg.temporal.rejeicao, 2.f, 40.f, "%.1f",
+                       "Quao rapido uma mudanca de cor derruba o acumulo (mais alto = menos fantasma).", 12.f);
+            Marca("Borda em movimento pelos vizinhos", &cfg.temporal.vizinhos,
+                  "Captura de video: onde a edicao trazida pelo movimento nao confere (a borda de um objeto andando e o\n"
+                  "fundo que ele descobre), ela vem dos vizinhos de cor parecida em volta, nao da grade grossa da rede\n"
+                  "(que com a rede em tamanho baixo vira uma mascara transparente andando junto com o objeto).\n"
+                  "Desligado: so a grade, como antes.");
+            Marca("Descartar onde o movimento não confere", &cfg.usaConfianca,
+                  "Fluxo de ida e volta: onde nao confere e a cor tambem diverge, o acumulo do pixel e descartado.");
+            ImGui::EndDisabled();
+            ImGui::BeginDisabled(e.historicoAtivo);
+            Marca("Reuso adaptativo do ViT (ao reabrir)", &cfg.reusoVit,
+                  "Do runtime do lmxxf: quando o quadro muda pouco, os blocos ViT reaproveitam o ultimo calculo.\n"
+                  "Vale na proxima vez que o programa abrir. Fica de fora enquanto o historico da propria rede estiver\n"
+                  "ligado (os dois nao combinam).");
+            ImGui::EndDisabled();
+            {
+                bool hist = cfg.temporalRede == 1;
+                if (Marca("Histórico da própria rede (ao reabrir)", &hist,
+                          "A rede tem uma entrada de historico (a resposta anterior dela) e decide sozinha quanto dela\n"
+                          "mistura (a cabeca de historico do bloco 70). Sem isto essa entrada recebe o quadro atual de novo.\n"
+                          "Ligado: a resposta anterior chega trazida pelo movimento ate o quadro atual -- na captura de\n"
+                          "buffer o movimento e a profundidade do jogo, na de video o fluxo optico. Onde o caminho sai da\n"
+                          "imagem ou a cor nao confere, o runtime descarta o historico.\n"
+                          "Vale ao reabrir o programa. Forca 1 passe e desliga o reuso do ViT. Precisa do runtime\n"
+                          "compilado deste branch (runtime\\lmxxf\\compilar.ps1 e runtime\\adaptador\\compilar.ps1)."))
+                    cfg.temporalRede = hist ? 1 : 0;
+                ImGui::BeginDisabled(!e.historicoAtivo);
+                Deslizador("Força do histórico", &cfg.forcaHistorico, 0.f, 1.f, "%.3f",
+                           "Escala do peso que a propria rede da a resposta anterior (forca x 0,74 x a decisao da cabeca de\n"
+                           "historico). 1 = o da rede; menor = menos rastro e mais cintilacao; 0 = sem historico.", 1.f);
+                ImGui::EndDisabled();
+                if (!e.historicoRede.empty())
+                {
+                    ImGui::PushTextWrapPos(0.f);
+                    ImGui::TextDisabled("%s", e.historicoRede.c_str());
+                    ImGui::PopTextWrapPos();
+                }
+            }
+
+            Secao("OVERLAY");
+            DeslizadorInt("FPS máximo", &cfg.fpsMax, 0, 240, "%d", "Teto de quadros processados por segundo (0 = sem teto).");
+            if (Marca("Ocultar de prints e gravações", &cfg.ocultaDeGravacoes,
+                      "O overlay fica fora de prints, OBS e da propria Game Bar."))
+                a.ocultaMudou = true;
+        }
+
+        // ---- jogo (escolher a janela sem o atalho) ----
+        Secao("JOGO");
+        {
+            const char* atual = escolhida >= 0 ? janelas[escolhida].nome.c_str() : "(nenhuma)";
+            ImGui::SetNextItemWidth(lc);
+            if (ImGui::BeginCombo("##janela", atual))
+            {
+                for (int i = 0; i < int(janelas.size()); ++i)
+                    if (ImGui::Selectable(janelas[i].nome.c_str(), i == escolhida))
+                        escolhida = i;
+                ImGui::EndCombo();
+            }
+            if (ImGui::IsItemClicked())
+                AtualizaJanelas();
+            const float b3 = (lc - 16 * g_e) / 3;
+            if (Botao("Ligar", b3, true) && escolhida >= 0)
+                a.ligar = janelas[escolhida].h;
+            ImGui::SameLine(0, 8 * g_e);
+            if (Botao("Desligar", b3))
+                a.desligar = true;
+            ImGui::SameLine(0, 8 * g_e);
+            if (Botao("Atualizar", b3))
+                AtualizaJanelas();
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kTexto2), "Jogo em janela ou tela cheia sem borda.");
+        }
     }
 
     // ---- rodape ----
     Secao("", true);
     {
-        const float b2 = (lc - 8 * g_e) / 2;
-        if (Botao("Salvar como padrão", b2))
-            a.salvar = true;
-        Dica("Grava em config.json: vale para os jogos sem perfil.");
-        ImGui::SameLine(0, 8 * g_e);
-        if (Botao("Sair (Ctrl+Shift+Q)", b2))
+        if (Botao("Sair (Ctrl+Shift+Q)", lc))
             a.sair = true;
         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kTexto2), "Ctrl+Shift+P abre/fecha (com o mouse)  ·  Esc devolve o jogo");
         ImGui::TextDisabled("%s", Utf8(e.placa).c_str());

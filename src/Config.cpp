@@ -17,7 +17,10 @@ ParamsRede Config::Rede() const
     r.estrutura = ngx.estruturaLocal;
     r.pele = ngx.mascara ? ngx.estruturaPele : -1.f;
     r.outro = ngx.mascara ? ngx.estruturaLocal : -1.f;
-    r.detalhe = r.cor = 1.f; // a resposta inteira do runtime; a composicao e feita no overlay
+    // a decodificacao da NVIDIA no runtime (1 = a resposta inteira); a composicao do overlay vem depois
+    r.detalhe = std::clamp(forcaDecodificacao, 0.f, 1.f);
+    r.cor = std::clamp(corDecodificacao, 0.f, 1.f);
+    r.forcaHistorico = std::clamp(forcaHistorico, 0.f, 1.f);
     return r;
 }
 
@@ -103,17 +106,21 @@ void Config::Carrega(const std::wstring& arquivo)
     B("profundidadeAuto", profundidadeAuto);
     I("profundidadeMax", profundidadeMax);
     F("realceTemporal", realceTemporal);
+    F("forcaHistoricoRede", forcaHistorico);
+    F("corDecodificacao", corDecodificacao);
+    F("forcaDecodificacao", forcaDecodificacao);
     I("estabilidade", temporal.maxQuadros);
     F("mediaMovimento", temporal.pxEstab);
     F("rejeicao", temporal.rejeicao);
+    B("bordaPelosVizinhos", temporal.vizinhos);
     F("divisao", divisao);
     I("fpsMax", fpsMax);
     B("ocultaDeGravacoes", ocultaDeGravacoes);
 }
 
-void Config::Salva(const std::wstring& arquivo) const
+std::string Config::Texto() const
 {
-    std::ofstream f(arquivo);
+    std::ostringstream f;
     auto b = [](bool v) { return v ? "true" : "false"; };
     f << "{\n";
     f << "  \"modelo\": " << ngx.modelo << ",\n";
@@ -156,13 +163,24 @@ void Config::Salva(const std::wstring& arquivo) const
     f << "  \"profundidadeAuto\": " << b(profundidadeAuto) << ",\n";
     f << "  \"profundidadeMax\": " << profundidadeMax << ",\n";
     f << "  \"realceTemporal\": " << realceTemporal << ",\n";
+    f << "  \"forcaHistoricoRede\": " << forcaHistorico << ",\n";
+    f << "  \"corDecodificacao\": " << corDecodificacao << ",\n";
+    f << "  \"forcaDecodificacao\": " << forcaDecodificacao << ",\n";
     f << "  \"estabilidade\": " << temporal.maxQuadros << ",\n";
     f << "  \"mediaMovimento\": " << temporal.pxEstab << ",\n";
     f << "  \"rejeicao\": " << temporal.rejeicao << ",\n";
+    f << "  \"bordaPelosVizinhos\": " << b(temporal.vizinhos) << ",\n";
     f << "  \"divisao\": " << divisao << ",\n";
     f << "  \"fpsMax\": " << fpsMax << ",\n";
     f << "  \"ocultaDeGravacoes\": " << b(ocultaDeGravacoes) << "\n";
     f << "}\n";
+    return f.str();
+}
+
+void Config::Salva(const std::wstring& arquivo) const
+{
+    std::ofstream f(arquivo);
+    f << Texto();
 }
 
 } // namespace ov

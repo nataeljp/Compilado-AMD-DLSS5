@@ -108,6 +108,7 @@ bool Rede::Inicia(Gpu& g, const std::wstring& pasta, bool pequena)
     setSkip = reinterpret_cast<int32_t (*)(void*, const uint32_t*, uint32_t)>(GetProcAddress(mod, "LmxxfNrSetDynamicSkip"));
     Log("rede", setSkip ? "profundidade dinamica disponivel (runtime v3)" : "runtime sem profundidade dinamica");
     setGuias = reinterpret_cast<int32_t (*)(void*, void*, void*, uint32_t)>(GetProcAddress(mod, "LmxxfNrSetHistoryGuides"));
+    setForcaHist = reinterpret_cast<int32_t (*)(void*, float)>(GetProcAddress(mod, "LmxxfNrSetHistoryStrength"));
     Log("rede", setGuias ? "guias do historico da rede disponiveis (LmxxfNrSetHistoryGuides)"
                          : "runtime sem LmxxfNrSetHistoryGuides: o historico da rede, se ligado, fica estatico");
     assets = pasta + L"\\native-game-tiled-assets";
@@ -240,6 +241,18 @@ bool Rede::Envia(ID3D12Fence* cercaOverlay, UINT64 valorOverlay, const ParamsRed
                 Log("rede", comProf ? "historico da rede: guias de movimento e profundidade entregues ao adaptador"
                                     : "historico da rede: guia de movimento entregue ao adaptador");
         }
+    }
+    // forca do historico (o adaptador so repassa quando muda)
+    if (setForcaHist)
+    {
+        const int32_t r = setForcaHist(ctx, std::clamp(p.forcaHistorico, 0.f, 1.f));
+        if (r == LMXXF_NR_NOT_IMPLEMENTED)
+        {
+            Log("rede", "lmxxf_upstream.dll sem LmxxfNrSetHistoryStrength: forca do historico fixa em 1");
+            setForcaHist = nullptr;
+        }
+        else if (r != LMXXF_NR_OK)
+            Erro(r, "SetHistoryStrength");
     }
     // entrada
     Ck(al[0]->Reset(), "reset(rede0)");

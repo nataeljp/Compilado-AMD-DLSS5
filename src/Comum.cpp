@@ -29,6 +29,16 @@ std::string Utf8(const std::wstring& w)
     return s;
 }
 
+std::wstring Largo(const std::string& s)
+{
+    if (s.empty())
+        return {};
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
+    std::wstring w(n, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), w.data(), n);
+    return w;
+}
+
 static std::string Escapa(const std::string& s)
 {
     std::string o;

@@ -112,7 +112,7 @@ float3 CorP(float3 o) { o = max(o, 0.0); return pow(o / (1.0 + Lum(o)), 1.0 / 2.
 const char* kHlsl = R"(
 cbuffer C : register(b0) { uint w; uint h; uint temResp; uint temHist; float maxN; float rejeicao; float folga; uint temMov;
                            uint temDesl; uint temConf; uint temEstat; uint temGrade; uint gw; uint gh; uint temDeslG; uint exata;
-                           float pxEstab; uint pad1; uint pad2; uint pad3; };
+                           float pxEstab; uint vizinhos; uint pad2; uint pad3; };
 // exata: movimento e confianca do proprio jogo (captura de buffer). A confianca vem da profundidade reprojetada e e
 // exata: vale inteira no historico, no caminho da resposta atrasada e na grade (que separa camadas pela distancia).
 // espaco comprimido (x / (1 + luma), como o TAA dos jogos): o realce em HDR nao domina o acumulo nem o reposicionamento
@@ -182,6 +182,61 @@ float3 PreencheVizinhos(int2 p, float zc, out float achou)
             if (wv <= 0.0) continue;
             const float2 uvT = (float2(t) + 0.5 + mov.Load(int3(t, 0)).xy) / tam;
             acc += histAnt.SampleLevel(s, uvT, 0).rgb * wv;
+            s1 += wv;
+        }
+        ws += s1;
+        if (s1 > 0.3 / r || achou > 0.0)
+            achou += 1.0;
+    }
+    return ws > 1e-6 ? acc / ws : 0;
+}
+
+// Captura de video (sem profundidade): onde a reprojecao nao confere -- borda de objeto em movimento, o fundo que ele
+// descobre ou cobre --, a edicao vem dos vizinhos deste quadro cuja reprojecao confere e cuja cor parece a do pixel,
+// aneis de raio dobrado ate 32 px da rede, peso 1/r. Antes vinha so da grade (celulas de 16 px da rede, deslocadas pelo
+// fluxo ate o t0 dela): com a rede em 540p cada celula cobre dezenas de pixels da tela, e a estimativa grossa em volta
+// do objeto andava com ele como uma mascara transparente. daResposta: a resposta que chegou (deslocamento ate t0);
+// senao o historico do quadro anterior (movimento de 1 quadro). achou = 0: nenhum vizinho valido (fica a grade).
+float3 PreencheCor(int2 p, bool daResposta, out float achou)
+{
+    float3 acc = 0;
+    float ws = 0;
+    achou = 0;
+    const int2 lim = int2(w, h) - 1;
+    const float2 tam = float2(w, h);
+    const float3 fp = fed.Load(int3(p, 0)).rgb;
+    [loop] for (float r = 2.0; r <= 32.0 && achou < 2.0; r *= 2.0)
+    {
+        float s1 = 0;
+        [unroll] for (int k = 0; k < 12; ++k)
+        {
+            float2 dir;
+            sincos(k * 0.5235988 + r * 0.37, dir.y, dir.x);
+            const int2 t = clamp(int2(float2(p) + 0.5 + dir * r), 0, lim);
+            const float3 ft = fed.Load(int3(t, 0)).rgb;
+            const float pc = PesoCor(ft, fp);
+            if (pc < 0.05) continue;
+            float2 q;
+            float3 ref;
+            if (daResposta)
+            {
+                const float4 dt = temDesl ? desl.Load(int3(t, 0)) : float4(0, 0, 1, 1);
+                if (dt.w < 0.5) continue;
+                q = (float2(t) + 0.5 + dt.xy) / tam;
+                if (any(q <= 0.0) || any(q >= 1.0)) continue;
+                ref = fedT0.SampleLevel(s, q, 0).rgb;
+            }
+            else
+            {
+                q = (float2(t) + 0.5 + mov.Load(int3(t, 0)).xy) / tam;
+                if (any(q <= 0.0) || any(q >= 1.0)) continue;
+                ref = fedAnt.SampleLevel(s, q, 0).rgb;
+            }
+            // a reprojecao do vizinho confere: a cor dele bate com a do quadro de onde a edicao vem
+            const float cf = saturate(1.0 - DifCor(ft, ref) * rejeicao);
+            if (cf < 0.5) continue;
+            const float wv = cf * pc / r;
+            acc += (daResposta ? edT0.SampleLevel(s, q, 0).rgb : histAnt.SampleLevel(s, q, 0).rgb) * wv;
             s1 += wv;
         }
         ws += s1;
@@ -350,6 +405,7 @@ float3 FatiaDentro(float2 pos, float z01, float3 cp, float lz)
         if (temConf) n *= exata ? smoothstep(0.3, 0.7, conf.Load(int3(p, 0))) : lerp(conf.Load(int3(p, 0)), 1.0, foto);
     }
     float3 eg = 0;
+    bool usaEg = temGrade; // eg vale: a grade, ou (captura de video) o preenchimento pelos vizinhos
     if (temGrade && !corte)
     {
         float4 dg = temDeslG ? deslG.Load(int3(p, 0)) : float4(0, 0, 1, 1);
@@ -408,7 +464,15 @@ float3 FatiaDentro(float2 pos, float z01, float3 cp, float lz)
             peso = saturate(1.0 - d * rejeicao);
             if (exata && temDesl) peso *= dd.z; // o caminho ate t0 passou por outra superficie (oclusao)
         }
-        if (temGrade && !(exata && n > 0.5))
+        if (!exata && vizinhos && peso < 0.9 && !corte)
+        {
+            // captura de video: onde nao bate, os vizinhos de cor parecida cuja reposicao confere (antes da grade)
+            float achou;
+            const float3 ev = PreencheCor(p, true, achou);
+            if (achou > 0.0)
+                eg = ev, usaEg = true;
+        }
+        if (usaEg && !(exata && n > 0.5))
         {
             // a resposta entra inteira: reposicionada onde o quadro de t0 bate com o atual, pela grade onde nao bate
             e = lerp(eg, e, peso);
@@ -434,7 +498,15 @@ float3 FatiaDentro(float2 pos, float z01, float3 cp, float lz)
         // cena anterior ficava pintada na nova)
         float k = foto;
         if (exata && temConf) k *= smoothstep(0.3, 0.7, conf.Load(int3(p, 0))); // fundo recem-descoberto: o preenchimento
-        hr = temGrade ? lerp(eg, hr, k) : hr * k;
+        if (!exata && vizinhos && temHist && temMov && k < 0.9 && !corte)
+        {
+            // captura de video: o historico dos vizinhos de cor parecida que confere, antes da grade
+            float achou;
+            const float3 ev = PreencheCor(p, false, achou);
+            if (achou > 0.0)
+                eg = ev, usaEg = true;
+        }
+        hr = usaEg ? lerp(eg, hr, k) : hr * k;
         n = max(n, 1.0);
     }
     histNovo[pu] = float4(hr, n);
@@ -457,7 +529,7 @@ struct K
     float maxN, rejeicao, folga;
     UINT temMov, temDesl, temConf, temEstat, temGrade, gw, gh, temDeslG, pad;
     float pxEstab;
-    UINT pad1, pad2, pad3;
+    UINT vizinhos, pad2, pad3;
 };
 struct KGrade
 {
@@ -650,7 +722,7 @@ Tex* Temporal::Roda(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Devic
         deslGAgora ? 1u : 0u,
         ((zAgora && zGradeValida) ? 1u : 0u) | (getenv("DLSS5_DEBUG_FAIXA") ? 2u : 0u),
         PxEstabilidade(p.pxEstab),
-        0,
+        p.vizinhos ? 1u : 0u,
         0,
         0};
     using Par = std::pair<ID3D12Resource*, DXGI_FORMAT>;

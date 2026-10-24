@@ -148,3 +148,41 @@ Test-Path bin\runtime\native-game-tiled-assets\post70-history-head.f16
      guias.
    - No `bin\runtime\lmxxf_adaptador.log`, uma linha `ERRO SetHistoryGuides` ou `ERRO PrepareFrame` diz que o runtime
      recusou; mande a linha. Sem o `post70-history-head.f16`, o erro do PrepareFrame cita esse arquivo.
+
+## 7. Rodada 3: abas, perfis, opções da rede e o fantasma em movimento
+
+| Mudança | O que muda |
+|---|---|
+| abas | O título vira duas abas: **DLSS 5** (os controles) e **PERFIS**. O aviso "jogo em foco · Esc devolve o mouse" ganhou linha própria (antes cobria o título). |
+| rede numa seção só | Grande/Pequena, tamanho (540p a 2160p), passes, rede completa, ritmo e o aviso "Em uso" ficam só em Avançado → **Execução da rede**. |
+| perfis | Vários por jogo, com nome: salvar como novo, salvar no em uso, carregar (duplo clique também), renomear, apagar, "usar ao ligar", e um nome para o jogo. O `perfis\<exe>.json` antigo vira "Principal". |
+| luz direta | A ponte 4 só vale na captura de buffer; na de vídeo vira a automática. |
+| opções da rede | **Força do histórico** (com o histórico ligado) e, em Composição, **Cor da rede (NVIDIA)** e **Força da decodificação (NVIDIA)**, os dois controles da decodificação da própria NVIDIA. |
+| fantasma em movimento | Captura de vídeo: onde a edição trazida pelo movimento não confere, ela vem dos vizinhos de cor parecida, não só da grade grossa da rede (Avançado → Movimento → **Borda em movimento pelos vizinhos**). E a Exibição **Saída crua da rede** mostra a resposta sem acúmulo, movimento nem grade. |
+
+Como antes: checado com MinGW e glslang, **não compilado com o MSVC nem rodado**.
+
+### 7.1 Compilar
+
+O runtime e o adaptador mudaram de novo (força do histórico). Feche o overlay antes.
+
+```powershell
+cd D:\AI_Claude\DLSS5-Overlay
+git pull
+powershell -ExecutionPolicy Bypass -File build.ps1
+powershell -ExecutionPolicy Bypass -File runtime\lmxxf\compilar.ps1
+powershell -ExecutionPolicy Bypass -File runtime\adaptador\compilar.ps1
+Remove-Item bin\runtime\lmxxf_upstream.dll, bin\runtime\LmxxfNrRuntime.dll
+Copy-Item runtime\lmxxf\fonte\build_msvc\LmxxfNrRuntime_v4.dll bin\runtime\lmxxf_upstream.dll
+Copy-Item runtime\adaptador\LmxxfNrRuntime.dll bin\runtime\LmxxfNrRuntime.dll
+```
+
+### 7.2 Testes
+
+1. **Fantasma**: captura de vídeo, a cena do cavalo correndo. Compare **Borda em movimento pelos vizinhos** ligada e
+   desligada (muda na hora). Depois Exibição → **Saída crua da rede**: se a máscara aparece nela, é da rede; se só
+   aparece em "Rede", é do movimento.
+2. **Ciano**: Composição → **Cor da rede (NVIDIA)** em 0,5 e em 0 com a intensidade alta.
+3. **Histórico**: **Força do histórico** em 1, 0,5 e 0 andando (rastro contra cintilação).
+4. **Perfis**: salve dois perfis, troque entre eles, renomeie, marque um "ao ligar", feche e abra o programa e confira
+   que ele carregou sozinho.

@@ -228,7 +228,8 @@ SamplerState s : register(s0);
 )";
 
 // quadro inteiro + forca * edicao (ampliada por Catmull-Rom) -> gradacao do modelo -> tela
-// modo: 0 rede, 1 original, 2 comparacao (esquerda original | direita rede), 3 so a edicao (x4), 4 movimento
+// modo: 0 rede, 1 original, 2 comparacao (esquerda original | direita rede), 3 so a edicao (x4), 4 movimento,
+// 5 saida crua da ultima resposta (o quadro que a rede viu + a edicao dela, sem acumulo, movimento nem grade)
 inline const char* Compoe = R"(
 cbuffer C : register(b0) { uint fw; uint fh; uint dw; uint dh; float forca; uint modo; float divisao; uint usaEdicao;
                            uint hdr; float escala; float kExp; float kCon; float kSat; uint grada; uint filmica; uint sanduiche;
@@ -236,11 +237,13 @@ cbuffer C : register(b0) { uint fw; uint fh; uint dw; uint dh; float forca; uint
                            uint pad3; uint pad4;
                            float satR; float satY; float satG; float satC; float satB; float satM;
                            float luzR; float luzY; float luzG; float luzC; float luzB; float luzM;
-                           uint usaMatiz; uint padM0; uint padM1; uint padM2; };
+                           uint usaMatiz; uint temCrua; uint padM1; uint padM2; };
 Texture2D<float4> inteiro : register(t0);
 Texture2D<float4> fed : register(t1);
 Texture2D<float4> edicao : register(t2);
 Texture2D<float4> mov : register(t3);
+Texture2D<float4> origT0 : register(t4); // modo 5: o quadro que a rede viu (t0), no tamanho da rede
+Texture2D<float4> cruaT0 : register(t5); // modo 5: a edicao da resposta no espaco de t0 (comprimido x / (1 + luma))
 RWTexture2D<float4> saida : register(u0);
 SamplerState s : register(s0);
 
@@ -356,6 +359,20 @@ float3 CorPorMatiz(float3 c)
         float a = atan2(v.y, v.x) / 6.2831853 + 0.5;
         float3 h = saturate(abs(frac(a + float3(0, 2.0 / 3, 1.0 / 3)) * 6 - 3) - 1);
         c = lerp(float3(0.5, 0.5, 0.5), h, saturate(length(v) / 8.0)) * hs;
+    }
+    if (modo == 5 && temCrua)
+    {
+        // a resposta como a rede a deu, no quadro que ela viu: separa o que e da rede do que e do movimento (fluxo,
+        // acumulo, grade). Com atraso, ela fica para tras do quadro atual em movimento.
+        const float2 uv = (float2(p) + 0.5) / float2(fw, fh);
+        const bool igual = dw == fw && dh == fh;
+        const float3 ot = max(igual ? origT0.Load(int3(p, 0)).rgb : CatmullRom(origT0, uv, float2(dw, dh)), 0.0);
+        const float3 ec = igual ? cruaT0.Load(int3(p, 0)).rgb : CatmullRom(cruaT0, uv, float2(dw, dh));
+        float3 cc = ot / (1.0 + Lum(ot)) + ec;
+        // o mesmo limite da volta a luz linear do Temporal (a luma comprimida perto de 1 explodiria)
+        const float lo = Lum(ot) * 4.0 + 4.0, lim = lo / (1.0 + lo), lc = Lum(cc);
+        if (lc > lim) cc *= lim / lc;
+        c = Tela(max(cc / max(1.0 - Lum(cc), 1e-3), 0.0), grada != 0, 1.0);
     }
     if (modo == 2 && abs((float)p.x - divisao * fw) < 1.0) c = float3(1, 1, 0) * hs;
     saida[p] = float4(c, 1.0);

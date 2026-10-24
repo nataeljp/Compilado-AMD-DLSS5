@@ -20,9 +20,14 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
    tela. Deixe o jogo em foco e aperte **Ctrl+Shift+D**, ou escolha a janela em **Jogo** e clique em **Ligar**.
 3. Como a Game Bar: overlay e painel só aparecem com o jogo em foco. Alt+Tab, minimizar ou outra janela na frente os
    escondem e pausam a rede; ao voltar ao jogo eles voltam. O overlay acompanha a janela ao mover e redimensionar.
-4. **Perfil por jogo**: *Salvar perfil* grava os ajustes em `perfis\<exe>.json`, que carrega sozinho quando o overlay
-   liga no mesmo exe. *Redefinir* volta aos padrões; *Salvar como padrão* grava `config.json` (jogos sem perfil). Ao
-   sair, os ajustes vão para o perfil ativo (ou para `config.json`).
+4. **Perfis por jogo** (aba **PERFIS** do painel): cada exe tem vários perfis com nome, em `perfis\<exe>\<nome>.json`
+   (salvar como novo, salvar no em uso, carregar, renomear, apagar). O marcado **ao ligar** (`_ao_ligar.txt`) carrega
+   sozinho quando o overlay liga nesse exe vindo de outro jogo ou ao abrir o programa; religar o mesmo jogo mantém os
+   ajustes da tela. O primeiro perfil salvo de um jogo já fica marcado. O jogo pode ganhar um nome (`_nome.txt`; o exe
+   nem sempre tem o nome do jogo). Sem perfil em uso vale o **padrão do programa** (`config.json`). Ao sair ou trocar de
+   jogo, os ajustes vão para o que está em uso; depois de apagar o perfil em uso, para nenhum lugar. Apagar, gravar por
+   cima e carregar com alterações não salvas pedem confirmação. O `perfis\<exe>.json` de versões anteriores vira o
+   perfil "Principal", marcado ao ligar.
 5. O programa fica na **bandeja do sistema** (ícones ocultos da barra de tarefas): clique no ícone mostra/esconde o
    painel; botão direito → **Sair** fecha. Fechar o painel (×, Esc) só esconde.
 
@@ -159,8 +164,9 @@ Os parâmetros do DLSS 5 seguem os nomes que a NVIDIA expõe no NGX (os mesmos d
 | `gradacao` | true/false | aplica a gradação do Model B/C (exposição, contraste, saturação do kernel da NVIDIA) |
 | `composicao` | 0/1 | 0 crua (resposta − proxy), 1 referência NVIDIA/RenoDX (razão de luz em dois ramos, piso 1/512, proteção, cor) |
 | `corComposicao`, `protecao` | 0..2, 1..16 | mistura de cor e proteção bilateral de luz da composição (padrão 1 e 16 = desligada) |
+| `corDecodificacao`, `forcaDecodificacao` | 0..1 | a decodificação da própria NVIDIA no runtime (modo 1): *ColorStrength* (0 = as cores do jogo com a luz da rede, 1 = as cores da rede) e *TransferStrength* (quanto do resultado da rede substitui o quadro); padrão 1 |
 | `matizVermelhoSat` … `matizMagentaSat`, `matizVermelhoLuz` … `matizMagentaLuz` | −1..1 | cor por matiz depois da rede, em seis faixas (Vermelho, Amarelo, Verde, Ciano, Azul, Magenta): saturação (−1 = cinza, +1 = o dobro) e brilho (−1 = apaga, +1 = o dobro; pesa pela saturação do pixel, cinza e branco não mudam). Faixas vizinhas se misturam em triângulo. Padrão 0 = desligado |
-| `ponte` | −1..4 | quadro → proxy da rede: −1 automática (SDR direta, HDR SoftKnee), 0 direta, 1 SoftKnee, 2 ACES (RRT+ODT, RenoDX), 3 curva do jogo, 4 luz de cena direta (captura de buffer: só o ombro do codificador da NVIDIA comprime os realces) |
+| `ponte` | −1..4 | quadro → proxy da rede: −1 automática (SDR direta, HDR SoftKnee), 0 direta, 1 SoftKnee, 2 ACES (RRT+ODT, RenoDX), 3 curva do jogo, 4 luz de cena direta (só na captura de buffer: só o ombro do codificador da NVIDIA comprime os realces; na captura de vídeo vira a automática) |
 | `brancoNits` | 0..400 | branco de papel do HDR (0 = o branco SDR do Windows) |
 | `alturaRede` | 720..2160 | altura em que a rede roda (limitada pela janela); vale ao religar |
 | `redeCompleta` | true/false | os 71 blocos (camadas) da rede; false pula 42/43/46 (~1 ms); vale ao religar |
@@ -168,12 +174,14 @@ Os parâmetros do DLSS 5 seguem os nomes que a NVIDIA expõe no NGX (os mesmos d
 | `profundidade` | 0..4 | blocos da rede grande: 0 = 71, 1 = 68 (sem 42/43/46), 2 = 63 (sem 40–47), 3 = 55 (e sem 23–30), 4 = 47 (e sem o ViT 31–38; só com `reusoVit` desligado). Só blocos residuais saem; muda na hora; só no `config.json`. Não se aplica à rede pequena, que é outro modelo |
 | `movimento`, `usaConfianca` | true/false | movimento simulado por fluxo óptico; descartar o acúmulo onde ida e volta não conferem |
 | `estabilidade`, `rejeicao` | 1..16, 2..40 | quadros que a edição acumula; quão rápido mudança de cor derruba o acúmulo |
+| `bordaPelosVizinhos` | true/false | captura de vídeo: onde a edição trazida pelo movimento não confere (borda de objeto andando), ela vem dos vizinhos de cor parecida cuja reprojeção confere, em vez só da grade bilateral (células de 16 px da rede); padrão true |
 | `mediaMovimento` | 0..32 px | captura de buffer: a média cai pela metade a cada tantos px/quadro de movimento (padrão 8; 0 = fixa) |
 | `ritmo` | 1..4 | 1 = a rede recomeça assim que termina; N = no máximo uma vez a cada N quadros (libera GPU para o jogo) |
 | `reusoVit` | true/false | reuso adaptativo do ViT do runtime lmxxf (vale ao reabrir) |
 | `temporalRede` | 0..3 | histórico da própria rede (`DLSS5_TEMPORAL_MODE` do runtime; vale ao reabrir, força 1 passe e desliga o `reusoVit`). 1 = a entrada de histórico da rede recebe a resposta anterior trazida pelo movimento (captura de buffer: movimento e profundidade do jogo; captura de vídeo: fluxo óptico) e a cabeça de histórico do bloco 70 decide a mistura; precisa do runtime deste branch (`LmxxfNrSetHistoryGuides`) e do `post70-history-head.f16` que o `monta_runtime.ps1` extrai. 2 e 3 = suavização de baixa frequência / realce na saída do runtime |
+| `forcaHistoricoRede` | 0..1 | com `temporalRede` 1: escala do peso que a própria rede dá à resposta anterior (força × 0,74 × a decisão da cabeça de histórico); 1 = o da rede |
 | `forca` | 0..4 | força da edição final (1 = a da rede) |
-| `modo`, `fpsMax`, `ocultaDeGravacoes` | | modo de exibição, teto de FPS, esconder de prints/OBS |
+| `modo`, `fpsMax`, `ocultaDeGravacoes` | | modo de exibição (0 rede, 1 original, 2 comparação, 3 só a edição, 4 movimento, 5 saída crua da última resposta, sem acúmulo, movimento nem grade), teto de FPS, esconder de prints/OBS |
 
 No painel os ajustes finos têm três casas decimais: Shift + arrastar anda 1/10 do normal, e a roda do mouse sobre o
 deslizador soma 0,01 (0,001 com Shift). Duplo clique volta ao padrão.

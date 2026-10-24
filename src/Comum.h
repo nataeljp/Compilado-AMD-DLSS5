@@ -25,6 +25,7 @@ void LogAbre(const std::wstring& pasta);
 void Log(const char* tipo, const std::string& msg);
 std::string Fmt(const char* f, ...);
 std::string Utf8(const std::wstring& w);
+std::wstring Largo(const std::string& s); // UTF-8 -> UTF-16
 
 inline void Ck(HRESULT h, const char* onde)
 {

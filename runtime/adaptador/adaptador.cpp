@@ -12,7 +12,8 @@
 //   OutputReady            -> sempre pronto;  AbandonJob -> Drain + Retire
 //   FLAG_TEMPORAL / VULKAN -> ignoradas (o historico da propria rede e o DLSS5_TEMPORAL_MODE do ambiente, lido pelo
 //                             upstream ao carregar); GetStatus acrescenta "hist=<DLSS5_TEMPORAL_MODE>"
-//   LmxxfNrSetHistoryGuides -> repassado ao upstream antes de cada PrepareFrame em que mudou (e depois de recriar a rede)
+//   LmxxfNrSetHistoryGuides, LmxxfNrSetHistoryStrength -> repassados ao upstream antes de cada PrepareFrame em que
+//                             mudaram (e depois de recriar a rede)
 #include <windows.h>
 #include <cmath>
 #include <cstdarg>
@@ -76,6 +77,8 @@ struct Ctx {
     void *guiaMov = nullptr, *guiaProf = nullptr; // [overlay] guias do historico da rede (pedido do host)
     uint32_t guiaInvertida = 1;
     bool guiasSujas = false;       // as guias tem de ser reenviadas ao runtime (mudaram, ou a rede foi recriada)
+    float forcaHist = 1.f;         // [overlay] forca do historico da rede (pedido do host)
+    bool forcaSuja = false;
 };
 
 static std::wstring dirOf(HMODULE m) {
@@ -151,6 +154,7 @@ static int32_t constroi(Ctx *c) {
     r = U.PrepareSession(c->inner);
     c->built = r == LMXXF_NR_OK;
     c->guiasSujas = c->guiaMov != nullptr; // sessao nova: as guias do host valem para ela tambem
+    c->forcaSuja = c->forcaHist != 1.f;
     return r;
 }
 
@@ -161,6 +165,7 @@ static int32_t (*g_override)(void *, const char *, const float *, uint64_t); // 
 static int32_t (*g_setSkip)(void *, const uint32_t *, uint32_t);
 static int32_t (*g_setPasses)(void *, uint32_t);
 static int32_t (*g_setGuias)(void *, void *, void *, uint32_t); // [overlay] LmxxfNrSetHistoryGuides do upstream
+static int32_t (*g_setForcaHist)(void *, float);                  // [overlay] LmxxfNrSetHistoryStrength do upstream
 // envia ao runtime o conjunto pulado: rede completa (sem 42,43,46) + profundidade dinamica
 static void aplicaSkip(Ctx *c) {
     if (!g_setSkip || !c->inner || !c->skipSujo) return;
@@ -260,6 +265,9 @@ static int32_t A_PrepareFrame(void *ctx, const LmxxfNrFrameInfo *fi, LmxxfNrJob 
     if (c->guiasSujas && g_setGuias && c->inner &&
         confere(g_setGuias(c->inner, c->guiaMov, c->guiaProf, c->guiaInvertida), "SetHistoryGuides") == LMXXF_NR_OK)
         c->guiasSujas = false;
+    if (c->forcaSuja && g_setForcaHist && c->inner &&
+        confere(g_setForcaHist(c->inner, c->forcaHist), "SetHistoryStrength") == LMXXF_NR_OK)
+        c->forcaSuja = false;
     int32_t r = U.PrepareFrame(c->inner, &u, job);
     // [lmxxf2] trabalho anterior largado sem AbandonJob (lista descartada pelo jogo): o runtime fica "not Ready" para
     // sempre e a rede para de agir. Destrava (Drain + CancelUnsubmitted) e tenta de novo neste mesmo quadro.
@@ -339,6 +347,14 @@ __declspec(dllexport) int32_t LmxxfNrSetHistoryGuides(void *ctx, void *motion, v
     }
     return LMXXF_NR_OK;
 }
+// [overlay] forca do historico da propria rede (0..1); repassada ao upstream no proximo PrepareFrame
+__declspec(dllexport) int32_t LmxxfNrSetHistoryStrength(void *ctx, float strength) {
+    auto *c = (Ctx *)ctx;
+    if (!c || !(strength >= 0.f && strength <= 1.f)) return LMXXF_NR_INVALID_ARGUMENT;
+    if (!g_setForcaHist) return LMXXF_NR_NOT_IMPLEMENTED;
+    if (strength != c->forcaHist) { c->forcaHist = strength; c->forcaSuja = true; }
+    return LMXXF_NR_OK;
+}
 // LMXXF_NR_NOT_IMPLEMENTED = runtime sem a funcao (anterior ao v4).
 static int32_t (*g_setMask)(void *, uint32_t, const float *, uint32_t);
 __declspec(dllexport) int32_t LmxxfNrSetMask(void *ctx, uint32_t on, const float *table, uint32_t count) {
@@ -360,6 +376,7 @@ __declspec(dllexport) int32_t LmxxfNrGetApi(uint32_t abi, LmxxfNrApi *out) {
         g_setSkip = (int32_t (*)(void *, const uint32_t *, uint32_t))GetProcAddress(inner, "LmxxfNrSetDynamicSkip");
         g_setPasses = (int32_t (*)(void *, uint32_t))GetProcAddress(inner, "LmxxfNrSetPasses");
         g_setGuias = (int32_t (*)(void *, void *, void *, uint32_t))GetProcAddress(inner, "LmxxfNrSetHistoryGuides");
+        g_setForcaHist = (int32_t (*)(void *, float))GetProcAddress(inner, "LmxxfNrSetHistoryStrength");
         g_setMask = (int32_t (*)(void *, uint32_t, const float *, uint32_t))GetProcAddress(inner, "LmxxfNrSetMask");
     }
     LmxxfNrApi a{};
