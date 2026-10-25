@@ -189,7 +189,26 @@ void Dica(const char* d)
         ImGui::SetTooltip("%s", d);
 }
 
-// rotulo | trilho verde com botao redondo | valor; duplo clique volta ao padrao. cor: trilho e botao nessa cor (0 = verde).
+// valor sendo digitado (clique no numero de um deslizador): qual, o texto e se o campo ainda precisa do foco
+ImGuiID g_editando = 0;
+char g_textoEdicao[32] = {};
+bool g_focarEdicao = false;
+
+// seta de voltar (circulo aberto com a ponta no alto, apontando para a esquerda): o "volta ao padrao" de cada ajuste
+void SetaVolta(ImDrawList* dl, ImVec2 c, float r, ImU32 cor, float esp)
+{
+    const float pi = 3.14159265f, topo = -pi * 0.5f;
+    dl->PathArcTo(c, r, topo + 0.35f, topo + pi * 1.55f, 22);
+    dl->PathStroke(cor, 0, esp);
+    const ImVec2 p(c.x, c.y - r), dir(-1.f, 0.f), rad(0.f, -1.f);
+    const float s = r * 0.75f;
+    dl->AddTriangleFilled(ImVec2(p.x + dir.x * s, p.y + dir.y * s), ImVec2(p.x + rad.x * s * 0.7f, p.y + rad.y * s * 0.7f),
+                          ImVec2(p.x - rad.x * s * 0.7f, p.y - rad.y * s * 0.7f), cor);
+}
+
+// rotulo | trilho verde com botao redondo | valor | seta de volta ao padrao. cor: trilho e botao nessa cor (0 = verde).
+// Clique no valor: digita o numero (Enter aplica, Esc cancela; fora da faixa vai para o limite). A seta (ou duplo clique
+// no trilho) volta ao padrao; apagada quando o valor ja e o padrao, ausente sem padrao.
 // Ajuste fino: Shift + arrastar anda 1/10 do normal; a roda do mouse sobre o trilho soma um passo (a penultima casa do
 // formato, ex. 0,01 em "%.3f") e, com Shift, a ultima (0,001)
 bool Deslizador(const char* rot, float* v, float a, float b, const char* fmt, const char* dica, float padrao = NAN,
@@ -197,8 +216,8 @@ bool Deslizador(const char* rot, float* v, float a, float b, const char* fmt, co
 {
     ImGui::PushID(rot);
     const float larg = ImGui::GetContentRegionAvail().x;
-    const float colRot = larg * 0.40f, colVal = 56 * g_e, raio = 9 * g_e, alt = 26 * g_e;
-    const float trilho = larg - colRot - colVal - 6 * g_e;
+    const float colIco = 22 * g_e, colRot = larg * 0.38f, colVal = 58 * g_e, raio = 9 * g_e, alt = 26 * g_e;
+    const float trilho = larg - colRot - colVal - colIco - 10 * g_e;
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float a1 = ImGui::GetStyle().Alpha;
@@ -266,20 +285,97 @@ bool Deslizador(const char* rot, float* v, float a, float b, const char* fmt, co
     dl->AddRectFilled(ImVec2(x0 - raio * 0.5f, y - 2.5f * g_e), ImVec2(xk, y + 2.5f * g_e), alfa(corTrilho), 3 * g_e);
     dl->AddCircleFilled(ImVec2(xk, y), raio + (foco ? 1.5f * g_e : 0.f), alfa(corTrilho), 24);
     dl->AddCircle(ImVec2(xk, y), raio * 0.55f, alfa(IM_COL32(20, 30, 4, 255)), 24, 2.f * g_e);
-    char buf[32];
-    snprintf(buf, sizeof buf, fmt, *v);
-    const float tw = g_texto->CalcTextSizeA(g_tTexto, FLT_MAX, 0, buf).x;
-    dl->AddText(g_texto, g_tTexto, ImVec2(p0.x + larg - tw, p0.y + (alt - g_tTexto) * 0.5f), alfa(kTexto), buf);
+
+    // valor: clique para digitar
+    const ImVec2 pv(p0.x + colRot + trilho + 6 * g_e, p0.y);
+    const ImGuiID idValor = ImGui::GetID("##valor");
+    const bool numerico = strchr(fmt, '%') != nullptr; // "Windows" (Branco em 0) e afins: texto fixo, nao digita
+    if (g_editando == idValor)
+    {
+        ImGui::SetCursorScreenPos(pv);
+        ImGui::SetNextItemWidth(colVal);
+        if (g_focarEdicao)
+        {
+            ImGui::SetKeyboardFocusHere();
+            g_focarEdicao = false;
+        }
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4 * g_e, (alt - g_tTexto) * 0.5f));
+        const bool enter = ImGui::InputText("##valor", g_textoEdicao, sizeof g_textoEdicao,
+                                            ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll |
+                                                ImGuiInputTextFlags_CharsScientific);
+        ImGui::PopStyleVar();
+        const bool saiu = ImGui::IsItemDeactivated();
+        if (enter || (saiu && !ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
+        {
+            // virgula ou ponto como separador decimal
+            for (char* c = g_textoEdicao; *c; ++c)
+                if (*c == ',')
+                    *c = '.';
+            char* fim = nullptr;
+            const float lido = strtof(g_textoEdicao, &fim);
+            if (fim != g_textoEdicao && std::isfinite(lido))
+            {
+                const float nv = std::clamp(lido, a, b);
+                if (nv != *v)
+                    *v = nv, mudou = true;
+            }
+            g_editando = 0;
+        }
+        else if (saiu)
+            g_editando = 0; // Esc: fica o valor de antes
+    }
+    else
+    {
+        char buf[32];
+        snprintf(buf, sizeof buf, fmt, *v);
+        ImGui::SetCursorScreenPos(pv);
+        ImGui::InvisibleButton("##valorBotao", ImVec2(colVal, alt));
+        const bool hovV = ImGui::IsItemHovered() && numerico;
+        if (numerico && ImGui::IsItemClicked())
+        {
+            snprintf(g_textoEdicao, sizeof g_textoEdicao, "%.*f", casas, *v);
+            g_editando = idValor;
+            g_focarEdicao = true;
+        }
+        if (hovV)
+            ImGui::SetTooltip("Clique para digitar o valor (%g a %g)", a, b);
+        const float tw = g_texto->CalcTextSizeA(g_tTexto, FLT_MAX, 0, buf).x;
+        const ImVec2 pt(pv.x + colVal - tw, p0.y + (alt - g_tTexto) * 0.5f);
+        dl->AddText(g_texto, g_tTexto, pt, alfa(hovV ? kVerde : kTexto), buf);
+        if (hovV)
+            dl->AddLine(ImVec2(pt.x, pt.y + g_tTexto + 1 * g_e), ImVec2(pt.x + tw, pt.y + g_tTexto + 1 * g_e),
+                        alfa(kVerde), 1.f * g_e);
+    }
+
+    // volta ao padrao
+    if (!std::isnan(padrao))
+    {
+        ImGui::SetCursorScreenPos(ImVec2(p0.x + larg - colIco, p0.y));
+        ImGui::InvisibleButton("##padrao", ImVec2(colIco, alt));
+        const float meio = casas > 0 ? 0.5f * std::pow(10.f, -float(casas)) : 0.5f;
+        const bool noPadrao = std::fabs(*v - padrao) < meio;
+        const bool hovP = ImGui::IsItemHovered() && !noPadrao;
+        if (hovP && ImGui::IsItemClicked())
+            *v = padrao, mudou = true;
+        if (hovP)
+        {
+            char bp[32];
+            snprintf(bp, sizeof bp, numerico ? fmt : "%g", padrao);
+            ImGui::SetTooltip("Volta ao padrão (%s)", bp);
+        }
+        SetaVolta(dl, ImVec2(p0.x + larg - colIco * 0.5f, p0.y + alt * 0.5f), 6.f * g_e,
+                  alfa(noPadrao ? kTrilho : (hovP ? kVerde : kTexto2)), 1.6f * g_e);
+    }
     ImGui::SetCursorScreenPos(ImVec2(p0.x, p0.y + alt + 4 * g_e));
     ImGui::Dummy(ImVec2(0, 0));
     ImGui::PopID();
     return mudou;
 }
 
-bool DeslizadorInt(const char* rot, int* v, int a, int b, const char* fmt, const char* dica)
+bool DeslizadorInt(const char* rot, int* v, int a, int b, const char* fmt, const char* dica, float padrao = NAN)
 {
     float f = float(*v);
-    if (!Deslizador(rot, &f, float(a), float(b), "%.0f", dica))
+    if (!Deslizador(rot, &f, float(a), float(b), "%.0f", dica, padrao))
         return false;
     const int n = std::clamp(int(std::lround(f)), a, b);
     const bool mudou = n != *v;
@@ -363,6 +459,35 @@ bool Segmentos(const char* id, const char* const* nomes, int n, int* sel, float 
     }
     ImGui::PopID();
     return mudou;
+}
+
+// tecla virtual -> tecla do ImGui (so as que um campo de texto usa)
+ImGuiKey TeclaImGui(UINT vk)
+{
+    switch (vk)
+    {
+    case VK_BACK: return ImGuiKey_Backspace;
+    case VK_DELETE: return ImGuiKey_Delete;
+    case VK_RETURN: return ImGuiKey_Enter;
+    case VK_ESCAPE: return ImGuiKey_Escape;
+    case VK_TAB: return ImGuiKey_Tab;
+    case VK_LEFT: return ImGuiKey_LeftArrow;
+    case VK_RIGHT: return ImGuiKey_RightArrow;
+    case VK_UP: return ImGuiKey_UpArrow;
+    case VK_DOWN: return ImGuiKey_DownArrow;
+    case VK_HOME: return ImGuiKey_Home;
+    case VK_END: return ImGuiKey_End;
+    case VK_SHIFT: case VK_LSHIFT: return ImGuiKey_LeftShift;
+    case VK_RSHIFT: return ImGuiKey_RightShift;
+    case VK_CONTROL: case VK_LCONTROL: return ImGuiKey_LeftCtrl;
+    case VK_RCONTROL: return ImGuiKey_RightCtrl;
+    case 'A': return ImGuiKey_A;
+    case 'C': return ImGuiKey_C;
+    case 'V': return ImGuiKey_V;
+    case 'X': return ImGuiKey_X;
+    case 'Z': return ImGuiKey_Z;
+    default: return ImGuiKey_None;
+    }
 }
 
 bool Botao(const char* rot, float largura = 0.f, bool destaque = false)
@@ -750,177 +875,100 @@ void Painel::AtualizaJanelas()
     escolhida = janelas.empty() ? -1 : std::clamp(escolhida, 0, int(janelas.size()) - 1);
 }
 
-// aba PERFIS: os perfis do exe ligado (bin\perfis\<exe>\<nome>.json) e o padrao do programa (config.json). Apagar,
-// sobrescrever e carregar por cima de alteracoes nao salvas pedem confirmacao.
-void Painel::AbaPerfis(const EstadoPainel& e, AcoesPainel& a, float lc)
+// perfil do jogo (como o ReShade), logo abaixo da escolha da janela: o seletor traz os ajustes de qualquer perfil (de
+// qualquer jogo); Salvar grava sempre no perfil do jogo ligado (o nome do exe, ou o nome dado em Renomear). Carregar por
+// cima de alteracoes nao salvas e apagar pedem confirmacao.
+void Painel::SecaoPerfil(const EstadoPainel& e, AcoesPainel& a, float lc)
 {
     const ImVec4 cinza = ImGui::ColorConvertU32ToFloat4(kTexto2), amarelo(1, 0.78f, 0.3f, 1);
-    const float b2 = (lc - 8 * g_e) / 2, b3 = (lc - 16 * g_e) / 3;
-    auto pede = [&](int qual, const std::string& nome) {
-        confirma = qual;
-        confirmaNome = nome;
-        abreConfirma = true;
-    };
-
-    Secao("EM USO", false);
-    ImGui::PushTextWrapPos(0.f);
-    if (e.semDestino)
-        ImGui::TextColored(amarelo, "Ajustes do perfil apagado: não são gravados ao sair (salve como novo para guardar).");
-    else
-    {
-        ImGui::Text("%s", e.perfilAtivo.empty() ? "Padrão do programa (config.json)" : e.perfilAtivo.c_str());
+    const float b3 = (lc - 16 * g_e) / 3, b2 = (lc - 8 * g_e) / 2;
+    const bool comJogo = !e.exe.empty();
+    auto carrega = [&](const std::string& n) {
         if (e.perfilAlterado)
         {
-            ImGui::SameLine();
-            ImGui::TextColored(amarelo, "·  alterado");
+            confirma = 2;
+            confirmaNome = n;
+            abreConfirma = true;
         }
-    }
-    ImGui::TextColored(cinza, "Ao sair do programa ou trocar de jogo, os ajustes são gravados no que está em uso.");
-    ImGui::PopTextWrapPos();
-
-    if (e.exe.empty())
-    {
-        Secao("PERFIS DO JOGO");
-        ImGui::PushTextWrapPos(0.f);
-        ImGui::TextColored(cinza, "Ligue um jogo (Ctrl+Shift+D com ele em foco, ou JOGO na aba DLSS 5) para ver, salvar e "
-                                  "carregar os perfis dele.");
-        ImGui::PopTextWrapPos();
-    }
-    else
-    {
-        // nome do jogo: o exe nem sempre tem o nome dele (tlou-ii.exe); a sugestao e o titulo da janela
-        if (exeNomeJogo != e.exe)
-        {
-            exeNomeJogo = e.exe;
-            snprintf(nomeJogo, sizeof nomeJogo, "%s", e.nomeJogo.c_str());
-        }
-        const std::string titulo = Utf8(e.alvo);
-        Secao("JOGO");
-        ImGui::TextColored(cinza, "%s", e.exe.c_str());
-        ImGui::SetNextItemWidth(lc);
-        ImGui::InputTextWithHint("##jogo", titulo.empty() ? "nome do jogo" : titulo.c_str(), nomeJogo, sizeof nomeJogo);
-        Dica("Nome do jogo para este exe (aparece no titulo da lista). Digitar precisa do painel com o foco do teclado.");
-        if (Botao("Salvar nome", b2))
-        {
-            a.nomeJogoMuda = true;
-            a.nomeJogo = nomeJogo;
-        }
-        ImGui::SameLine(0, 8 * g_e);
-        ImGui::BeginDisabled(titulo.empty());
-        if (Botao("Usar o título da janela", b2))
-        {
-            snprintf(nomeJogo, sizeof nomeJogo, "%s", titulo.c_str());
-            a.nomeJogoMuda = true;
-            a.nomeJogo = nomeJogo;
-        }
-        ImGui::EndDisabled();
-
-        Secao(("PERFIS DE " + (e.nomeJogo.empty() ? e.exe : e.nomeJogo)).c_str());
-        if (std::find(e.perfis.begin(), e.perfis.end(), perfilSel) == e.perfis.end())
-            perfilSel = std::find(e.perfis.begin(), e.perfis.end(), e.perfilAtivo) != e.perfis.end()
-                            ? e.perfilAtivo
-                            : (e.perfis.empty() ? std::string() : e.perfis.front());
-        // com alteracoes nao salvas, ou com os ajustes do perfil apagado (so na memoria), pergunta antes
-        auto carrega = [&](const std::string& n) {
-            if (e.perfilAlterado || e.semDestino)
-                pede(2, n);
-            else
-                a.perfilCarregar = n;
-        };
-        if (e.perfis.empty())
-            ImGui::TextColored(cinza, "Nenhum perfil salvo para este jogo.");
-        else
-        {
-            const float alt = float(std::min<size_t>(e.perfis.size(), 6)) * ImGui::GetTextLineHeightWithSpacing() +
-                              ImGui::GetStyle().WindowPadding.y * 2;
-            ImGui::BeginChild("##perfis", ImVec2(lc, alt), ImGuiChildFlags_Borders);
-            for (const auto& n : e.perfis)
-            {
-                std::string rot = n;
-                if (n == e.perfilAtivo)
-                    rot += "   · em uso";
-                if (n == e.perfilAoLigar)
-                    rot += "   · ao ligar";
-                if (ImGui::Selectable((rot + "##" + n).c_str(), n == perfilSel))
-                    perfilSel = n;
-                if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0))
-                    carrega(n);
-            }
-            ImGui::EndChild();
-        }
-        ImGui::BeginDisabled(perfilSel.empty());
-        if (Botao("Carregar", b3, true))
-            carrega(perfilSel);
-        Dica("Carrega o perfil escolhido (duplo clique na lista faz o mesmo). Tamanho e rede valem ao religar.");
-        ImGui::SameLine(0, 8 * g_e);
-        if (Botao("Apagar", b3))
-            pede(1, perfilSel);
-        ImGui::SameLine(0, 8 * g_e);
-        const bool aoLigar = !perfilSel.empty() && perfilSel == e.perfilAoLigar;
-        if (Botao(aoLigar ? "Não ao ligar" : "Usar ao ligar", b3))
-        {
-            a.perfilAoLigarMuda = true;
-            a.perfilAoLigar = aoLigar ? std::string() : perfilSel;
-        }
-        Dica("O perfil marcado 'ao ligar' carrega sozinho quando o overlay liga neste jogo (vindo de outro jogo ou ao\n"
-             "abrir o programa). Religar o mesmo jogo mantem os ajustes da tela.");
-        ImGui::EndDisabled();
-
-        Secao("SALVAR");
-        ImGui::SetNextItemWidth(lc);
-        ImGui::InputTextWithHint("##nome", e.nomeLivre.c_str(), nomePerfil, sizeof nomePerfil);
-        Dica("Nome do perfil novo (ou o novo nome ao renomear); vazio = o sugerido. Digitar precisa do painel com o foco\n"
-             "do teclado: com o jogo em foco as teclas vao para o jogo (abra o painel pela bandeja ou com o jogo fora de\n"
-             "foco).");
-        if (Botao("Salvar como novo", b2, true))
-        {
-            const std::string n = nomePerfil[0] ? std::string(nomePerfil) : e.nomeLivre;
-            if (std::find(e.perfis.begin(), e.perfis.end(), n) != e.perfis.end())
-                pede(4, n);
-            else if (!n.empty())
-            {
-                a.perfilSalvarComo = n;
-                perfilSel = n;
-                nomePerfil[0] = 0;
-            }
-        }
-        ImGui::SameLine(0, 8 * g_e);
-        const std::string novoNome = nomePerfil;
-        const bool nomeLivre = !novoNome.empty() && std::find(e.perfis.begin(), e.perfis.end(), novoNome) == e.perfis.end();
-        ImGui::BeginDisabled(perfilSel.empty() || !nomeLivre);
-        if (Botao("Renomear", b2))
-        {
-            a.perfilRenomear = perfilSel;
-            a.perfilNovoNome = novoNome;
-            perfilSel = novoNome;
-            nomePerfil[0] = 0;
-        }
-        ImGui::EndDisabled();
-        Dica("Troca o nome do perfil escolhido na lista pelo nome digitado (que ainda nao pode existir).");
-        ImGui::BeginDisabled(e.perfilAtivo.empty());
-        if (Botao("Salvar no perfil em uso", lc))
-            a.perfilSalvar = true;
-        Dica("Grava os ajustes atuais por cima do perfil em uso.");
-        ImGui::EndDisabled();
-    }
-
-    Secao("PADRÃO DO PROGRAMA");
-    if (Botao("Carregar padrão", b3))
-    {
-        if (e.perfilAlterado || e.semDestino)
-            pede(3, std::string());
-        else
+        else if (n.empty())
             a.carregarPadrao = true;
+        else
+            a.perfilCarregar = n;
+    };
+
+    ImGui::Dummy(ImVec2(0, 2 * g_e));
+    ImGui::TextColored(cinza, "Perfil");
+    const std::string atual = e.perfilBase.empty() ? "(padrão do programa)" : e.perfilBase;
+    ImGui::SetNextItemWidth(lc);
+    if (ImGui::BeginCombo("##perfil", atual.c_str()))
+    {
+        if (ImGui::Selectable("(padrão do programa)##padrao", e.perfilBase.empty()))
+            carrega(std::string());
+        for (const auto& n : e.perfis)
+        {
+            const std::string rot = n == e.perfilJogo ? n + "   · deste jogo" : n;
+            if (ImGui::Selectable((rot + "##" + n).c_str(), n == e.perfilBase))
+                carrega(n);
+        }
+        ImGui::EndCombo();
     }
-    Dica("Os ajustes de config.json (o de quem nao tem perfil); ele passa a ser o que esta em uso.");
+    Dica("Traz os ajustes de qualquer perfil (de qualquer jogo) ou do padrao do programa. Salvar grava sempre no perfil\n"
+         "deste jogo: carregar o perfil de outro jogo nao mexe no arquivo dele.");
+    // para onde vai o Salvar
+    ImGui::PushTextWrapPos(0.f);
+    if (comJogo)
+        ImGui::TextColored(cinza, "Salva em: %s.json%s", e.perfilJogo.c_str(), e.perfilExiste ? "" : "  (novo)");
+    else
+        ImGui::TextColored(cinza, "Sem jogo: salva no padrão do programa (config.json)");
+    if (e.perfilAlterado)
+    {
+        ImGui::SameLine();
+        ImGui::TextColored(amarelo, "·  alterado");
+    }
+    ImGui::PopTextWrapPos();
+    if (Botao("Salvar", b3, e.perfilAlterado))
+        a.perfilSalvar = true;
+    Dica(comJogo ? "Grava os ajustes no perfil deste jogo. Ao sair do programa ou trocar de jogo eles tambem vao para la."
+                 : "Grava os ajustes no padrao do programa (config.json), o ponto de partida de um jogo sem perfil.");
     ImGui::SameLine(0, 8 * g_e);
-    if (Botao("Salvar padrão", b3))
-        a.salvar = true;
-    Dica("Grava os ajustes atuais em config.json. Com um perfil em uso, ele continua sendo o destino ao sair.");
+    ImGui::BeginDisabled(!comJogo);
+    if (Botao("Renomear", b3))
+    {
+        renomeando = !renomeando;
+        snprintf(nomeNovo, sizeof nomeNovo, "%s", e.perfilJogo.c_str());
+    }
+    Dica("Outro nome para o perfil deste jogo (o exe nem sempre tem o nome do jogo). O jogo continua ligado a ele.");
+    ImGui::EndDisabled();
     ImGui::SameLine(0, 8 * g_e);
-    if (Botao("Redefinir", b3))
-        a.redefinir = true;
-    Dica("Volta os ajustes aos padroes de fabrica do programa (nada e gravado ate salvar, sair ou trocar de jogo).");
+    const std::string apagavel = !e.perfilBase.empty() ? e.perfilBase : std::string();
+    ImGui::BeginDisabled(apagavel.empty());
+    if (Botao("Apagar", b3))
+    {
+        confirma = 1;
+        confirmaNome = apagavel;
+        abreConfirma = true;
+    }
+    Dica("Manda o perfil escolhido no seletor para a Lixeira. Os ajustes em uso continuam na tela.");
+    ImGui::EndDisabled();
+    if (renomeando && comJogo)
+    {
+        ImGui::SetNextItemWidth(lc);
+        const bool enter = ImGui::InputText("##nomeNovo", nomeNovo, sizeof nomeNovo, ImGuiInputTextFlags_EnterReturnsTrue);
+        const std::string novo = nomeNovo;
+        const bool existe = novo != e.perfilJogo && std::find(e.perfis.begin(), e.perfis.end(), novo) != e.perfis.end();
+        if (existe)
+            ImGui::TextColored(amarelo, "Já existe um perfil com esse nome.");
+        ImGui::BeginDisabled(novo.empty() || existe || novo == e.perfilJogo);
+        if (Botao("OK", b2, true) || (enter && !novo.empty() && !existe && novo != e.perfilJogo))
+        {
+            a.perfilRenomear = novo;
+            renomeando = false;
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine(0, 8 * g_e);
+        if (Botao("Cancelar", b2))
+            renomeando = false;
+    }
 
     // confirmacoes
     if (abreConfirma)
@@ -932,42 +980,32 @@ void Painel::AbaPerfis(const EstadoPainel& e, AcoesPainel& a, float lc)
     if (ImGui::BeginPopupModal("Confirmar", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove))
     {
         const float lb = ImGui::GetContentRegionAvail().x;
-        const char* alvo = confirmaNome.empty() ? "o padrão do programa" : confirmaNome.c_str();
         ImGui::PushTextWrapPos(0.f);
         if (confirma == 1)
-            ImGui::Text("Apagar o perfil \"%s\"? Não dá para desfazer.", confirmaNome.c_str());
-        else if (confirma == 4)
-            ImGui::Text("Já existe o perfil \"%s\". Gravar os ajustes atuais por cima dele?", confirmaNome.c_str());
+            ImGui::Text("Mandar o perfil \"%s\" para a Lixeira?", confirmaNome.c_str());
         else
-            ImGui::Text("%s Carregar %s%s%s mesmo assim?",
-                        e.semDestino ? "Os ajustes em uso são do perfil apagado (só na memória)."
-                                     : "Os ajustes em uso têm alterações não salvas.",
-                        confirmaNome.empty() ? "" : "\"", alvo, confirmaNome.empty() ? "" : "\"");
+            ImGui::Text("Os ajustes em uso têm alterações não salvas. Carregar %s%s%s mesmo assim?",
+                        confirmaNome.empty() ? "" : "\"", confirmaNome.empty() ? "o padrão do programa" : confirmaNome.c_str(),
+                        confirmaNome.empty() ? "" : "\"");
         ImGui::PopTextWrapPos();
         bool fecha = false;
         if (confirma == 1 && Botao("Apagar", lb))
             a.perfilApagar = confirmaNome, fecha = true;
-        if (confirma == 4 && Botao("Gravar por cima", lb, true))
-            a.perfilSalvarComo = confirmaNome, perfilSel = confirmaNome, nomePerfil[0] = 0, fecha = true;
-        if (confirma == 2 || confirma == 3)
+        if (confirma == 2)
         {
-            // salvar primeiro: o app trata o salvar antes do carregar (sem destino: salvar como novo pela lista)
-            if (!e.semDestino && Botao(e.perfilAtivo.empty() ? "Salvar no padrão e carregar" : "Salvar e carregar", lb, true))
-            {
-                if (e.perfilAtivo.empty())
-                    a.salvar = true;
-                else
-                    a.perfilSalvar = true;
-                fecha = true;
-            }
+            bool carregar = false;
+            // salvar primeiro: o app trata o salvar antes do carregar
+            if (Botao(comJogo ? "Salvar neste jogo e carregar" : "Salvar no padrão e carregar", lb, true))
+                a.perfilSalvar = true, carregar = true;
             if (Botao("Descartar e carregar", lb))
-                fecha = true;
-            if (fecha)
+                carregar = true;
+            if (carregar)
             {
-                if (confirma == 2)
-                    a.perfilCarregar = confirmaNome;
-                else
+                if (confirmaNome.empty())
                     a.carregarPadrao = true;
+                else
+                    a.perfilCarregar = confirmaNome;
+                fecha = true;
             }
         }
         if (Botao("Cancelar", lb))
@@ -1099,6 +1137,19 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                 else
                     io.AddMouseWheelEvent(m.rodaH, m.roda);
             }
+            // teclado do campo de texto (o jogo continua em foco): teclas de controle e caracteres
+            for (const EventoTecla& t : gancho.ColetaTeclas())
+            {
+                const ImGuiKey k = TeclaImGui(t.vk);
+                if (k != ImGuiKey_None)
+                    io.AddKeyEvent(k, t.desce);
+                if (t.vk == VK_SHIFT || t.vk == VK_LSHIFT || t.vk == VK_RSHIFT)
+                    io.AddKeyEvent(ImGuiMod_Shift, t.desce);
+                else if (t.vk == VK_CONTROL || t.vk == VK_LCONTROL || t.vk == VK_RCONTROL)
+                    io.AddKeyEvent(ImGuiMod_Ctrl, t.desce);
+                for (int i = 0; i < t.nch; ++i)
+                    io.AddInputCharacterUTF16(t.ch[i]);
+            }
             if (esc)
             {
                 Esconde(true);
@@ -1116,28 +1167,19 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
     const float larg = ImGui::GetContentRegionAvail().x;
     bool mc = false; // mudou algo que a rede ve: o historico recomeca
 
-    // ---- cabecalho: abas DLSS 5 | PERFIS, fechar, estado ----
+    // ---- cabecalho: titulo, fechar, estado (o perfil fica na secao JOGO, como o seletor de preset do ReShade) ----
     {
         const ImVec2 p = ImGui::GetCursorScreenPos();
-        const char* abas[] = {"DLSS 5", "PERFIS"};
-        float x = p.x;
-        for (int i = 0; i < 2; ++i)
         {
-            const float tw = g_texto->CalcTextSizeA(g_tTitulo, FLT_MAX, 0, abas[i]).x;
-            ImGui::SetCursorScreenPos(ImVec2(x, p.y));
-            ImGui::PushID(i);
-            if (ImGui::InvisibleButton("##aba", ImVec2(tw, g_tTitulo + 8 * g_e)))
-                aba = i;
-            const bool hov = ImGui::IsItemHovered();
-            ImGui::PopID();
-            dl->AddText(g_texto, g_tTitulo, ImVec2(x, p.y), aba == i ? kTexto : (hov ? kTexto : kTexto2), abas[i]);
-            if (aba == i)
-                dl->AddRectFilled(ImVec2(x, p.y + g_tTitulo + 4 * g_e), ImVec2(x + tw, p.y + g_tTitulo + 7 * g_e), kVerde,
-                                  1.5f * g_e);
-            x += tw + 24 * g_e;
+            const float tw = g_texto->CalcTextSizeA(g_tTitulo, FLT_MAX, 0, "DLSS 5").x;
+            dl->AddText(g_texto, g_tTitulo, p, kTexto, "DLSS 5");
+            dl->AddRectFilled(ImVec2(p.x, p.y + g_tTitulo + 4 * g_e), ImVec2(p.x + tw, p.y + g_tTitulo + 7 * g_e), kVerde,
+                              1.5f * g_e);
         }
         ImGui::SetCursorScreenPos(ImVec2(p.x + larg - 28 * g_e, p.y));
-        if (ImGui::InvisibleButton("##fecha", ImVec2(28 * g_e, 28 * g_e)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+        // Esc com um campo de texto ativo cancela o campo, nao fecha o painel
+        if (ImGui::InvisibleButton("##fecha", ImVec2(28 * g_e, 28 * g_e)) ||
+            (ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !ImGui::GetIO().WantTextInput && !g_editando))
             Esconde(true);
         const ImVec2 c(p.x + larg - 14 * g_e, p.y + 14 * g_e);
         const ImU32 cx = ImGui::IsItemHovered() ? kTexto : kTexto2;
@@ -1167,14 +1209,14 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         }
         if (!e.memoria.empty())
             ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kTexto2), "%s", e.memoria.c_str());
+        if (!e.redeOk)
+            ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "Rede indisponível: só o quadro original (overlay.jsonl)");
         if (!e.avisoMemoria.empty())
         {
             ImGui::PushTextWrapPos(0.f);
-            ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "%s", e.avisoMemoria.c_str());
+            ImGui::TextColored(ImVec4(1, 0.78f, 0.3f, 1), "%s", e.avisoMemoria.c_str());
             ImGui::PopTextWrapPos();
         }
-        else if (!e.redeOk)
-            ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "Rede indisponível: só o quadro original (overlay.jsonl)");
         ImGui::Dummy(ImVec2(0, 4 * g_e));
         bool ligado = cfg.modo != 1;
         if (Marca("DLSS LIGADO", &ligado, "Liga/desliga a rede (Ctrl+Shift+N troca o modo de exibicao)", true))
@@ -1188,11 +1230,8 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
     ImGui::PushFont(g_texto, g_tTexto);
     const float lc = ImGui::GetContentRegionAvail().x;
 
-    if (aba == 1)
-        AbaPerfis(e, a, lc);
-    else
     {
-        // ---- jogo (escolher a janela sem o atalho): a primeira secao da aba ----
+        // ---- jogo (escolher a janela sem o atalho) e o perfil dele: a primeira secao ----
         Secao("JOGO", false);
         {
             const char* atual = escolhida >= 0 ? janelas[escolhida].nome.c_str() : "(nenhuma)";
@@ -1216,6 +1255,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             if (Botao("Atualizar", b3))
                 AtualizaJanelas();
             ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kTexto2), "Jogo em janela ou tela cheia sem borda.");
+            SecaoPerfil(e, a, lc);
         }
 
         // ---- predefinicoes ----
@@ -1269,17 +1309,25 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             Dica("Model C, tom 0, ponte 'Curva do jogo', luzes 0,5 antes da rede: imita a foto Zorah do jogo (o DLSS 5\n"
                  "dentro do jogo, antes do tonemap). Se afasta do que a rede da NVIDIA faz numa imagem capturada\n"
                  "(24 dB contra a saida real da NVIDIA; o 'Padrao NVIDIA' da 45-47 dB).");
+            if (Botao("Redefinir tudo", lc))
+                a.redefinir = true;
+            Dica("Volta todos os ajustes aos padroes de fabrica do programa (nada e gravado ate salvar, sair ou trocar\n"
+                 "de jogo).");
         }
 
         // ---- controles globais (os da NVIDIA) ----
         Secao("CONTROLES GLOBAIS");
-        mc |= Deslizador("Estrutura", &cfg.ngx.estruturaLocal, -2.f, 4.f, "%.3f",
-                         "DLSSNR.LocalStructureStrength: detalhe e forma locais. Duplo clique: 1.", 1.f);
-        mc |= Deslizador("Tom", &cfg.ngx.tomLocal, 0.f, 2.f, "%.3f",
-                         "DLSSNR.LocalToneStrength: luz e cor em grande escala; tambem escala a gradacao do modelo.", 1.f);
-        Deslizador("Intensidade", &cfg.ngx.intensidade, 0.f, 4.f, "%.3f",
-                   "DLSSNR.Intensity: quanto da resposta da rede entra (acima de 1 reforca a luz).", 1.f);
-        Deslizador("Força da edição", &cfg.forca, 0.f, 4.f, "%.3f", "Quanto da mudanca da rede entra no quadro (1 = a da rede).", 1.f);
+        // as faixas da NVIDIA: fora delas a rede inverte (medido: estrutura acima de 2 e tom acima de 1 clareiam a imagem
+        // em vez de reforcar; intensidade acima de 2 tambem)
+        mc |= Deslizador("Estrutura", &cfg.ngx.estruturaLocal, -1.f, 2.f, "%.3f",
+                         "DLSSNR.LocalStructureStrength: detalhe e forma locais (faixa da NVIDIA, -1 a 2).", 1.f);
+        mc |= Deslizador("Tom", &cfg.ngx.tomLocal, 0.f, 1.f, "%.3f",
+                         "DLSSNR.LocalToneStrength: luz e cor em grande escala; tambem escala a gradacao do modelo\n"
+                         "(faixa da NVIDIA, 0 a 1).", 1.f);
+        Deslizador("Intensidade", &cfg.ngx.intensidade, 0.f, 2.f, "%.3f",
+                   "DLSSNR.Intensity: quanto da resposta da rede entra; acima de 1 reforca a luz (faixa da NVIDIA, 0 a 2;\n"
+                   "vale na composicao de referencia NVIDIA/RenoDX, a do Padrao NVIDIA).", 1.f);
+        Deslizador("Força da edição", &cfg.forca, 0.f, 2.f, "%.3f", "Quanto da mudanca da rede entra no quadro (1 = a da rede).", 1.f);
         Deslizador("Nitidez (CAS)", &cfg.nitidez, 0.f, 1.f, "%.2f",
                    "Nitidez adaptativa ao contraste (o algoritmo do CAS da AMD FidelityFX) na imagem final, so no lado da\n"
                    "rede: reforca o detalhe fraco e quase nao mexe nas bordas fortes (sem halo). 0 = desligada (padrao),\n"
@@ -1299,12 +1347,13 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         Secao("PELE (NVIDIA)");
         {
             mc |= Marca("Pele separada pela rede", &cfg.ngx.mascara,
-                        "DLSSNR.UseAutoMask: a propria rede acha a pele e separa do resto da cena. Desligada, os canais de\n"
-                        "pele e de cena vao a -1. Padrao: ligada.");
+                        "DLSSNR.UseAutoMask: liga o canal de pele da rede (com a Estrutura da pele). Desligada, o canal fica\n"
+                        "no padrao da NVIDIA; o resto da cena nao muda. Padrao: ligada.");
             ImGui::BeginDisabled(!cfg.ngx.mascara);
-            mc |= Deslizador("Estrutura da pele", &cfg.ngx.estruturaPele, -2.f, 4.f, "%.3f",
-                             "DLSSNR.SkinStructureStrength: a estrutura so na pele que a rede achou (padrao 1). O resto da\n"
-                             "cena segue a Estrutura local.", 1.f);
+            mc |= Deslizador("Estrutura da pele", &cfg.ngx.estruturaPele, -1.f, 2.f, "%.3f",
+                             "DLSSNR.SkinStructureStrength (faixa da NVIDIA, -1 a 2). Efeito pequeno: medido canal por canal,\n"
+                             "a rede nao separa a pele sozinha (o canal muda pele e cena quase igual). A NVIDIA separa a pele\n"
+                             "com um modelo de mascara proprio, que nao existe neste runtime.", 1.f);
             ImGui::EndDisabled();
         }
 
@@ -1327,6 +1376,20 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                 ImGui::PushTextWrapPos(0.f);
                 ImGui::TextColored(cor, "%s", s.empty() ? "Ctrl+Shift+D com o jogo em foco (FSR ou XeSS ligado no jogo)" : s.c_str());
                 ImGui::PopTextWrapPos();
+            }
+            // atraso da edicao: o rastro em movimento vinha de a edicao da rede chegar quadros depois e ser trazida
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kTexto2), "Atraso da edição");
+            {
+                const char* atrasos[] = {"Normal", "Sem atraso (NVIDIA)"};
+                int ia = cfg.semAtraso > 0 ? 1 : 0;
+                if (Segmentos("atraso", atrasos, 2, &ia, 30 * g_e))
+                    cfg.semAtraso = ia ? 3 : 0;
+                Dica("Sem atraso (padrao) e como a NVIDIA roda o DLSS 5: a rede em todo quadro, dentro do tempo do quadro,\n"
+                     "e a edicao do proprio quadro -- nada trazido de quadros velhos (o rastro em movimento vinha disso).\n"
+                     "Captura de video: o quadro vai para a tela depois da rede (o overlay atrasa o tempo dela).\n"
+                     "Captura de buffer: o jogo espera a edicao do quadro anterior (1 quadro, pelo movimento exato).\n"
+                     "Custa FPS, como na NVIDIA. A estabilidade no tempo vem do 'Historico da propria rede' (Avancado).\n"
+                     "Normal: o quadro sai na hora e a resposta da rede, que chega depois, e trazida pelo movimento.");
             }
         }
 
@@ -1356,19 +1419,11 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             ImGui::SetNextItemWidth(lc);
             ImGui::Combo("##comp", &cfg.temporal.composicao, comps, 2);
             ImGui::BeginDisabled(cfg.temporal.composicao == 0);
-            Deslizador("Cor", &cfg.temporal.cor, 0.f, 2.f, "%.3f", "0 = cores do jogo na luz da rede, 1 = cores da rede (padrao).", 1.f);
+            Deslizador("Cor", &cfg.temporal.cor, 0.f, 1.f, "%.3f", "0 = cores do jogo na luz da rede, 1 = cores da rede (padrao).", 1.f);
             Deslizador("Proteção de luz", &cfg.temporal.guarda, 1.f, 16.f, "%.1fx",
                        "A luz de cada ponto muda no maximo esse fator. 16 = desligada (padrao): medido contra a NVIDIA,\n"
                        "2,0 afastava 1,5-2 dB.", 16.f);
             ImGui::EndDisabled();
-            // a decodificacao da propria NVIDIA (modo 1, no runtime): antes da composicao do overlay
-            Deslizador("Cor NVIDIA", &cfg.corDecodificacao, 0.f, 1.f, "%.3f",
-                       "Cor da decodificacao da NVIDIA (ColorStrength): 0 = as cores do jogo com a luz da rede (o croma\n"
-                       "e a matiz vem do jogo; so o brilho muda), 1 = as cores da rede (padrao). Abaixo de 1 tira o tom\n"
-                       "que a rede puxa (o ciano com intensidade alta) sem perder a luz.", 1.f);
-            Deslizador("Força NVIDIA", &cfg.forcaDecodificacao, 0.f, 1.f, "%.3f",
-                       "Forca da decodificacao da NVIDIA (TransferStrength): quanto do resultado da rede substitui o\n"
-                       "quadro na resposta (0 = o quadro original, 1 = padrao).", 1.f);
 
             Secao("COR POR MATIZ (DEPOIS DA REDE)");
             {
@@ -1447,7 +1502,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                 DeslizadorInt("Passes", &cfg.rede.passes, 1, 3, "%d",
                               "Quantas vezes a rede inteira roda por resposta (1 = normal); mais = estilo mais forte e mais caro.\n"
                               "Vale ao religar, como a rede completa e o tamanho. Com o historico da propria rede ligado o\n"
-                              "runtime so roda 1 passe.");
+                              "runtime so roda 1 passe.", 1.f);
                 ImGui::EndDisabled();
                 if (!e.alvo.empty() && (cfg.redePequena != e.pequenaSessao || cfg.alturaRede != e.alturaSessao ||
                                         (cfg.rede.passes != e.passesSessao && !e.historicoAtivo) ||
@@ -1464,7 +1519,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                 DeslizadorInt("Ritmo", &cfg.ritmo, 1, 4, "%d",
                               "A rede roda numa fila propria: todo quadro vai para a tela na hora, sem esperar a rede, e a\n"
                               "resposta entra quando fica pronta, trazida pelo movimento ate o quadro atual.\n"
-                              "1: a rede recomeca assim que termina. N: no maximo uma vez a cada N quadros (libera a GPU).");
+                              "1: a rede recomeca assim que termina. N: no maximo uma vez a cada N quadros (libera a GPU).", 1.f);
             }
 
             Secao("MOVIMENTO E ESTABILIDADE");
@@ -1486,7 +1541,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                 mc = true;
             ImGui::BeginDisabled(!cfg.movimento);
             DeslizadorInt("Estabilidade", &cfg.temporal.maxQuadros, 1, 16, "%d",
-                          "Quantos quadros a edicao da rede acumula (menos cintilacao; 1 = sem acumulo).");
+                          "Quantos quadros a edicao da rede acumula (menos cintilacao; 1 = sem acumulo).", 8.f);
             Deslizador("Média em movimento", &cfg.temporal.pxEstab, 0.f, 32.f, "%.1f px",
                        "Captura de buffer: a media temporal cai pela metade a cada tantos pixels de movimento por quadro.\n"
                        "Menor = menos rastro em movimento (a edicao acompanha a cena), um pouco mais de cintilacao so em\n"
@@ -1540,7 +1595,8 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             }
 
             Secao("OVERLAY");
-            DeslizadorInt("FPS máximo", &cfg.fpsMax, 0, 240, "%d", "Teto de quadros processados por segundo (0 = sem teto).");
+            DeslizadorInt("FPS máximo", &cfg.fpsMax, 0, 240, "%d", "Teto de quadros processados por segundo (0 = sem teto).",
+                          60.f);
             if (Marca("Ocultar de prints e gravações", &cfg.ocultaDeGravacoes,
                       "O overlay fica fora de prints, OBS e da propria Game Bar."))
                 a.ocultaMudou = true;
@@ -1562,6 +1618,8 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
     ImGui::PopFont();
     ImGui::End();
     ImGui::Render();
+    // um campo de texto ativo com o painel sobre o jogo: as teclas passam a vir pelo gancho (o jogo nao as ve)
+    gancho.CapturaTeclado(gancho.Ligado() && ImGui::GetIO().WantTextInput);
 
     const UINT i = sc->GetCurrentBackBufferIndex();
     Ck(al->Reset(), "al(painel) reset");

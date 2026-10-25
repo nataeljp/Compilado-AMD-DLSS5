@@ -311,6 +311,8 @@ ffxReturnCode_t Despacha(ffxContext* ctx, const ffxDispatchDescHeader* desc)
     auto* prof = static_cast<ID3D12Resource*>(u->depth.resource);
     if (!lista || !cor || !mov || !prof)
         return r;
+    if (g_clienteOk)
+        g_cli.EsperaEdicao(g_mx); // sem atraso: a edicao do quadro anterior, sem segurar o mutex (o Execute usa)
     std::lock_guard<std::mutex> lk(g_mx);
     if (!g_clienteOk)
     {
@@ -399,11 +401,14 @@ ffxReturnCode_t Despacha(ffxContext* ctx, const ffxDispatchDescHeader* desc)
         {
             const auto& d = g_cli.diag;
             Log("FSR em %.1f s: %llu despachos (%.0f/s), render %ux%u..%ux%u, resets %llu, saida trocou %llu vezes, jitter max "
-                "%.2f | cliente: %llu quadros, %llu exportados, %llu com edicao (idade media %.1f, max %llu quadros)",
+                "%.2f | cliente: %llu quadros, %llu exportados, %llu com edicao (idade media %.1f, max %llu quadros) | "
+                "sem atraso: %llu esperas, media %.1f ms, max %.1f ms, %llu estouradas",
                 (agora - marca) / 1000.0, (unsigned long long)despachos, despachos * 1000.0 / double(agora - marca), rwMin,
                 rhMin, rwMax, rhMax, (unsigned long long)resets, (unsigned long long)trocasSaida, jMax,
                 (unsigned long long)d.quadros, (unsigned long long)d.exportados, (unsigned long long)d.aplicados,
-                d.aplicados ? double(d.idadeSoma) / double(d.aplicados) : 0.0, (unsigned long long)d.idadeMax);
+                d.aplicados ? double(d.idadeSoma) / double(d.aplicados) : 0.0, (unsigned long long)d.idadeMax,
+                (unsigned long long)d.esperas, d.esperas ? d.esperaMs / double(d.esperas) : 0.0, d.esperaMsMax,
+                (unsigned long long)d.estouros);
             g_cli.diag = {};
             despachos = resets = trocasSaida = 0;
             rwMin = rhMin = ~0u, rwMax = rhMax = 0;

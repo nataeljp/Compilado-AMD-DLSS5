@@ -76,8 +76,14 @@ struct Tex
     DXGI_FORMAT fmt = DXGI_FORMAT_UNKNOWN;
     UINT w = 0, h = 0;
     D3D12_RESOURCE_STATES estado = D3D12_RESOURCE_STATE_COMMON;
+    Tex() = default;
+    Tex(const Tex&) = default; // a copia nao entra na conta de BytesVivos (so quem chamou Cria)
+    Tex& operator=(const Tex&) = default;
+    ~Tex();
     void Cria(ID3D12Device* d, UINT w_, UINT h_, DXGI_FORMAT f, const wchar_t* nome, bool uav = true, bool rt = false);
     void Para(ID3D12GraphicsCommandList* c, D3D12_RESOURCE_STATES s);
+    // VRAM das texturas criadas por Cria e ainda vivas (a ultima versao de cada uma)
+    static UINT64 BytesVivos();
 };
 
 void Barreira(ID3D12GraphicsCommandList* c, ID3D12Resource* r, D3D12_RESOURCE_STATES a, D3D12_RESOURCE_STATES b);

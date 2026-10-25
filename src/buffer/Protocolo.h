@@ -12,6 +12,10 @@
 //  - edicao (3 slots, rodizio): o jogo le a edicao publicada mais nova cuja escrita ja terminou (cercaOverlay) e anota
 //    lido[k] = N. O overlay so escreve o slot k depois que a escrita anterior (k - 1) terminou e cercaJogo >= lido[k]:
 //    o jogo ja ve k - 1 pronta (ou k - 2), nunca k, e todo quadro que leu k ja saiu da GPU.
+//  - sem atraso (espera > 0, pedido pelo overlay): o unico ponto em que o jogo espera. No quadro seguinte a uma
+//    exportacao o jogo espera no CPU (com prazo) a edicao dela; o overlay roda a rede no proprio quadro e dispara o
+//    evento NomeEventoPublica a cada publicacao. A edicao chega 1 quadro depois, nao 4-6 (como a NVIDIA, que roda a
+//    rede dentro do quadro); custa FPS.
 //
 // Tudo e criado pelo JOGO (ele sabe tamanhos e formatos): a memoria compartilhada "Local\DLSS5Ov.Buffer.<pid>", as
 // cercas e as texturas, por nome (NomeRecurso). Quando muda tamanho ou formato, o jogo recria tudo com outra geracao.
@@ -26,11 +30,13 @@ namespace dlss5ov {
 // desconhecido ou absurdo (os shaders comparam o Z, como antes)
 inline float TanMeioFov(float fovY) { return fovY > 0.01f && fovY < 3.1f ? std::tan(0.5f * fovY) : 0.f; }
 
-constexpr uint32_t kVersao = 2; // 2: movimento RG32F acumulado ate a exportacao anterior
+constexpr uint32_t kVersao = 3; // 2: movimento RG32F acumulado ate a exportacao anterior; 3: espera (sem atraso)
 constexpr uint32_t kSlotsEntrada = 2;
 constexpr uint32_t kSlotsEdicao = 3;
 
 inline void NomeMapa(wchar_t* b, size_t n, uint32_t pid) { swprintf(b, n, L"Local\\DLSS5Ov.Buffer.%u", pid); }
+// evento (auto-reset, criado pelo jogo): o overlay dispara depois de cada Publica
+inline void NomeEventoPublica(wchar_t* b, size_t n, uint32_t pid) { swprintf(b, n, L"Local\\DLSS5Ov.Publica.%u", pid); }
 // qual: L"cor", L"mov", L"prof", L"exp", L"edicao", L"cercaJogo", L"cercaOverlay"
 inline void NomeRecurso(wchar_t* b, size_t n, uint32_t pid, uint32_t geracao, const wchar_t* qual, uint32_t slot)
 {
@@ -74,6 +80,8 @@ struct Cabecalho
     volatile uint64_t batimentoOverlay; // GetTickCount64 do overlay; parado ha mais de 1 s = sem overlay
     volatile uint32_t ativo;            // o overlay quer os quadros (modo buffer ligado nele)
     volatile uint32_t aplica;           // o jogo soma a edicao (0: so exporta; ex. modo "original" no painel)
+    volatile uint32_t espera;           // sem atraso: 1 = o quadro seguinte a cada exportacao espera a edicao dela (e
+                                        // nao exporta: a rede roda a cada 2 quadros); 2 = todo quadro espera e exporta
     volatile uint64_t consumido;        // ultimo quadro de entrada que o overlay ja copiou (o slot pode ser reescrito)
     volatile uint64_t lido[kSlotsEdicao]; // ultimo quadro do jogo que gravou leitura do slot de edicao k
     volatile uint64_t quadroJogo;         // ultimo quadro gravado pelo jogo

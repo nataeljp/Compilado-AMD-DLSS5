@@ -12,6 +12,15 @@
 
 namespace ov {
 
+// tecla segurada pelo gancho enquanto o painel recebe texto (CapturaTeclado): o jogo continua em foco e nao a ve
+struct EventoTecla
+{
+    UINT vk = 0;
+    bool desce = false;
+    wchar_t ch[4] = {}; // o caractere que a tecla produz no layout do jogo (vazio: tecla de controle)
+    int nch = 0;
+};
+
 struct EventoMouse
 {
     enum Tipo { Move, Botao, Roda } tipo = Move;
@@ -37,6 +46,10 @@ class Gancho
     void EngoleMouse(bool sim);
     // movimento bruto (do modulo do jogo): anda o cursor virtual e devolve a posicao
     POINT MoveBruto(int dx, int dy);
+    // com o painel digitando (um campo de texto ativo): todas as teclas ficam com o painel, inclusive o Esc (cancela o
+    // campo em vez de fechar o painel); o jogo nao recebe nenhuma
+    void CapturaTeclado(bool sim);
+    std::vector<EventoTecla> ColetaTeclas();
 
   private:
     std::thread t;

@@ -20,14 +20,13 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
    tela. Deixe o jogo em foco e aperte **Ctrl+Shift+D**, ou escolha a janela em **Jogo** e clique em **Ligar**.
 3. Como a Game Bar: overlay e painel só aparecem com o jogo em foco. Alt+Tab, minimizar ou outra janela na frente os
    escondem e pausam a rede; ao voltar ao jogo eles voltam. O overlay acompanha a janela ao mover e redimensionar.
-4. **Perfis por jogo** (aba **PERFIS** do painel): cada exe tem vários perfis com nome, em `perfis\<exe>\<nome>.json`
-   (salvar como novo, salvar no em uso, carregar, renomear, apagar). O marcado **ao ligar** (`_ao_ligar.txt`) carrega
-   sozinho quando o overlay liga nesse exe vindo de outro jogo ou ao abrir o programa; religar o mesmo jogo mantém os
-   ajustes da tela. O primeiro perfil salvo de um jogo já fica marcado. O jogo pode ganhar um nome (`_nome.txt`; o exe
-   nem sempre tem o nome do jogo). Sem perfil em uso vale o **padrão do programa** (`config.json`). Ao sair ou trocar de
-   jogo, os ajustes vão para o que está em uso; depois de apagar o perfil em uso, para nenhum lugar. Apagar, gravar por
-   cima e carregar com alterações não salvas pedem confirmação. O `perfis\<exe>.json` de versões anteriores vira o
-   perfil "Principal", marcado ao ligar.
+4. **Perfis** (como os presets do ReShade), na seção **JOGO**, logo abaixo da escolha da janela: um arquivo por
+   perfil, `perfis\<nome>.json`. Cada jogo tem o perfil dele — o nome do exe, ou o nome dado em **Renomear**
+   (`perfis\_jogos.ini`, `exe=nome`) — carregado ao ligar e para onde vão os ajustes ao **Salvar**, ao sair e ao trocar
+   de jogo. O seletor **Perfil** traz os ajustes de qualquer perfil (de qualquer jogo) para o jogo ligado; salvar
+   continua indo para o perfil deste jogo, sem mexer no arquivo do outro. Jogo sem perfil parte do padrão do programa
+   (`config.json`, o destino sem jogo). Apagar manda para a Lixeira. Os perfis do formato anterior
+   (`perfis\<exe>\<nome>.json`) são migrados ao abrir; as pastas velhas ficam em `perfis\_antigos`.
 5. O programa fica na **bandeja do sistema** (ícones ocultos da barra de tarefas): clique no ícone mostra/esconde o
    painel; botão direito → **Sair** fecha. Fechar o painel (×, Esc) só esconde.
 
@@ -37,10 +36,14 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
   próximo; mudar no painel vale ao religar (Ctrl+Shift+D duas vezes). O driver HIP da AMD nunca devolve os buffers que
   a ponte do runtime importa (`hip_d3d12_bridge.h` do lmxxf, cerca de 44 bytes por pixel da rede), então cada tamanho
   novo de rede prende memória até fechar o overlay; e trocar de rede recarrega os pesos com a GPU parada.
-- O painel mostra a VRAM do overlay contra o orçamento que o Windows dá a ele, e o `overlay.jsonl` registra a cada 5 s
-  (`"tipo":"memoria"`) o uso, o orçamento, a memória de vídeo na RAM e cada tamanho de rede novo.
-- Se a VRAM do overlay passar do orçamento por 2 s, a rede é desligada de vez (uma travada só, em vez de o Windows
-  mover a rede para a RAM e o fps cair sem voltar) e o painel avisa. Religar recria a rede.
+- O painel mostra a VRAM do overlay contra o orçamento que o Windows dá a ele, separada em rede/runtime e texturas do
+  overlay, e o `overlay.jsonl` registra a cada 5 s (`"tipo":"memoria"`) o uso, o orçamento, a memória de vídeo na RAM e
+  cada tamanho de rede novo.
+- Acima do orçamento (pico do jogo, jogo pesado) o painel só avisa: o Windows move o excedente para a RAM e a rede
+  continua (antes ela era desligada de vez e desligava em todo pico).
+- Os pesos da rede já são FP8 (1 byte, como a NVIDIA os entrega). Medido na imagem de referência: INT4 só nos pesos
+  (metade da memória dos pesos) cai para 25,9 dB contra a NVIDIA (o nível de "sem rede": cor esverdeada, rosto
+  borrado); INT8 tem o mesmo tamanho do FP8; BF16 o dobro.
 - Desligar com Ctrl+Shift+D não solta a rede; para devolver toda a VRAM, feche o overlay (bandeja → Sair).
 - Na captura de buffer, a DLL no jogo aloca movimento e profundidade pelo maior tamanho de render que o jogo declarou
   ao FSR: a resolução dinâmica não recria mais as texturas, e as gerações velhas só são soltas depois de a GPU terminar
@@ -104,11 +107,12 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
 A separação de pele, cabelo, personagem e objetos por classificador (YOLOX-tiny, LR-ASPP e MediaPipe) saiu. Ficam os
 controles que a NVIDIA expõe, que a própria rede aplica. Painel → **PELE (NVIDIA)**:
 
-- **Pele separada pela rede** é o *UseAutoMask* da NVIDIA: a rede acha a pele sozinha e separa do resto da cena. Medido
-  contra a saída real da NVIDIA (Lara, 1080p), a rede achando a pele sozinha deu **45,8 dB**; dizer a ela, pixel a
-  pixel, onde era personagem deu 44,1 dB e 43,2 dB.
-- **Estrutura da pele** é o *SkinStructureStrength*: a estrutura só na pele que a rede achou. O resto da cena segue a
-  *Estrutura local* (*LocalStructureStrength*).
+- **Pele separada pela rede** (*UseAutoMask*) liga o canal de pele da rede com a **Estrutura da pele**
+  (*SkinStructureStrength*); desligada, o canal fica no padrão da NVIDIA e o resto da cena não muda (antes os canais de
+  pele e de cena iam a −1 e o efeito da rede caía pela metade na imagem inteira).
+- Medido canal por canal na imagem de referência: nenhum canal da rede separa a pele sozinho (cada um muda pele e
+  cena quase igual) e o de pele tem efeito pequeno. A NVIDIA separa a pele com um modelo de máscara próprio, que não
+  existe neste runtime.
 - O *ControlMask* da NVIDIA (o *Developer Masking*) é uma máscara que o jogo entrega; jogos com FSR não entregam nada
   parecido, e ele não é imitado aqui.
 - O runtime v4 continua com os controles por pixel (`LmxxfNrSetMask`), sem uso pelo overlay; desligados, a saída é a
@@ -158,15 +162,15 @@ Os parâmetros do DLSS 5 seguem os nomes que a NVIDIA expõe no NGX (os mesmos d
 | Chave | Faixa | NGX / o que faz |
 |---|---|---|
 | `modelo` | 0/1/2 | `DLSSNR.Style`: Model A (padrão), B (natural), C (cinemático) — controle de estilo da rede + gradação final da NVIDIA |
-| `intensidade` | 0..4 | `DLSSNR.Intensity`: quanto da resposta entra (acima de 1 reforça a luz) |
-| `tomLocal` | 0..2 | `DLSSNR.LocalToneStrength`: luz e cor em grande escala; também escala a gradação do modelo (acima de 1 extrapola o que a NVIDIA expõe) |
-| `estruturaLocal` | −2..4 | `DLSSNR.LocalStructureStrength` |
-| `estruturaPele` | −2..4 | `DLSSNR.SkinStructureStrength` (com a pele separada pela rede) |
+| `intensidade` | 0..2 | `DLSSNR.Intensity`: quanto da resposta entra (acima de 1 reforça a luz; na composição de referência) |
+| `tomLocal` | 0..1 | `DLSSNR.LocalToneStrength`: luz e cor em grande escala; também escala a gradação do modelo |
+| `estruturaLocal` | −1..2 | `DLSSNR.LocalStructureStrength` |
+| `estruturaPele` | −1..2 | `DLSSNR.SkinStructureStrength` (com a pele separada pela rede) |
 | `mascara` | true/false | `DLSSNR.UseAutoMask`: a rede separa a pele do resto da cena |
 | `gradacao` | true/false | aplica a gradação do Model B/C (exposição, contraste, saturação do kernel da NVIDIA) |
 | `composicao` | 0/1 | 0 crua (resposta − proxy), 1 referência NVIDIA/RenoDX (razão de luz em dois ramos, piso 1/512, proteção, cor) |
-| `corComposicao`, `protecao` | 0..2, 1..16 | mistura de cor e proteção bilateral de luz da composição (padrão 1 e 16 = desligada) |
-| `corDecodificacao`, `forcaDecodificacao` | 0..1 | a decodificação da própria NVIDIA no runtime (modo 1): *ColorStrength* (0 = as cores do jogo com a luz da rede, 1 = as cores da rede) e *TransferStrength* (quanto do resultado da rede substitui o quadro); padrão 1 |
+| `corComposicao`, `protecao` | 0..1, 1..16 | mistura de cor e proteção bilateral de luz da composição (padrão 1 e 16 = desligada) |
+| `semAtraso` | 0/3 | 3 (padrão) = como a NVIDIA: a rede em todo quadro e a edição do próprio quadro (vídeo: a tela espera a rede; buffer: o jogo espera a edição do quadro anterior); custa FPS. 0 = a resposta chega depois e é trazida pelo movimento |
 | `matizVermelhoSat` … `matizMagentaSat`, `matizVermelhoLuz` … `matizMagentaLuz` | −1..1 | cor por matiz depois da rede, em seis faixas (Vermelho, Amarelo, Verde, Ciano, Azul, Magenta): saturação (−1 = cinza, +1 = o dobro) e brilho (−1 = apaga, +1 = o dobro; pesa pela saturação do pixel, cinza e branco não mudam). Faixas vizinhas se misturam em triângulo. Padrão 0 = desligado |
 | `ponte` | −1..4 | quadro → proxy da rede: −1 automática (SDR direta, HDR SoftKnee), 0 direta, 1 SoftKnee, 2 ACES (RRT+ODT, RenoDX), 3 curva do jogo, 4 luz de cena direta (só na captura de buffer: só o ombro do codificador da NVIDIA comprime os realces; na captura de vídeo vira a automática) |
 | `brancoNits` | 0..400 | branco de papel do HDR (0 = o branco SDR do Windows) |
@@ -184,12 +188,15 @@ Os parâmetros do DLSS 5 seguem os nomes que a NVIDIA expõe no NGX (os mesmos d
 | `temporalRede` | 0..3 | histórico da própria rede (`DLSS5_TEMPORAL_MODE` do runtime; vale ao reabrir, força 1 passe e desliga o `reusoVit`). 1 = a entrada de histórico da rede recebe a resposta anterior trazida pelo movimento (captura de buffer: movimento e profundidade do jogo; captura de vídeo: fluxo óptico) e a cabeça de histórico do bloco 70 decide a mistura; precisa do runtime deste branch (`LmxxfNrSetHistoryGuides`) e do `post70-history-head.f16` que o `monta_runtime.ps1` extrai. 2 e 3 = suavização de baixa frequência / realce na saída do runtime |
 | `forcaHistoricoRede` | 0..1 | com `temporalRede` 1: escala do peso que a própria rede dá à resposta anterior (força × 0,74 × a decisão da cabeça de histórico); 1 = o da rede |
 | `recorteHistoricoRede` | 0..4 | com `temporalRede` 1: a resposta anterior só entra dentro de média ± este número de desvios da saída crua deste quadro no 3×3 (YCoCg), o recorte por variância do TAA, feito no runtime antes da mistura (`LmxxfNrSetHistoryClip`). Sem ele, o que a rede pinta em volta de um objeto em movimento ficava no fundo que passa atrás dele e andava com esse fundo, uma cópia por quadro da rede (o rastro em degraus). 0 = sem recorte; padrão 1 |
-| `forca` | 0..4 | força da edição final (1 = a da rede) |
+| `forca` | 0..2 | força da edição final (1 = a da rede) |
 | `nitidezCas` | 0..1 | nitidez depois da composição pelo algoritmo do CAS (AMD FidelityFX, MIT), só no lado da rede; em HDR em c / (1 + c) por canal. Na captura de buffer vai junto com a edição que volta ao jogo. 0 = desligada (padrão), 1 = o máximo do CAS |
 | `modo`, `fpsMax`, `ocultaDeGravacoes` | | modo de exibição (0 rede, 1 original, 2 comparação, 3 só a edição, 4 movimento, 5 saída crua da última resposta, sem acúmulo, movimento nem grade), teto de FPS, esconder de prints/OBS |
 
 No painel os ajustes finos têm três casas decimais: Shift + arrastar anda 1/10 do normal, e a roda do mouse sobre o
-deslizador soma 0,01 (0,001 com Shift). Duplo clique volta ao padrão.
+deslizador soma 0,01 (0,001 com Shift). Clique no número para digitar o valor (Enter aplica, Esc cancela; funciona com
+o jogo em foco). A seta no fim de cada ajuste (ou duplo clique no trilho) volta ao padrão.
+As faixas de Tom, Estrutura e Intensidade são as da NVIDIA: medido na rede, fora delas ela inverte (estrutura acima de
+2 e tom acima de 1 clareiam a imagem em vez de reforçar o efeito).
 
 ## Online e anti-cheat
 

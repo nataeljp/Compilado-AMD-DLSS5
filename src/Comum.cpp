@@ -1,6 +1,7 @@
 #include "Comum.h"
 #include <cstdarg>
 #include <chrono>
+#include <map>
 #include <mutex>
 #include <share.h>
 
@@ -237,6 +238,34 @@ D3D12_GPU_DESCRIPTOR_HANDLE Descritores::Gpu_(UINT i) const
 }
 
 // ---------------- Tex ----------------
+// o tamanho de cada textura viva (para separar no painel a VRAM das texturas do overlay da do resto do processo). Nunca
+// e solto: Tex estatico pode ser destruido depois do fim do programa
+struct TexVivas
+{
+    std::mutex mx;
+    std::map<const Tex*, UINT64> m;
+};
+static TexVivas& Vivas()
+{
+    static auto* v = new TexVivas;
+    return *v;
+}
+
+UINT64 Tex::BytesVivos()
+{
+    std::lock_guard<std::mutex> lk(Vivas().mx);
+    UINT64 s = 0;
+    for (const auto& v : Vivas().m)
+        s += v.second;
+    return s;
+}
+
+Tex::~Tex()
+{
+    std::lock_guard<std::mutex> lk(Vivas().mx);
+    Vivas().m.erase(this);
+}
+
 void Tex::Cria(ID3D12Device* d, UINT w_, UINT h_, DXGI_FORMAT f, const wchar_t* nome, bool uav, bool rt)
 {
     w = w_;
@@ -260,6 +289,9 @@ void Tex::Cria(ID3D12Device* d, UINT w_, UINT h_, DXGI_FORMAT f, const wchar_t* 
        "CreateCommittedResource(tex)");
     if (nome)
         r->SetName(nome);
+    const UINT64 bytes = d->GetResourceAllocationInfo(0, 1, &rd).SizeInBytes;
+    std::lock_guard<std::mutex> lk(Vivas().mx);
+    Vivas().m[this] = bytes;
 }
 
 void Barreira(ID3D12GraphicsCommandList* c, ID3D12Resource* r, D3D12_RESOURCE_STATES a, D3D12_RESOURCE_STATES b)

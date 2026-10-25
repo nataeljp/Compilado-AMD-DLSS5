@@ -2,6 +2,7 @@
 #pragma once
 #include "Rede.h"
 #include "Temporal.h"
+#include <cmath>
 #include <map>
 
 namespace ov {
@@ -53,6 +54,11 @@ struct Config
     int modo = 0;           // 0 rede, 1 original, 2 comparacao, 3 so a edicao, 4 movimento
     int fonte = 0;          // Modo de Rede: 0 captura de video (WGC), 1 captura de buffer (cor sem HUD, profundidade e
                             // movimento do upscaler do proprio jogo, pela DLSS5Buffer.dll colocada no jogo aberto)
+    // atraso da edicao: 0 normal (a rede responde depois e a resposta e trazida pelo movimento ate o quadro atual);
+    // 1-3 sem atraso, como a NVIDIA: a rede responde no proprio quadro e a edicao dele entra inteira, sem acumulo de
+    // quadros velhos (captura de video: a tela espera a rede). Captura de buffer: 1 = o jogo nao espera (a edicao chega
+    // 2-3 quadros depois), 2 = o jogo espera a cada 2 quadros (1-2), 3 = espera em todo quadro (sempre 1)
+    int semAtraso = 3;
     bool movimento = true;  // movimento simulado por fluxo optico
     bool usaConfianca = true; // descarta o historico onde o fluxo de ida e volta nao bate (oclusao)
     int ritmo = 1;          // a rede roda a cada N quadros (1 = todo quadro; a rede nunca deve sumir em movimento)
@@ -65,15 +71,13 @@ struct Config
     float realceTemporal = 1.f; // forca do modo 3 (0..2)
     float forcaHistorico = 1.f; // modo 1: escala do peso que a cabeca de historico da rede decide (0..1; 1 = o da rede)
     float recorteHistorico = 1.f; // modo 1: recorte do historico pela vizinhanca da saida crua, desvios (0 = sem recorte)
-    // decodificacao da NVIDIA (modo 1, native_codec_decode.hlsl): 0..1, 1 = a resposta inteira da rede
-    float corDecodificacao = 1.f;    // ColorStrength: 0 = as cores do jogo com a luz da rede (croma do jogo em OKLab)
-    float forcaDecodificacao = 1.f;  // TransferStrength: quanto do resultado da rede substitui o quadro (0 = o original)
+    // A decodificacao da NVIDIA (ColorStrength / TransferStrength do runtime) fica em 1: repetia o Tom e a Forca da edicao
     bool reusoVit = true;   // reuso adaptativo do ViT do lmxxf (com perda pequena; vale ao reabrir o programa)
     float divisao = 0.5f;   // posicao da divisao no modo comparacao
     int fpsMax = 60;        // teto de quadros processados por segundo (0 = sem teto)
     bool ocultaDeGravacoes = false; // o overlay fora de prints/OBS
 
-    // controles da rede a partir dos parametros NGX (mascara ligada: pele/cena com a estrutura; desligada: -1)
+    // controles da rede a partir dos parametros NGX, nas faixas da NVIDIA
     ParamsRede Rede() const;
     void Carrega(const std::wstring& arquivo);
     void Salva(const std::wstring& arquivo) const;

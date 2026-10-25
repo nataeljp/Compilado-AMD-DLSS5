@@ -14,15 +14,13 @@ struct EstadoPainel
 {
     std::wstring placa;
     std::wstring alvo;           // titulo da janela capturada ("" = nenhuma)
-    std::string exe;             // processo do jogo (dono dos perfis); "" sem jogo
-    // perfis do exe (bin\perfis\<exe>\<nome>.json), em UTF-8
+    std::string exe;             // processo do jogo (dono do perfil); "" sem jogo
+    // perfis (bin\perfis\<nome>.json, de todos os jogos), em UTF-8
     std::vector<std::string> perfis;
-    std::string perfilAtivo;     // "" = o padrao do programa (config.json)
-    std::string perfilAoLigar;   // o que carrega sozinho ao ligar neste exe ("" = nenhum)
-    std::string nomeLivre;       // sugestao de nome para salvar como novo
-    std::string nomeJogo;        // nome do jogo dado pelo usuario para o exe ("" = sem nome: o titulo da janela sugere)
-    bool perfilAlterado = false; // os ajustes mudaram desde o ultimo carregar/salvar
-    bool semDestino = false;     // o perfil ativo foi apagado: nada e gravado ao sair
+    std::string perfilJogo;      // o perfil do jogo ligado, para onde os ajustes sao salvos ("" = config.json)
+    std::string perfilBase;      // de onde vieram os ajustes em uso ("" = o padrao do programa)
+    bool perfilAlterado = false; // os ajustes em uso diferem do que esta gravado no perfil do jogo
+    bool perfilExiste = false;   // o arquivo do perfil do jogo ja existe
     bool redeOk = false;
     UINT janelaW = 0, janelaH = 0, redeW = 0, redeH = 0;
     double msMedio = 0, fps = 0;
@@ -37,7 +35,7 @@ struct EstadoPainel
     std::string historicoRede;   // estado do historico da propria rede ("" = desligado e sem mudanca pendente)
     bool historicoAtivo = false; // DLSS5_TEMPORAL_MODE=1 nesta sessao (a forca do historico vale)
     std::string memoria;         // uso e orcamento de VRAM do overlay
-    std::string avisoMemoria;    // a rede foi desligada por falta de VRAM ("" = nao)
+    std::string avisoMemoria;    // VRAM acima do orcamento (so aviso: a rede continua); "" = dentro
 };
 
 struct AcoesPainel
@@ -45,18 +43,12 @@ struct AcoesPainel
     HWND ligar = nullptr; // captura esta janela
     bool desligar = false;
     bool sair = false;
-    bool salvar = false;       // config.json (o padrao do programa)
-    // perfis do exe (nomes em UTF-8); o app trata nesta ordem: salvar como, salvar, padrao, carregar, apagar, ao ligar
-    std::string perfilSalvarComo; // grava os ajustes com esse nome e ele fica ativo
-    bool perfilSalvar = false;    // grava no perfil ativo
-    bool carregarPadrao = false;  // config.json, sem perfil ativo
-    std::string perfilCarregar;
-    std::string perfilApagar;
-    bool perfilAoLigarMuda = false;
-    std::string perfilAoLigar;    // "" = nenhum
-    std::string perfilRenomear, perfilNovoNome;
-    bool nomeJogoMuda = false;
-    std::string nomeJogo;         // "" = tira o nome
+    // perfis (nomes em UTF-8); o app trata nesta ordem: salvar, carregar padrao, carregar, apagar, renomear
+    bool perfilSalvar = false;    // grava os ajustes no perfil do jogo ligado (sem jogo: config.json)
+    bool carregarPadrao = false;  // traz os ajustes de config.json (o destino nao muda)
+    std::string perfilCarregar;   // traz os ajustes desse perfil (o destino nao muda)
+    std::string perfilApagar;     // vai para a Lixeira
+    std::string perfilRenomear;   // o novo nome do perfil do jogo ligado
     bool redefinir = false;    // padroes do programa
     bool zeraHistorico = false;
     bool ocultaMudou = false;
@@ -114,13 +106,9 @@ class Painel
     float esc = 1.f;
     bool usuarioQuer = true, autoOculto = false;
     bool avancado = false;
-    int aba = 0;                 // 0 DLSS 5, 1 PERFIS
-    char nomePerfil[64] = {};    // nome digitado para salvar como novo ou renomear ("" = a sugestao)
-    char nomeJogo[64] = {};      // nome do jogo digitado
-    std::string exeNomeJogo;     // o exe para o qual nomeJogo foi preenchido
-    std::string perfilSel;       // perfil escolhido na lista
-    // confirmacao pendente na aba PERFIS: 0 nenhuma, 1 apagar, 2 carregar com alteracoes, 3 padrao com alteracoes,
-    // 4 sobrescrever ao salvar como
+    bool renomeando = false;     // o campo do novo nome do perfil do jogo esta aberto
+    char nomeNovo[64] = {};
+    // confirmacao pendente: 0 nenhuma, 1 apagar, 2 carregar com alteracoes nao salvas (confirmaNome "" = o padrao)
     int confirma = 0;
     std::string confirmaNome;
     std::string iniUtf8;
@@ -132,7 +120,7 @@ class Painel
     std::vector<JanelaLista> janelas;
     int escolhida = -1;
     void AtualizaJanelas();
-    void AbaPerfis(const EstadoPainel& e, AcoesPainel& a, float lc);
+    void SecaoPerfil(const EstadoPainel& e, AcoesPainel& a, float lc);
     bool abreConfirma = false;
 };
 

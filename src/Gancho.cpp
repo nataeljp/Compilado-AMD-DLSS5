@@ -13,6 +13,8 @@ RECT g_area{};
 bool g_esc = false;
 std::atomic<ULONGLONG> g_batimento{0};
 std::atomic<bool> g_engole{true};
+std::atomic<bool> g_teclado{false};
+std::vector<EventoTecla> g_teclas;
 ULONGLONG g_ultimoSolta = 0;
 
 bool Vivo() { return GetTickCount64() - g_batimento.load() < 1000; }
@@ -111,6 +113,34 @@ LRESULT CALLBACK ProcMouse(int code, WPARAM w, LPARAM l)
 LRESULT CALLBACK ProcTeclado(int code, WPARAM w, LPARAM l)
 {
     const auto* k = reinterpret_cast<const KBDLLHOOKSTRUCT*>(l);
+    if (code == HC_ACTION && g_teclado.load() && Vivo())
+    {
+        // painel digitando: a tecla vai para ele (com o caractere no layout do teclado do jogo) e o jogo nao a ve
+        EventoTecla e;
+        e.vk = k->vkCode;
+        e.desce = w == WM_KEYDOWN || w == WM_SYSKEYDOWN;
+        const bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0, alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+        if (e.desce && !(ctrl && !alt))
+        {
+            BYTE estado[256] = {};
+            if (GetAsyncKeyState(VK_SHIFT) & 0x8000)
+                estado[VK_SHIFT] = 0x80;
+            if (ctrl && alt) // AltGr
+                estado[VK_CONTROL] = estado[VK_MENU] = 0x80;
+            if (GetKeyState(VK_CAPITAL) & 1)
+                estado[VK_CAPITAL] = 0x01;
+            const HKL layout = GetKeyboardLayout(GetWindowThreadProcessId(GetForegroundWindow(), nullptr));
+            // 0x4: nao mexe no estado de tecla morta do teclado (o jogo continua com ele)
+            const int n = ToUnicodeEx(k->vkCode, k->scanCode, estado, e.ch, 3, 0x4, layout);
+            e.nch = n > 0 ? n : 0;
+            if (e.nch && e.ch[0] < 32)
+                e.nch = 0; // Enter, Tab, Backspace: vao como tecla
+        }
+        std::lock_guard<std::mutex> lk(g_mx);
+        if (g_teclas.size() < 512)
+            g_teclas.push_back(e);
+        return 1;
+    }
     if (code == HC_ACTION && k->vkCode == VK_ESCAPE && Vivo())
     {
         // Esc fecha o painel; o jogo nao recebe (abriria o menu dele)
@@ -136,7 +166,9 @@ void Gancho::Liga(const RECT& area)
         g_eventos.clear();
         g_eventos.push_back({EventoMouse::Move, g_cursor.x, g_cursor.y});
         g_esc = false;
+        g_teclas.clear();
     }
+    g_teclado = false;
     g_batimento = GetTickCount64();
     Estaciona(); // o cursor de verdade sai de perto das bordas da area em que o jogo o prende
     HANDLE pronto = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -167,11 +199,29 @@ void Gancho::Desliga()
     PostThreadMessageW(idThread.load(), WM_QUIT, 0, 0);
     t.join();
     idThread = 0;
+    g_teclado = false;
     std::lock_guard<std::mutex> lk(g_mx);
     g_eventos.clear();
+    g_teclas.clear();
 }
 
 void Gancho::EngoleMouse(bool sim) { g_engole = sim; }
+
+void Gancho::CapturaTeclado(bool sim)
+{
+    if (g_teclado.exchange(sim) == sim || sim)
+        return;
+    std::lock_guard<std::mutex> lk(g_mx);
+    g_teclas.clear();
+}
+
+std::vector<EventoTecla> Gancho::ColetaTeclas()
+{
+    std::vector<EventoTecla> v;
+    std::lock_guard<std::mutex> lk(g_mx);
+    v.swap(g_teclas);
+    return v;
+}
 
 POINT Gancho::MoveBruto(int dx, int dy)
 {

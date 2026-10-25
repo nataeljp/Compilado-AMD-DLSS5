@@ -18,8 +18,9 @@ class FonteBuffer
     bool Aberta() const { return cab != nullptr; }
     bool Conectada() const { return cab && geracao && geracao == cab->geracao; }
     DWORD Pid() const { return pid; }
-    // a cada volta do laco: o jogo so exporta e aplica com o batimento do overlay
-    void Batimento(bool querQuadros, bool aplica);
+    // a cada volta do laco: o jogo so exporta e aplica com o batimento do overlay; espera = Cabecalho::espera (sem atraso)
+    void Batimento(bool querQuadros, bool aplica, uint32_t espera);
+    void SemEspera() { if (cab) cab->espera = 0; } // overlay pausado: o jogo nao pode ficar esperando
     void DefineInvertida(bool inv) { if (cab) cab->profInvertidaUsada = inv ? 1u : 0u; }
     bool JogoVivo() const;
     // evento que dispara quando a GPU do jogo terminar o proximo quadro (para o laco dormir ate ele)
@@ -66,6 +67,7 @@ class FonteBuffer
     int ultimoPublicado = -1;
     UINT64 cercaUltimo = 0; // valor da cerca da ultima publicacao
     HANDLE evento = nullptr;
+    HANDLE evPublica = nullptr; // do jogo: disparado a cada publicacao (a espera do modo sem atraso acorda nele)
 };
 
 } // namespace ov

@@ -21,6 +21,8 @@ bool FonteBuffer::Abre(Gpu& g, DWORD pid_)
         return false;
     }
     pid = pid_;
+    dlss5ov::NomeEventoPublica(nome, 96, pid_);
+    evPublica = OpenEventW(EVENT_MODIFY_STATE, FALSE, nome);
     Log("buffer", Fmt("conectado ao modulo do jogo %s (pid %lu)", cab->exe, (unsigned long)pid));
     return true;
 }
@@ -30,6 +32,7 @@ void FonteBuffer::Fecha()
     if (cab)
     {
         cab->ativo = 0;
+        cab->espera = 0;
         cab->batimentoOverlay = 0;
         UnmapViewOfFile(cab);
     }
@@ -52,14 +55,18 @@ void FonteBuffer::Fecha()
     if (evento)
         CloseHandle(evento);
     evento = nullptr;
+    if (evPublica)
+        CloseHandle(evPublica);
+    evPublica = nullptr;
 }
 
-void FonteBuffer::Batimento(bool querQuadros, bool aplica)
+void FonteBuffer::Batimento(bool querQuadros, bool aplica, uint32_t espera)
 {
     if (!cab)
         return;
     cab->ativo = querQuadros ? 1 : 0;
     cab->aplica = aplica ? 1 : 0;
+    cab->espera = evPublica ? espera : 0;
     cab->batimentoOverlay = GetTickCount64();
 }
 
@@ -196,6 +203,8 @@ void FonteBuffer::Publica(uint64_t n)
     ultimoPublicado = slotEscrita;
     cercaUltimo = v;
     slotEscrita = -1;
+    if (evPublica)
+        SetEvent(evPublica);
 }
 
 } // namespace ov

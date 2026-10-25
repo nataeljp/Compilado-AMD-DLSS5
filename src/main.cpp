@@ -198,6 +198,7 @@ struct App
         };
         pasta = PastaDoExe();
         LogAbre(pasta);
+        MigraPerfisAntigos(); // perfis\<exe>\<nome>.json (formato anterior) -> perfis\<nome>.json
         Etapa(L"Iniciando a GPU...");
         cfg.Carrega(configArq.empty() ? pasta + L"\\config.json" : configArq);
         gpu.Cria();
@@ -272,20 +273,20 @@ struct App
         GravaDestino();
     }
 
-    // ---- perfis por jogo: bin\perfis\<exe>\<nome>.json. O nome em bin\perfis\<exe>\_ao_ligar.txt carrega sozinho
-    // quando o overlay liga num exe diferente do anterior (religar o mesmo jogo mantem os ajustes da tela, inclusive os
-    // que so valem ao religar). Sem perfil ativo, os ajustes sao os de config.json (o padrao do programa). Ao sair, os
-    // ajustes vao para o perfil ativo, ou para config.json sem perfil; depois de apagar o perfil ativo, para nenhum. ----
-    std::wstring exeAlvo;          // processo do jogo capturado
-    std::wstring exePerfis;        // o exe dos ajustes em uso (o ultimo para o qual os perfis foram aplicados)
-    std::wstring perfilAtivo;      // nome do perfil carregado ou salvo por ultimo ("" = config.json)
-    std::wstring arqAtivo;         // o arquivo dele (fica certo mesmo depois de trocar de jogo)
-    bool semDestino = false;       // o perfil ativo foi apagado: nada e gravado ao sair
-    std::string textoSalvo;        // cfg.Texto() do ultimo carregar/salvar: diferente = alterado
-    // a lista, o "ao ligar" e o nome do jogo, lidos do disco so depois de uma mudanca (o painel os pede todo quadro)
-    std::vector<std::wstring> perfisCache;
-    std::wstring aoLigarCache, nomeJogoCache;
+    // ---- perfis (como o ReShade): bin\perfis\<nome>.json, um arquivo por perfil, todos na mesma pasta. Cada jogo tem o
+    // perfil dele -- o nome do exe, ou o nome que o usuario der (bin\perfis\_jogos.ini, exe=nome) --, carregado ao ligar
+    // e para onde vao os ajustes ao salvar, ao sair do programa e ao trocar de jogo. Qualquer perfil pode ser carregado em
+    // qualquer jogo (os ajustes do TLOU2 no Gears, por exemplo): carregar so traz os ajustes; o destino continua sendo o
+    // perfil do jogo ligado. Sem jogo, o destino e config.json, o padrao do programa (de onde parte um jogo sem perfil). ----
+    std::wstring exeAlvo;          // processo do jogo capturado ("" = nenhum)
+    std::wstring exePerfis;        // o exe dos ajustes em uso (o ultimo para o qual o perfil foi aplicado)
+    std::wstring perfilJogo;       // o perfil do jogo ligado: o destino dos ajustes ("" = config.json)
+    std::wstring perfilBase;       // de onde vieram os ajustes em uso ("" = config.json)
+    std::string textoSalvo;        // o que esta gravado no destino (cfg.Texto() dele): diferente = alterado
+    std::vector<std::wstring> perfisCache; // a lista, lida do disco so depois de uma mudanca (o painel a pede todo quadro)
     bool perfisSujos = true;
+    std::map<std::wstring, std::wstring> vinculos; // exe (minusculas) -> nome do perfil dele
+    bool vinculosLidos = false;
     static std::wstring NomeExe(HWND h)
     {
         DWORD pid = 0;
@@ -311,13 +312,20 @@ struct App
             n.resize(pt);
         return n;
     }
-    std::wstring PastaPerfis() const { return pasta + L"\\perfis\\" + SemExtensao(exeAlvo); }
+    static std::wstring Minusculas(std::wstring s)
+    {
+        for (auto& c : s)
+            c = towlower(c);
+        return s;
+    }
+    std::wstring PastaPerfis() const { return pasta + L"\\perfis"; }
     std::wstring PerfilArq(const std::wstring& nome) const { return PastaPerfis() + L"\\" + nome + L".json"; }
     std::wstring ConfigArq() const { return pasta + L"\\config.json"; }
+    std::wstring ArqDestino() const { return perfilJogo.empty() ? ConfigArq() : PerfilArq(perfilJogo); }
     static bool Existe(const std::wstring& arq) { return GetFileAttributesW(arq.c_str()) != INVALID_FILE_ATTRIBUTES; }
-    // nome de arquivo valido: sem \ / : * ? " < > |, sem espaco ou ponto nas pontas (o Windows os corta), ate 40
+    // nome de arquivo valido: sem \ / : * ? " < > |, sem espaco ou ponto nas pontas (o Windows os corta), ate 60
     // caracteres, e sem os nomes de dispositivo do Windows (CON, NUL, COM1...: o arquivo nao seria criado, mas o
-    // dispositivo "existe"); "" se nao sobrar nada
+    // dispositivo "existe"); "" se nao sobrar nada. Nome comecado por "_" e dos arquivos do programa (_jogos.ini).
     static std::wstring NomeValido(const std::wstring& n)
     {
         std::wstring r;
@@ -325,10 +333,10 @@ struct App
             r += (c < 32 || wcschr(L"\\/:*?\"<>|", c)) ? L'_' : c;
         while (!r.empty() && (r.back() == L' ' || r.back() == L'.'))
             r.pop_back();
-        while (!r.empty() && (r.front() == L' ' || r.front() == L'.'))
+        while (!r.empty() && (r.front() == L' ' || r.front() == L'.' || r.front() == L'_'))
             r.erase(r.begin());
-        if (r.size() > 40)
-            r.resize(40);
+        if (r.size() > 60)
+            r.resize(60);
         std::wstring m = r;
         for (auto& c : m)
             c = towupper(c);
@@ -340,118 +348,167 @@ struct App
             reservado = true;
         return reservado ? r + L"_" : r;
     }
+    // o texto de um arquivo (UTF-8, sem o BOM do Bloco de Notas); "" sem o arquivo
+    static std::string LeTexto(const std::wstring& arq)
+    {
+        std::string s;
+        if (FILE* f = _wfopen(arq.c_str(), L"rb"))
+        {
+            char b[4096];
+            size_t n;
+            while ((n = fread(b, 1, sizeof b, f)) > 0)
+                s.append(b, n);
+            fclose(f);
+        }
+        if (s.size() >= 3 && (unsigned char)s[0] == 0xEF && (unsigned char)s[1] == 0xBB && (unsigned char)s[2] == 0xBF)
+            s.erase(0, 3);
+        return s;
+    }
+    static std::string Apara(std::string s)
+    {
+        while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r' || s.back() == '\n'))
+            s.pop_back();
+        size_t i = 0;
+        while (i < s.size() && (s[i] == ' ' || s[i] == '\t'))
+            ++i;
+        return s.substr(i);
+    }
+    // bin\perfis\_jogos.ini: uma linha exe=perfil por jogo (o arquivo pode ser editado a mao, como o ReShade.ini)
+    void LeVinculos()
+    {
+        if (vinculosLidos)
+            return;
+        vinculosLidos = true;
+        vinculos.clear();
+        const std::string t = LeTexto(PastaPerfis() + L"\\_jogos.ini");
+        size_t i = 0;
+        while (i < t.size())
+        {
+            size_t f = t.find('\n', i);
+            if (f == std::string::npos)
+                f = t.size();
+            const std::string l = Apara(t.substr(i, f - i));
+            i = f + 1;
+            const size_t ig = l.find('=');
+            if (l.empty() || l[0] == ';' || l[0] == '#' || l[0] == '[' || ig == std::string::npos)
+                continue;
+            const std::wstring exe = Minusculas(Largo(Apara(l.substr(0, ig)))), nome = NomeValido(Largo(Apara(l.substr(ig + 1))));
+            if (!exe.empty() && !nome.empty())
+                vinculos[exe] = nome;
+        }
+    }
+    void GravaVinculos()
+    {
+        CreateDirectoryW(PastaPerfis().c_str(), nullptr);
+        std::string t = "; DLSS5 Overlay: o perfil de cada jogo (exe=nome), em perfis\\<nome>.json\n[jogos]\n";
+        for (const auto& v : vinculos)
+            t += Utf8(v.first) + "=" + Utf8(v.second) + "\n";
+        if (FILE* f = _wfopen((PastaPerfis() + L"\\_jogos.ini").c_str(), L"wb"))
+        {
+            fwrite(t.data(), 1, t.size(), f);
+            fclose(f);
+        }
+    }
+    // o perfil de um exe: o nome dado a ele em _jogos.ini, ou o nome do exe
+    std::wstring NomePerfilDoJogo(const std::wstring& exe)
+    {
+        LeVinculos();
+        const auto it = vinculos.find(Minusculas(exe));
+        return it != vinculos.end() ? it->second : NomeValido(SemExtensao(exe));
+    }
     const std::vector<std::wstring>& Perfis()
     {
         if (!perfisSujos)
             return perfisCache;
         perfisSujos = false;
         perfisCache.clear();
-        aoLigarCache = PerfilAoLigar();
-        nomeJogoCache = NomeJogo();
-        if (exeAlvo.empty())
-            return perfisCache;
         WIN32_FIND_DATAW fd;
         HANDLE h = FindFirstFileW((PastaPerfis() + L"\\*.json").c_str(), &fd);
         if (h != INVALID_HANDLE_VALUE)
         {
             do
-                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && fd.cFileName[0] != L'_')
                     perfisCache.push_back(SemExtensao(fd.cFileName));
             while (FindNextFileW(h, &fd));
             FindClose(h);
         }
-        std::sort(perfisCache.begin(), perfisCache.end());
+        std::sort(perfisCache.begin(), perfisCache.end(),
+                  [](const std::wstring& x, const std::wstring& y) { return Minusculas(x) < Minusculas(y); });
         return perfisCache;
     }
-    // a primeira linha de um .txt da pasta do exe (UTF-8; aceita o BOM do Bloco de Notas); "" sem o arquivo
-    std::wstring LeLinha(const wchar_t* arq) const
+    // o formato anterior (perfis\<exe>\<nome>.json, com _ao_ligar.txt e _nome.txt): o perfil "ao ligar" (ou o unico)
+    // vira o perfil do jogo, com o nome que o jogo tinha; os outros ficam como "<exe> - <nome>". A pasta velha (com os
+    // .txt) vai para perfis\_antigos. Roda ao abrir o programa.
+    void MigraPerfisAntigos()
     {
-        std::string s;
-        if (FILE* f = _wfopen((PastaPerfis() + L"\\" + arq).c_str(), L"rb"))
-        {
-            char b[256] = {};
-            s.assign(b, fread(b, 1, sizeof b - 1, f));
-            fclose(f);
-        }
-        if (s.size() >= 3 && (unsigned char)s[0] == 0xEF && (unsigned char)s[1] == 0xBB && (unsigned char)s[2] == 0xBF)
-            s.erase(0, 3);
-        const auto fim = s.find_first_of("\r\n");
-        if (fim != std::string::npos)
-            s.resize(fim);
-        return Largo(s);
-    }
-    // grava (ou apaga, com texto vazio) um .txt da pasta do exe
-    void GravaLinha(const wchar_t* arq, const std::wstring& texto)
-    {
-        const std::wstring caminho = PastaPerfis() + L"\\" + arq;
-        if (texto.empty())
-        {
-            DeleteFileW(caminho.c_str());
-            perfisSujos = true;
+        if (!configArq.empty())
             return;
-        }
-        CreateDirectoryW((pasta + L"\\perfis").c_str(), nullptr);
-        CreateDirectoryW(PastaPerfis().c_str(), nullptr);
-        if (FILE* f = _wfopen(caminho.c_str(), L"wb"))
+        std::vector<std::wstring> pastas;
+        WIN32_FIND_DATAW fd;
+        HANDLE h = FindFirstFileW((PastaPerfis() + L"\\*").c_str(), &fd);
+        if (h == INVALID_HANDLE_VALUE)
+            return;
+        do
+            if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && fd.cFileName[0] != L'.' && fd.cFileName[0] != L'_')
+                pastas.push_back(fd.cFileName);
+        while (FindNextFileW(h, &fd));
+        FindClose(h);
+        if (pastas.empty())
+            return;
+        LeVinculos();
+        auto linha = [](const std::string& t) { return Apara(t.substr(0, t.find_first_of("\r\n"))); };
+        for (const std::wstring& p : pastas)
         {
-            const std::string t = Utf8(texto) + "\n";
-            fwrite(t.data(), 1, t.size(), f);
-            fclose(f);
+            const std::wstring dir = PastaPerfis() + L"\\" + p;
+            const std::wstring exeChave = Minusculas(p + L".exe");
+            const std::wstring nomeJogo = NomeValido(Largo(linha(LeTexto(dir + L"\\_nome.txt"))));
+            const std::wstring aoLigar = NomeValido(Largo(linha(LeTexto(dir + L"\\_ao_ligar.txt"))));
+            std::vector<std::wstring> jsons;
+            HANDLE hj = FindFirstFileW((dir + L"\\*.json").c_str(), &fd);
+            if (hj != INVALID_HANDLE_VALUE)
+            {
+                do
+                    if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+                        jsons.push_back(SemExtensao(fd.cFileName));
+                while (FindNextFileW(hj, &fd));
+                FindClose(hj);
+            }
+            std::wstring principal = std::find(jsons.begin(), jsons.end(), aoLigar) != jsons.end() ? aoLigar : std::wstring();
+            if (principal.empty() && jsons.size() == 1)
+                principal = jsons[0];
+            for (const std::wstring& j : jsons)
+            {
+                // o principal fica com o nome que o usuario deu a ele; so os nomes automaticos de antes ("Principal",
+                // "Perfil N") viram o nome do jogo (ou o do exe)
+                const bool automatico = j == L"Principal" || (j.rfind(L"Perfil ", 0) == 0 && j.size() <= 10);
+                const std::wstring base =
+                    j == principal ? (automatico ? (nomeJogo.empty() ? p : nomeJogo) : j) : p + L" - " + j;
+                std::wstring alvo = NomeValido(base);
+                if (alvo.empty())
+                    alvo = NomeValido(p);
+                for (int k = 2; Existe(PerfilArq(alvo)); ++k)
+                    alvo = NomeValido(base + L" (" + std::to_wstring(k) + L")");
+                if (!MoveFileW((dir + L"\\" + j + L".json").c_str(), PerfilArq(alvo).c_str()))
+                {
+                    Log("perfil", Fmt("migracao: nao moveu (%lu) ", GetLastError()) + Utf8(dir + L"\\" + j + L".json"));
+                    continue;
+                }
+                if (j == principal && !vinculos.count(exeChave))
+                    vinculos[exeChave] = alvo;
+                Log("perfil", "migrado: " + Utf8(p + L"\\" + j) + " -> " + Utf8(alvo) + ".json");
+            }
+            // so o nome do jogo (sem perfil salvo): o primeiro salvar ja usa esse nome
+            if (principal.empty() && jsons.empty() && !nomeJogo.empty() && !vinculos.count(exeChave))
+                vinculos[exeChave] = nomeJogo;
+            CreateDirectoryW((PastaPerfis() + L"\\_antigos").c_str(), nullptr);
+            std::wstring destino = PastaPerfis() + L"\\_antigos\\" + p;
+            for (int k = 2; Existe(destino); ++k)
+                destino = PastaPerfis() + L"\\_antigos\\" + p + L" (" + std::to_wstring(k) + L")";
+            if (!MoveFileW(dir.c_str(), destino.c_str()))
+                Log("perfil", Fmt("migracao: pasta antiga nao saiu (%lu) ", GetLastError()) + Utf8(dir));
         }
+        GravaVinculos();
         perfisSujos = true;
-    }
-    std::wstring PerfilAoLigar() const { return NomeValido(LeLinha(L"_ao_ligar.txt")); }
-    void DefineAoLigar(const std::wstring& nome) { GravaLinha(L"_ao_ligar.txt", nome); }
-    // nome do jogo dado pelo usuario (o exe nem sempre tem o nome do jogo); "" = sem nome
-    std::wstring NomeJogo() const
-    {
-        std::wstring n = LeLinha(L"_nome.txt");
-        for (auto& c : n)
-            if (c < 32)
-                c = L' ';
-        return n.size() > 60 ? n.substr(0, 60) : n;
-    }
-    void RenomeiaPerfil(const std::wstring& de, const std::wstring& para)
-    {
-        if (de.empty() || para.empty() || de == para || !Existe(PerfilArq(de)))
-            return;
-        if (Existe(PerfilArq(para)))
-        {
-            Log("perfil", "renomear: ja existe " + Utf8(PerfilArq(para)));
-            return;
-        }
-        if (!MoveFileW(PerfilArq(de).c_str(), PerfilArq(para).c_str()))
-        {
-            Log("perfil", Fmt("renomear falhou (%lu): ", GetLastError()) + Utf8(PerfilArq(de)));
-            return;
-        }
-        if (PerfilAoLigar() == de)
-            DefineAoLigar(para);
-        if (perfilAtivo == de)
-        {
-            perfilAtivo = para;
-            arqAtivo = PerfilArq(para);
-        }
-        perfisSujos = true;
-        Log("perfil", "renomeado: " + Utf8(de) + " -> " + Utf8(para));
-    }
-    // o formato de antes (um perfil por exe, bin\perfis\<exe>.json): vira o perfil "Principal", carregado ao ligar
-    void MigraPerfilAntigo()
-    {
-        const std::wstring antigo = pasta + L"\\perfis\\" + SemExtensao(exeAlvo) + L".json";
-        if (exeAlvo.empty() || !Existe(antigo))
-            return;
-        CreateDirectoryW(PastaPerfis().c_str(), nullptr);
-        const std::wstring novo = PerfilArq(L"Principal");
-        if (Existe(novo) || !MoveFileW(antigo.c_str(), novo.c_str()))
-        {
-            Log("perfil", "perfil antigo nao migrado (ja existe Principal ou o arquivo esta em uso): " + Utf8(antigo));
-            return;
-        }
-        if (PerfilAoLigar().empty())
-            DefineAoLigar(L"Principal");
-        perfisSujos = true;
-        Log("perfil", "perfil antigo virou 'Principal': " + Utf8(novo));
     }
     void AplicaConfig(const Config& c)
     {
@@ -459,93 +516,105 @@ struct App
         zeraHistorico = true;
         temporal.Reinicia();
     }
-    bool CarregaPerfilNome(const std::wstring& nome)
+    // o cfg.Texto() do que esta gravado num arquivo ("" sem o arquivo: tudo conta como alterado ate salvar)
+    static std::string TextoDe(const std::wstring& arq)
     {
-        if (nome.empty() || !Existe(PerfilArq(nome)))
+        if (!Existe(arq))
+            return std::string();
+        Config c;
+        c.Carrega(arq);
+        return c.Texto();
+    }
+    // traz os ajustes de um perfil (de qualquer jogo; "" = config.json). O destino nao muda: salvar continua indo para o
+    // perfil do jogo ligado
+    bool CarregaDe(const std::wstring& nome)
+    {
+        const std::wstring arq = nome.empty() ? ConfigArq() : PerfilArq(nome);
+        if (!nome.empty() && !Existe(arq))
             return false;
         Config c;
-        c.Carrega(PerfilArq(nome));
+        c.Carrega(arq);
         AplicaConfig(c);
-        perfilAtivo = nome;
-        arqAtivo = PerfilArq(nome);
-        semDestino = false;
-        textoSalvo = cfg.Texto();
-        Log("perfil", "carregado: " + Utf8(arqAtivo));
+        perfilBase = nome;
+        textoSalvo = TextoDe(ArqDestino());
+        Log("perfil", "carregado: " + Utf8(arq) + (arq == ArqDestino() ? "" : " (salvar vai para " + Utf8(ArqDestino()) + ")"));
         return true;
     }
-    void CarregaPadrao()
+    void SalvaPerfil()
     {
-        Config c;
-        c.Carrega(ConfigArq());
-        AplicaConfig(c);
-        perfilAtivo.clear();
-        arqAtivo.clear();
-        semDestino = false;
-        textoSalvo = cfg.Texto();
-        Log("perfil", "padrao do programa (config.json)");
-    }
-    bool SalvaPerfilNome(const std::wstring& nome)
-    {
-        if (nome.empty() || exeAlvo.empty())
-            return false;
-        // o primeiro perfil do jogo carrega sozinho ao ligar (como o perfil unico de antes); depois, quem escolhe e o
-        // "Usar ao ligar"
-        const bool primeiro = Perfis().empty() && PerfilAoLigar().empty();
-        CreateDirectoryW((pasta + L"\\perfis").c_str(), nullptr);
+        if (!configArq.empty()) // --config (testes): nao e regravado
+            return;
         CreateDirectoryW(PastaPerfis().c_str(), nullptr);
-        cfg.Salva(PerfilArq(nome));
-        if (!Existe(PerfilArq(nome)))
-        {
-            Log("perfil", "nao gravou: " + Utf8(PerfilArq(nome)));
-            return false;
-        }
-        perfilAtivo = nome;
-        arqAtivo = PerfilArq(nome);
-        semDestino = false;
+        cfg.Salva(ArqDestino());
+        perfilBase = perfilJogo;
         textoSalvo = cfg.Texto();
         perfisSujos = true;
-        if (primeiro)
-            DefineAoLigar(nome);
-        Log("perfil", "salvo: " + Utf8(arqAtivo));
-        return true;
+        Log("perfil", "salvo: " + Utf8(ArqDestino()));
     }
+    // o perfil do jogo ligado ganha outro nome (o arquivo e o vinculo do exe)
+    void RenomeiaPerfilJogo(const std::wstring& novo)
+    {
+        if (exeAlvo.empty() || novo.empty() || novo == perfilJogo)
+            return;
+        if (Existe(PerfilArq(novo)))
+        {
+            Log("perfil", "renomear: ja existe " + Utf8(PerfilArq(novo)));
+            return;
+        }
+        if (Existe(PerfilArq(perfilJogo)) && !MoveFileW(PerfilArq(perfilJogo).c_str(), PerfilArq(novo).c_str()))
+        {
+            Log("perfil", Fmt("renomear falhou (%lu): ", GetLastError()) + Utf8(PerfilArq(perfilJogo)));
+            return;
+        }
+        LeVinculos();
+        for (auto& v : vinculos) // outro jogo que usava o mesmo arquivo segue com ele
+            if (v.second == perfilJogo)
+                v.second = novo;
+        vinculos[Minusculas(exeAlvo)] = novo;
+        GravaVinculos();
+        if (perfilBase == perfilJogo)
+            perfilBase = novo;
+        Log("perfil", "renomeado: " + Utf8(perfilJogo) + " -> " + Utf8(novo));
+        perfilJogo = novo;
+        perfisSujos = true;
+    }
+    // vai para a Lixeira (da para recuperar). Os ajustes em uso ficam na tela; se era o perfil do jogo, o proximo salvar
+    // (ou a saida) o cria de novo
     void ApagaPerfil(const std::wstring& nome)
     {
-        if (nome.empty() || !DeleteFileW(PerfilArq(nome).c_str()))
+        if (nome.empty() || !Existe(PerfilArq(nome)))
             return;
-        if (PerfilAoLigar() == nome)
-            DefineAoLigar(L"");
-        if (perfilAtivo == nome)
+        std::wstring dupla = PerfilArq(nome);
+        dupla.push_back(L'\0'); // SHFileOperation quer a lista terminada em dois nulos
+        SHFILEOPSTRUCTW op{};
+        op.wFunc = FO_DELETE;
+        op.pFrom = dupla.c_str();
+        op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI;
+        if (SHFileOperationW(&op) != 0 || Existe(PerfilArq(nome)))
         {
-            // os ajustes continuam na tela; sem destino, nada e gravado ao sair (nem por cima do config.json)
-            perfilAtivo.clear();
-            arqAtivo.clear();
-            semDestino = true;
+            Log("perfil", "apagar falhou: " + Utf8(PerfilArq(nome)));
+            return;
         }
+        if (nome == perfilJogo)
+            textoSalvo.clear();
+        if (nome == perfilBase)
+            perfilBase = perfilJogo == nome ? std::wstring() : perfilBase;
         perfisSujos = true;
-        Log("perfil", "apagado: " + Utf8(PerfilArq(nome)));
+        Log("perfil", "apagado (Lixeira): " + Utf8(PerfilArq(nome)));
     }
-    // um nome livre "Perfil N" para salvar como novo
-    std::wstring NomeLivre()
-    {
-        const auto& v = Perfis();
-        for (int i = 1;; ++i)
-        {
-            const std::wstring n = L"Perfil " + std::to_wstring(i);
-            if (std::find(v.begin(), v.end(), n) == v.end())
-                return n;
-        }
-    }
-    // ao sair do programa ou trocar de jogo: os ajustes vao para o perfil ativo, ou para config.json sem perfil
+    // ao sair do programa ou trocar de jogo: os ajustes vao para o perfil do jogo (ou para config.json sem jogo)
     void GravaDestino()
     {
-        if (!configArq.empty() || semDestino) // --config (testes): nao e regravado
+        if (!configArq.empty()) // --config (testes): nao e regravado
             return;
-        cfg.Salva(arqAtivo.empty() ? ConfigArq() : arqAtivo);
+        CreateDirectoryW(PastaPerfis().c_str(), nullptr);
+        cfg.Salva(ArqDestino());
         textoSalvo = cfg.Texto();
+        perfisSujos = true;
     }
-    // ao ligar: num exe diferente do anterior, carrega o perfil dele marcado "ao ligar"; sem perfil marcado, e se os
-    // ajustes vinham do perfil de outro jogo, volta ao padrao do programa (sem herdar o do outro jogo)
+    // ao ligar: num exe diferente do anterior, os ajustes do anterior vao para o perfil dele e o perfil deste jogo e
+    // carregado; jogo sem perfil ainda parte do padrao do programa (config.json) e o perfil dele nasce no primeiro salvar.
+    // Religar o mesmo jogo mantem os ajustes da tela (inclusive os que so valem ao religar).
     void CarregaPerfil(HWND h)
     {
         const std::wstring exe = NomeExe(h);
@@ -555,21 +624,18 @@ struct App
             perfisSujos = true;
             return;
         }
-        if (exe != exePerfis && !exePerfis.empty())
-            GravaDestino(); // os ajustes do jogo anterior ficam no destino dele antes da troca
+        if (exe != exePerfis)
+            GravaDestino(); // os ajustes de antes (do jogo anterior, ou o padrao sem jogo) ficam no destino deles
         exeAlvo = exe;
         perfisSujos = true;
-        MigraPerfilAntigo();
         if (exeAlvo == exePerfis)
             return;
         exePerfis = exeAlvo;
-        if (CarregaPerfilNome(PerfilAoLigar()))
+        perfilJogo = NomePerfilDoJogo(exeAlvo);
+        if (CarregaDe(perfilJogo))
             return;
-        if (!perfilAtivo.empty() || semDestino)
-        {
-            CarregaPadrao();
-            Log("perfil", "sem perfil 'ao ligar' para " + Utf8(exeAlvo) + ": padrao (config.json)");
-        }
+        CarregaDe(L"");
+        Log("perfil", Utf8(exeAlvo) + " ainda sem perfil: padrao do programa, salvo em " + Utf8(PerfilArq(perfilJogo)));
     }
 
     // ---- como a Game Bar: o overlay e o painel so com o jogo (ou o proprio painel) em foco ----
@@ -596,6 +662,7 @@ struct App
             return;
         pausado = true;
         ov.Mostra(false);
+        fb.SemEspera(); // sem quadros processados o jogo nao espera a edicao
     }
     // de volta: o que estava em voo e o historico sao de antes da pausa (o movimento parou de ser medido)
     void Retoma()
@@ -1090,7 +1157,8 @@ struct App
                 if (!fb.Abre(gpu, pid))
                     return false;
             }
-            fb.Batimento(true, cfg.modo != 1 && redeOk);
+            // sem atraso: modo 2 = o jogo espera a edicao a cada 2 quadros, 3 = em todo quadro (cab->espera 1 e 2)
+            fb.Batimento(true, cfg.modo != 1 && redeOk, atraso < 0 && cfg.semAtraso >= 2 ? uint32_t(cfg.semAtraso - 1) : 0u);
             if (!fb.Pega(qb))
             {
                 if (fb.Aberta() && !fb.JogoVivo())
@@ -1213,8 +1281,12 @@ struct App
             fluxo.Estatisticas(c, desc, gpu.dev.Get(), fed, fedAnt);
         // A rede roda na fila dela e responde com atraso: este quadro vai para a tela agora, com a ultima edicao; a
         // resposta, quando chega, e do quadro t0 que a rede viu e entra pelo deslocamento acumulado desde t0.
-        // sincrono (imagem, reproducao sem --atraso): a rede ve este quadro e responde nele mesmo, como antes.
-        const bool sincrono = atraso == 0;
+        // sincrono (imagem, reproducao sem --atraso, e o "sem atraso" ao vivo): a rede ve este quadro e responde nele
+        // mesmo. Sem atraso e como a NVIDIA roda o DLSS 5: a rede dentro do quadro, a edicao do proprio quadro, nada
+        // trazido de quadros velhos (todo rastro vinha de trazer a edicao de 4-6 quadros atras, por mais que o movimento
+        // fosse exato). Na captura de video o quadro vai para a tela depois da rede; na de buffer o jogo espera a edicao.
+        const bool semAtraso = atraso < 0 && cfg.semAtraso > 0;
+        const bool sincrono = atraso == 0 || semAtraso;
         Tex* deslocamento = nullptr;
         // com o historico da rede o deslocamento segue tambem com a rede parada: no proximo envio ele e o movimento ate o
         // quadro do envio anterior (as guias)
@@ -1227,8 +1299,9 @@ struct App
         temporal.AcumulaGrade(c, desc, gpu.dev.Get(), temMov ? &fluxo.Movimento() : nullptr,
                               temMov ? &fluxo.Confianca() : nullptr);
         const bool podeRede = redeOk && rede.Pronta() && cfg.modo != 1;
+        // sem atraso a rede roda em todo quadro: um quadro sem resposta voltaria a trazer a edicao de outro quadro
         const bool vez = !temporal.Valido() || !temMov || zeraHistorico ||
-                         quadros >= quadroEnvio + (UINT64)std::clamp(cfg.ritmo, 1, 4);
+                         quadros >= quadroEnvio + (UINT64)(semAtraso ? 1 : std::clamp(cfg.ritmo, 1, 4));
         bool envia = sincrono && podeRede && vez;
         if (envia)
         {
@@ -1266,6 +1339,13 @@ struct App
         // edicao estabilizada no tempo (e reprojetada nos quadros sem resposta)
         ParamsTemporal tp = cfg.temporal;
         tp.intensidade = cfg.ngx.intensidade;
+        if (semAtraso)
+        {
+            // a edicao deste quadro inteira: sem acumulo de quadros velhos nem grade afim (que so existem para trazer a
+            // resposta atrasada); a estabilidade no tempo e a do historico da propria rede, como na NVIDIA
+            tp.maxQuadros = 1;
+            tp.afim = false;
+        }
         // resposta de um quadro anterior a um corte de cena e da cena velha: descartada
         const bool usa = chegou && cfg.modo != 1 && redeOk && quadroEnvio >= quadroCorte;
         if (usa)
@@ -1347,7 +1427,7 @@ struct App
             UINT pad2, pad3, pad4;
             float satMatiz[6], luzMatiz[6];
             UINT usaMatiz, temCrua, usaAfim, temDeslG, agw, agh, padA0, padA1;
-        } kc{inteiro.w,      inteiro.h,      fed.w, fed.h, edicao ? cfg.forca : 0.f, (UINT)cfg.modo, cfg.divisao,
+        } kc{inteiro.w,      inteiro.h,      fed.w, fed.h, edicao ? std::clamp(cfg.forca, 0.f, 2.f) : 0.f, (UINT)cfg.modo, cfg.divisao,
              edicao ? 1u : 0u, hdr ? 1u : 0u, escalaUsada, kExp, kCon, kSat, grada ? 1u : 0u,
              pontePassada == 3 ? 1u : 0u, (hdr && pontePassada == 1) ? 1u : 0u, cfg.preLuz, cfg.preSombra, cfg.preLimiar, cfg.preLimiarSombra, cfg.preCor,
              0, 0, 0, {}, {}, cfg.matiz.Ativa() ? 1u : 0u, (cfg.modo == 5 && crua) ? 1u : 0u, afimC ? 1u : 0u,
@@ -1625,15 +1705,14 @@ struct App
     UINT desdeRede = 0;
 
     // ---- memoria de video: o uso deste processo contra o orcamento que o Windows da a ele ----
-    // Acima do orcamento o Windows passa a mover memoria para a RAM, e a rede, lida pelo PCIe, derruba o fps sem volta
-    // (medido pelo lmxxf). Acima do orcamento por 2 s seguidos, a rede e desligada de vez (uma travada so, em vez do fps
-    // no chao); religar (Ctrl+Shift+D duas vezes) recria a rede.
+    // So mostra e registra. Acima do orcamento (pico do jogo, jogo pesado) o Windows move para a RAM o que estiver menos
+    // em uso; a rede segue rodando (antes ela era desligada de vez depois de 2 s acima do orcamento, e desligava em todo
+    // pico). A parte do overlay (texturas dele) e a do resto (rede, runtime HIP, captura) aparecem separadas.
     std::set<uint64_t> tamanhosRede; // tamanhos de rede ja usados neste processo (cada um prende buffers da ponte HIP)
     double mbPresos = 0;
     std::string memoriaTexto;      // linha do painel
-    std::string emergenciaMemoria; // por que a rede foi desligada ("" = nao foi)
-    std::chrono::steady_clock::time_point marcaMemoria{}, registroMemoria{}, acimaDesde{};
-    bool acimaDoOrcamento = false;
+    std::string emergenciaMemoria; // aviso de VRAM acima do orcamento ("" = dentro)
+    std::chrono::steady_clock::time_point marcaMemoria{}, registroMemoria{};
     void VigiaMemoria()
     {
         const auto agora = std::chrono::steady_clock::now();
@@ -1644,36 +1723,21 @@ struct App
         if (!gpu.Memoria(uso, orcamento, naRam))
             return;
         const double mb = 1024.0 * 1024.0, gb = mb * 1024.0;
-        memoriaTexto = Fmt("VRAM do overlay %.2f de %.2f GB (orçamento)  ·  na RAM %.2f GB", uso / gb, orcamento / gb, naRam / gb);
+        const double tex = double(Tex::BytesVivos());
+        memoriaTexto = Fmt("VRAM do overlay %.2f de %.2f GB (orçamento): rede e runtime %.2f, texturas %.2f  ·  na RAM %.2f GB",
+                           uso / gb, orcamento / gb, std::max(0.0, double(uso) - tex) / gb, tex / gb, naRam / gb);
         if (agora - registroMemoria >= std::chrono::seconds(5))
         {
             registroMemoria = agora;
-            Log("memoria", Fmt("VRAM do processo %.0f MB, orcamento %.0f MB, memoria de video na RAM %.0f MB, presos pela "
-                               "ponte HIP ~%.0f MB (%zu tamanhos)",
-                               uso / mb, orcamento / mb, naRam / mb, mbPresos, tamanhosRede.size()));
+            Log("memoria", Fmt("VRAM do processo %.0f MB (texturas do overlay %.0f MB), orcamento %.0f MB, memoria de video "
+                               "na RAM %.0f MB, presos pela ponte HIP ~%.0f MB (%zu tamanhos)",
+                               uso / mb, tex / mb, orcamento / mb, naRam / mb, mbPresos, tamanhosRede.size()));
         }
-        if (!redeOk || orcamento == 0 || uso <= orcamento)
-        {
-            acimaDoOrcamento = false;
-            return;
-        }
-        if (!acimaDoOrcamento)
-        {
-            acimaDoOrcamento = true;
-            acimaDesde = agora;
-            return;
-        }
-        if (agora - acimaDesde < std::chrono::seconds(2))
-            return;
-        emergenciaMemoria = Fmt("Rede desligada: a VRAM do overlay (%.2f GB) passou do orçamento (%.2f GB) por 2 s. "
-                                "Religue para tentar de novo, com a rede menor.", uso / gb, orcamento / gb);
-        Log("memoria", Fmt("rede desligada: VRAM do processo %.0f MB acima do orcamento %.0f MB por 2 s", uso / mb,
-                           orcamento / mb));
-        rede.Encerra();
-        redeOk = false;
-        acimaDoOrcamento = false;
-        zeraHistorico = true;
-        temporal.Reinicia();
+        emergenciaMemoria = orcamento && uso > orcamento
+                                ? Fmt("VRAM acima do orçamento (%.2f de %.2f GB): o Windows move o excedente para a RAM. "
+                                      "A rede continua; se o fps cair, use a rede pequena ou um tamanho menor.",
+                                      uso / gb, orcamento / gb)
+                                : std::string();
     }
     UINT64 quadrosComRede = 0;
     Tex* ultimaEdicao = nullptr;
@@ -1719,51 +1783,27 @@ struct App
         e.exe = Utf8(exeAlvo);
         painel.DicaBandeja(Ligado() && !exeAlvo.empty() ? L"DLSS 5 Overlay - " + exeAlvo : L"DLSS 5 Overlay - sem jogo");
         e.perfis.clear();
-        for (const auto& n : Perfis()) // relido do disco so depois de uma mudanca (atualiza tambem os dois abaixo)
+        for (const auto& n : Perfis()) // relida do disco so depois de uma mudanca
             e.perfis.push_back(Utf8(n));
-        e.perfilAtivo = Utf8(perfilAtivo);
-        e.perfilAoLigar = exeAlvo.empty() ? std::string() : Utf8(aoLigarCache);
+        e.perfilJogo = Utf8(perfilJogo);
+        e.perfilBase = Utf8(perfilBase);
         e.perfilAlterado = configArq.empty() && cfg.Texto() != textoSalvo;
-        e.semDestino = semDestino;
+        e.perfilExiste = !perfilJogo.empty() && Existe(PerfilArq(perfilJogo));
         e.historicoAtivo = temporalSessao == 1;
-        e.nomeLivre = exeAlvo.empty() ? std::string() : Utf8(NomeLivre());
-        e.nomeJogo = exeAlvo.empty() ? std::string() : Utf8(nomeJogoCache);
         painel.DefineMouseJogo(buffer && fb.Conectada() && fb.JogoVivo() ? fb.Cab() : nullptr);
         const AcoesPainel a = painel.Quadro(cfg, e);
         // perfis (na ordem: salvar antes de carregar, para o "salvar e carregar")
-        if (!a.perfilSalvarComo.empty())
-            SalvaPerfilNome(NomeValido(Largo(a.perfilSalvarComo)));
-        if (a.perfilSalvar && !perfilAtivo.empty())
-            SalvaPerfilNome(perfilAtivo);
-        if (a.salvar)
-        {
-            // o padrao do programa (config.json); sem perfil ativo (ou com o ativo apagado) ele vira o destino
-            cfg.Salva(ConfigArq());
-            if (perfilAtivo.empty())
-            {
-                semDestino = false;
-                textoSalvo = cfg.Texto();
-            }
-            Log("app", "configuracao salva");
-        }
+        if (a.perfilSalvar)
+            SalvaPerfil();
         if (a.carregarPadrao)
-            CarregaPadrao();
+            CarregaDe(L"");
         if (!a.perfilCarregar.empty())
-            CarregaPerfilNome(NomeValido(Largo(a.perfilCarregar)));
+            CarregaDe(NomeValido(Largo(a.perfilCarregar)));
         if (!a.perfilApagar.empty())
             ApagaPerfil(NomeValido(Largo(a.perfilApagar)));
         if (!a.perfilRenomear.empty())
-            RenomeiaPerfil(NomeValido(Largo(a.perfilRenomear)), NomeValido(Largo(a.perfilNovoNome)));
-        if (a.nomeJogoMuda && !exeAlvo.empty())
-        {
-            GravaLinha(L"_nome.txt", Largo(a.nomeJogo));
-            Log("perfil", "nome do jogo de " + Utf8(exeAlvo) + ": " + (a.nomeJogo.empty() ? "(sem nome)" : a.nomeJogo));
-        }
-        if (a.perfilAoLigarMuda && !exeAlvo.empty())
-        {
-            DefineAoLigar(NomeValido(Largo(a.perfilAoLigar)));
-            Log("perfil", "ao ligar " + Utf8(exeAlvo) + ": " + (a.perfilAoLigar.empty() ? "nenhum" : a.perfilAoLigar));
-        }
+            RenomeiaPerfilJogo(NomeValido(Largo(a.perfilRenomear)));
+
         if (a.redefinir)
         {
             AplicaConfig(Config{});

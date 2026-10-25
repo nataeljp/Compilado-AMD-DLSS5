@@ -9,17 +9,24 @@ namespace ov {
 // nomes das chaves de cor por matiz no config.json (matizVermelhoSat, matizVermelhoLuz, ...)
 static const char* const kNomesMatiz[6] = {"Vermelho", "Amarelo", "Verde", "Ciano", "Azul", "Magenta"};
 
+// Tom e Estrutura sao entradas da propria rede, nas faixas da NVIDIA. Medido (mede_controles, imagem da NVIDIA): fora
+// delas a rede inverte -- a estrutura acima de 2 (1,5 na rede pequena) e o tom acima de 1 clareiam a imagem em vez de
+// reforcar o efeito -- entao nada passa delas.
 ParamsRede Config::Rede() const
 {
     ParamsRede r = rede;
     r.estilo = float(std::clamp(ngx.modelo, 0, 2)); // o controle de estilo da rede: Model A/B/C = 0, 1, 2 (x 1/128)
-    r.tom = std::clamp(ngx.tomLocal, 0.f, 2.f);
-    r.estrutura = ngx.estruturaLocal;
-    r.pele = ngx.mascara ? ngx.estruturaPele : -1.f;
-    r.outro = ngx.mascara ? ngx.estruturaLocal : -1.f;
-    // a decodificacao da NVIDIA no runtime (1 = a resposta inteira); a composicao do overlay vem depois
-    r.detalhe = std::clamp(forcaDecodificacao, 0.f, 1.f);
-    r.cor = std::clamp(corDecodificacao, 0.f, 1.f);
+    r.tom = std::clamp(ngx.tomLocal, 0.f, 1.f);
+    r.estrutura = std::clamp(ngx.estruturaLocal, -1.f, 2.f);
+    // pele: so o canal de pele recebe a estrutura da pele; o "outro" fica no 1 da NVIDIA. Antes, desligar a pele
+    // separada levava os dois a -1 e o efeito da rede caia pela metade na imagem inteira (medido), pele ou nao.
+    // Medido canal por canal: nenhum canal da rede separa a pele (todos mudam pele e resto quase igual); a separacao de
+    // pele da NVIDIA usa um modelo de mascara proprio, que nao existe neste runtime.
+    r.pele = ngx.mascara ? std::clamp(ngx.estruturaPele, -1.f, 2.f) : 1.f;
+    r.outro = 1.f;
+    // a decodificacao da NVIDIA no runtime: a resposta inteira (a forca e a cor ficam nos controles globais)
+    r.detalhe = 1.f;
+    r.cor = 1.f;
     r.forcaHistorico = std::clamp(forcaHistorico, 0.f, 1.f);
     r.recorteHistorico = std::clamp(recorteHistorico, 0.f, 4.f);
     return r;
@@ -98,6 +105,8 @@ void Config::Carrega(const std::wstring& arquivo)
         F((std::string("matiz") + kNomesMatiz[i] + "Luz").c_str(), matiz.luz[i]);
     }
     I("modo", modo);
+    I("semAtraso", semAtraso);
+    semAtraso = std::clamp(semAtraso, 0, 3);
     B("movimento", movimento);
     B("usaConfianca", usaConfianca);
     I("ritmo", ritmo);
@@ -110,8 +119,6 @@ void Config::Carrega(const std::wstring& arquivo)
     F("realceTemporal", realceTemporal);
     F("forcaHistoricoRede", forcaHistorico);
     F("recorteHistoricoRede", recorteHistorico);
-    F("corDecodificacao", corDecodificacao);
-    F("forcaDecodificacao", forcaDecodificacao);
     I("estabilidade", temporal.maxQuadros);
     F("mediaMovimento", temporal.pxEstab);
     F("rejeicao", temporal.rejeicao);
@@ -159,6 +166,7 @@ std::string Config::Texto() const
         f << "  \"matiz" << kNomesMatiz[i] << "Luz\": " << matiz.luz[i] << ",\n";
     }
     f << "  \"modo\": " << modo << ",\n";
+    f << "  \"semAtraso\": " << semAtraso << ",\n";
     f << "  \"movimento\": " << b(movimento) << ",\n";
     f << "  \"usaConfianca\": " << b(usaConfianca) << ",\n";
     f << "  \"ritmo\": " << ritmo << ",\n";
@@ -171,8 +179,6 @@ std::string Config::Texto() const
     f << "  \"realceTemporal\": " << realceTemporal << ",\n";
     f << "  \"forcaHistoricoRede\": " << forcaHistorico << ",\n";
     f << "  \"recorteHistoricoRede\": " << recorteHistorico << ",\n";
-    f << "  \"corDecodificacao\": " << corDecodificacao << ",\n";
-    f << "  \"forcaDecodificacao\": " << forcaDecodificacao << ",\n";
     f << "  \"estabilidade\": " << temporal.maxQuadros << ",\n";
     f << "  \"mediaMovimento\": " << temporal.pxEstab << ",\n";
     f << "  \"rejeicao\": " << temporal.rejeicao << ",\n";

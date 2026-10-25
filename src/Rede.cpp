@@ -352,8 +352,8 @@ bool Rede::Prepara(ID3D12GraphicsCommandList* c, const ParamsRede& p)
     if (p.redeCompleta)
         fi.flags |= LMXXF_NR_FRAME_FLAG_FULL_NETWORK;
     // os controles da NVIDIA (estilo, tom, estrutura, pele, outro): o adaptador os aplica nos pesos do bloco 0
-    fi.control_tone = std::clamp(p.tom, -2.f, 8.f);
-    fi.control_structure = std::clamp(p.estrutura, -2.f, 8.f);
+    fi.control_tone = std::clamp(p.tom, -1.f, 4.f);
+    fi.control_structure = std::clamp(p.estrutura, -1.f, 4.f);
     fi.control_skin = std::clamp(p.pele, -1.f, 4.f);
     fi.control_other = std::clamp(p.outro, -1.f, 4.f);
     fi.control_style = std::clamp(p.estilo, -1.f, 4.f);

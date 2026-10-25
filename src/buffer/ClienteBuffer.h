@@ -2,12 +2,14 @@
 // DLSS5Buffer.dll (src\jogo\Modulo.cpp) e no jogo de teste. Grava na lista do jogo, depois do upscale:
 //   - exporta cor (x exposicao), movimento e profundidade para os slots compartilhados, quando o overlay quer;
 //   - soma a ultima edicao publicada pelo overlay, reprojetada pelos vetores do jogo, na propria cor (no lugar).
-// Nunca espera o overlay: sem overlay vivo (batimento), nao faz nada alem de manter o cabecalho.
+// So espera o overlay no modo sem atraso (EsperaEdicao, com prazo); sem overlay vivo (batimento), nao faz nada alem de
+// manter o cabecalho.
 #pragma once
 #include "Protocolo.h"
 #include <windows.h>
 #include <d3d12.h>
 #include <wrl/client.h>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -48,11 +50,17 @@ class ClienteBuffer
     void Encerra();
     // grava os passes na lista `c` (que o jogo vai submeter); devolve o numero do quadro (0 = nada gravado)
     uint64_t Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo& e);
+    // sem atraso (o overlay liga em cab->espera): chamar ANTES de Quadro, fora do mutex `mx` que protege as outras
+    // chamadas. Se o quadro anterior exportou, espera no CPU (ate kPrazoEspera ms) a edicao dele ficar pronta.
+    void EsperaEdicao(std::mutex& mx);
+    static constexpr DWORD kPrazoEspera = 100;
     // contadores para o log do modulo (diagnostico do jogo de verdade): quadros, exportados, com edicao aplicada e a idade
-    // da edicao aplicada (quadros do jogo desde o quadro em que a rede a fez)
+    // da edicao aplicada (quadros do jogo desde o quadro em que a rede a fez); esperas (sem atraso), tempo e estouros
     struct Diag
     {
         uint64_t quadros = 0, exportados = 0, aplicados = 0, idadeSoma = 0, idadeMax = 0;
+        uint64_t esperas = 0, estouros = 0;
+        double esperaMs = 0, esperaMsMax = 0;
     } diag;
     // a lista do ultimo quadro ja foi submetida nesta fila: sinaliza a cerca do jogo (chamar depois do Execute/Present)
     void Submetido(ID3D12CommandQueue* q);
@@ -114,6 +122,12 @@ class ClienteBuffer
     UINT pp = 0;
     uint64_t ultimaExport = 0;
     bool estavaVivo = false;
+    // sem atraso: a exportacao cuja edicao a ultima espera aguardou (e se chegou); dois estouros seguidos suspendem a
+    // espera por 300 quadros (overlay travado ou fora de foco nao pode segurar o jogo)
+    HANDLE evPublica = nullptr, evCerca = nullptr;
+    uint64_t esperouPor = 0, esperaSuspensaAte = 0;
+    bool esperaOk = false;
+    uint32_t estourosSeguidos = 0;
 };
 
 } // namespace dlss5ov

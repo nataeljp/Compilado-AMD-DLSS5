@@ -367,6 +367,9 @@ bool ClienteBuffer::Inicia(ID3D12Device* d, const char* exe)
     cab->pidJogo = GetCurrentProcessId();
     strncpy_s(cab->exe, exe ? exe : "", _TRUNCATE);
     cab->aplica = 1;
+    NomeEventoPublica(nome, 96, GetCurrentProcessId());
+    evPublica = CreateEventW(nullptr, FALSE, FALSE, nome);
+    evCerca = CreateEventW(nullptr, FALSE, FALSE, nullptr);
 
     // raiz: 28 constantes, SRV t0..t8, UAV u0..u8, amostrador linear com borda presa
     D3D12_DESCRIPTOR_RANGE r[2]{};
@@ -433,6 +436,12 @@ void ClienteBuffer::Encerra()
     if (mapa)
         CloseHandle(mapa);
     mapa = nullptr;
+    for (HANDLE* h : {&evPublica, &evCerca})
+    {
+        if (*h)
+            CloseHandle(*h);
+        *h = nullptr;
+    }
 }
 
 bool ClienteBuffer::OverlayVivo() const
@@ -603,7 +612,7 @@ bool ClienteBuffer::Garante(const EntradasJogo& e)
         l = 0;
     cab->consumido = 0;
     cab->corW = UINT(corW), cab->corH = corH, cab->movW = movW, cab->movH = movH, cab->profW = profW, cab->profH = profH;
-    quadro = pendente = 0;
+    quadro = pendente = esperaSuspensaAte = 0;
     Esquece();
     MemoryBarrier();
     cab->geracao = geracao;
@@ -671,6 +680,70 @@ void ClienteBuffer::Esquece()
         a = 0;
     jUlt = -1;
     ultimaExport = 0;
+    esperouPor = 0;
+}
+
+void ClienteBuffer::EsperaEdicao(std::mutex& mx)
+{
+    Com<ID3D12Fence> cerca;
+    uint64_t alvo = 0;
+    {
+        std::lock_guard<std::mutex> lk(mx);
+        // so no quadro logo depois de uma exportacao (quadro = o ultimo gravado; este sera quadro + 1)
+        if (!cab || !evPublica || !evCerca || !geracao || !cercaOverlay || !cab->espera || !cab->aplica ||
+            !OverlayVivo() || !ultimaExport || ultimaExport != quadro || quadro < esperaSuspensaAte)
+            return;
+        alvo = ultimaExport;
+        cerca = cercaOverlay;
+    }
+    LARGE_INTEGER f, t0, t1;
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&t0);
+    const ULONGLONG fim = GetTickCount64() + kPrazoEspera;
+    bool ok = false;
+    for (;;)
+    {
+        // a edicao de `alvo` (ou mais nova) publicada: o overlay grava a cerca antes do quadro
+        uint64_t v = 0;
+        for (const SlotEdicao& se : cab->edicao)
+            if (se.quadro >= alvo)
+            {
+                MemoryBarrier();
+                if ((v = se.cerca) != 0)
+                    break;
+            }
+        const ULONGLONG agora = GetTickCount64();
+        const DWORD resta = agora < fim ? DWORD(fim - agora) : 0;
+        if (v)
+        {
+            if (cerca->GetCompletedValue() < v && resta && SUCCEEDED(cerca->SetEventOnCompletion(v, evCerca)))
+                WaitForSingleObject(evCerca, resta);
+            ok = cerca->GetCompletedValue() >= v;
+            break;
+        }
+        if (!resta || !OverlayVivo() || !cab->espera)
+            break;
+        WaitForSingleObject(evPublica, resta); // um disparo velho so faz conferir de novo
+    }
+    QueryPerformanceCounter(&t1);
+    const double ms = double(t1.QuadPart - t0.QuadPart) * 1000.0 / double(f.QuadPart);
+    std::lock_guard<std::mutex> lk(mx);
+    esperouPor = alvo;
+    esperaOk = ok;
+    ++diag.esperas;
+    diag.esperaMs += ms;
+    diag.esperaMsMax = std::max(diag.esperaMsMax, ms);
+    if (ok)
+        estourosSeguidos = 0;
+    else
+    {
+        ++diag.estouros;
+        if (++estourosSeguidos >= 2)
+        {
+            esperaSuspensaAte = quadro + 300;
+            estourosSeguidos = 0;
+        }
+    }
 }
 
 uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo& e)
@@ -711,8 +784,13 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
 
     // exporta um quadro so quando o overlay terminou o anterior (nenhum quadro exportado fica sem processar: o movimento
     // dos que nao saem vai somado no acumulador) e o slot esta livre
+    // Sem atraso: o quadro que esperou a edicao da exportacao anterior so exporta no modo 2 (todo quadro; com a edicao
+    // dela publicada o overlay ja pegou aquele quadro, mesmo antes de marcar consumido); no modo 1 a rede fica a cada 2.
     const uint32_t s = uint32_t(n % kSlotsEntrada);
-    const bool exporta = cab->consumido >= ultimaExport && cab->consumido >= cab->entrada[s].quadro;
+    const bool esperou = esperouPor && esperouPor + 1 == n;
+    const bool editada = esperou && esperaOk && esperouPor == ultimaExport;
+    const bool exporta = (cab->consumido >= ultimaExport || (editada && cab->espera == 2)) &&
+                         cab->consumido >= cab->entrada[s].quadro && !(esperou && cab->espera == 1);
     // a edicao publicada mais nova cuja escrita ja terminou, se a ancora dela ainda tem acumulador
     int k = -1, jEd = -1;
     if (cab->aplica)

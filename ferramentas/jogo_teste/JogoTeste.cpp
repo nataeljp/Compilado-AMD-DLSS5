@@ -178,6 +178,7 @@ int wmain(int argc, wchar_t** argv)
     buf(D3D12_HEAP_TYPE_READBACK, tc, D3D12_RESOURCE_STATE_COPY_DEST, le);
 
     dlss5ov::ClienteBuffer cli;
+    std::mutex mx; // o modulo no jogo protege o cliente com um mutex (o Execute vem de outras threads); aqui so a forma
     if (!cli.Inicia(dev.Get(), "JogoTeste.exe"))
     {
         fprintf(stderr, "cliente: %s\n", cli.UltimoErro());
@@ -226,6 +227,7 @@ int wmain(int argc, wchar_t** argv)
     _wfopen_s(&mapa, (saida + L"\\mapa.jsonl").c_str(), L"w");
     const auto passo = std::chrono::microseconds(1000000 / std::max(fps, 1));
     auto proximo = std::chrono::steady_clock::now();
+    const auto inicio = proximo;
     for (int v = 0; v < voltas; ++v)
         for (UINT i = 0; i < N; ++i)
         {
@@ -291,6 +293,7 @@ int wmain(int argc, wchar_t** argv)
             e.fovY = fovY;
             e.profInvertida = e.profInfinita = true;
             e.reset = i == 0 && (!laco || v == 0);
+            cli.EsperaEdicao(mx);
             const uint64_t n = cli.Quadro(cl.Get(), e);
             if (mapa && n)
                 fprintf(mapa, "{\"jogo\":%llu,\"seq\":%u,\"volta\":%d}\n", (unsigned long long)n, i, v);
@@ -338,6 +341,13 @@ int wmain(int argc, wchar_t** argv)
         }
     printf("quadros com a edicao do overlay: %llu de %u; gravados %llu\n", (unsigned long long)aplicados, N * voltas,
            (unsigned long long)gravados);
+    const double seg = std::chrono::duration<double>(std::chrono::steady_clock::now() - inicio).count();
+    const auto& d = cli.diag;
+    printf("%.1f quadros/s (pedido %d); exportados %llu, idade media da edicao %.2f quadros; sem atraso: %llu esperas, "
+           "media %.1f ms, max %.1f ms, %llu estouradas\n",
+           double(N) * voltas / std::max(seg, 1e-3), fps, (unsigned long long)d.exportados,
+           d.aplicados ? double(d.idadeSoma) / double(d.aplicados) : 0.0, (unsigned long long)d.esperas,
+           d.esperas ? d.esperaMs / double(d.esperas) : 0.0, d.esperaMsMax, (unsigned long long)d.estouros);
     if (mapa)
         fclose(mapa);
     if (raw)
