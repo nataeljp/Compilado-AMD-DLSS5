@@ -28,6 +28,9 @@ cbuffer K : register(b0)
     float tanY, aspecto; // tan(fovY / 2) e largura / altura: distancia radial (0 = sem FOV: Z da camera)
     uint pad2;
     uint movVW, movVH, profVW, profVH; // a regiao valida do movimento e da profundidade do jogo neste quadro
+    uint mostra;        // quadros repetidos: a saida e o quadro guardado da ancora + a edicao dela, sem movimento
+    uint guarda;        // quadros repetidos: guarda a cor deste quadro (exportado) para mostrar quando a edicao chegar
+    uint pad3, pad4;
 };
 Texture2D<float2> movJogo : register(t0);
 Texture2D<float> profJogo : register(t1);
@@ -38,6 +41,7 @@ Texture2D<float2> accAnt1 : register(t5);
 Texture2D<float2> accAnt2 : register(t6);
 Texture2D<float2> accEd : register(t7);   // o acumulador da ancora da edicao aplicada (ja deste quadro)
 Texture2D<uint> reconLe : register(t8);   // CSRecon: a menor distancia DESTE quadro que cai em cada pixel da ancora
+Texture2D<float4> guardadaLe : register(t9); // quadros repetidos: a cor (x exposicao) do quadro da edicao mostrada
 RWTexture2D<float4> corJogo : register(u0);
 RWTexture2D<float4> corSlot : register(u1);
 RWTexture2D<float2> movSlot : register(u2);
@@ -47,6 +51,7 @@ RWTexture2D<float2> accNovo0 : register(u5);
 RWTexture2D<float2> accNovo1 : register(u6);
 RWTexture2D<float2> accNovo2 : register(u7);
 RWTexture2D<uint> recon : register(u8);   // a mesma, escrita (resolucao da profundidade)
+RWTexture2D<float4> guardadaEsc : register(u9); // quadros repetidos: onde a cor deste quadro fica guardada
 SamplerState lin : register(s0);
 
 // Com resolucao dinamica o jogo entrega movimento e profundidade numa regiao valida que muda a cada quadro. As texturas
@@ -203,6 +208,24 @@ float NaoOculto(float2 qAnc, float z, uint2 pz)
     const float3 ce = max(c * e, 0);
     if (exporta)
         corSlot[p] = float4(ce, 1);
+    if (guarda)
+        guardadaEsc[p] = float4(ce, 1);
+    if (mostra)
+    {
+        // quadro repetido: o quadro guardado da ancora com a edicao feita nele, pixel a pixel (nada trazido pelo movimento)
+        const float3 ca = guardadaLe.Load(int3(p, 0)).rgb;
+        const float3 ev = edicao.Load(int3(p, 0)).rgb;
+        const float3 ag = Comprime(ca);
+        float tg = 1.0;
+        [unroll] for (int i = 0; i < 3; ++i)
+            if (ev[i] < 0.0) tg = min(tg, ag[i] / max(-ev[i], 1e-6));
+        float3 yg = ag + ev * saturate(tg);
+        const float log_ = max(Lum(ca), 0.0) * 4.0 + 4.0, limG = log_ / (1.0 + log_), lyg = Lum(yg);
+        if (lyg > limG) yg *= limG / lyg;
+        const float3 og = max(Expande(yg), 0.0) / e;
+        corJogo[p] = float4(srgb ? Srgb(og) : og, c4.a);
+        return;
+    }
     if (!aplica) return;
     // a edicao foi feita no quadro da ancora: este pixel estava em p + D (movimento acumulado desde ela)
     float2 m = accEd.SampleLevel(lin, (p + 0.5) / float2(corW, corH), 0);
@@ -371,13 +394,13 @@ bool ClienteBuffer::Inicia(ID3D12Device* d, const char* exe)
     evPublica = CreateEventW(nullptr, FALSE, FALSE, nome);
     evCerca = CreateEventW(nullptr, FALSE, FALSE, nullptr);
 
-    // raiz: 28 constantes, SRV t0..t8, UAV u0..u8, amostrador linear com borda presa
+    // raiz: 32 constantes, SRV t0..t9, UAV u0..u9, amostrador linear com borda presa
     D3D12_DESCRIPTOR_RANGE r[2]{};
-    r[0] = {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 9, 0, 0, 0};
-    r[1] = {D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 9, 0, 0, 0};
+    r[0] = {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 10, 0, 0, 0};
+    r[1] = {D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 10, 0, 0, 0};
     D3D12_ROOT_PARAMETER p[3]{};
     p[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    p[0].Constants.Num32BitValues = 28;
+    p[0].Constants.Num32BitValues = 32;
     p[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     p[1].DescriptorTable = {1, &r[0]};
     p[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
@@ -534,6 +557,8 @@ bool ClienteBuffer::Garante(const EntradasJogo& e)
                 guarda(r);
         guarda(recon);
         guarda(temp);
+        for (auto& g : guardada)
+            guarda(g);
         for (ID3D12Fence* f : {cercaJogo.Get(), cercaOverlay.Get()})
             if (f)
                 v.itens.emplace_back(f);
@@ -585,6 +610,18 @@ bool ClienteBuffer::Garante(const EntradasJogo& e)
         ok = SUCCEEDED(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                                                     nullptr, IID_PPV_ARGS(&recon)));
         estadoRecon = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        // quadros repetidos: a cor dos 2 ultimos quadros exportados (local, nao compartilhada)
+        rd.Width = UINT(corW);
+        rd.Height = corH;
+        rd.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        for (int i = 0; ok && i < 2; ++i)
+        {
+            guardada[i].Reset();
+            ok = SUCCEEDED(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                                        nullptr, IID_PPV_ARGS(&guardada[i])));
+            estadoGuardada[i] = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+            quadroGuardado[i] = 0;
+        }
     }
     temp.Reset();
     if (ok && !(dc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS))
@@ -681,6 +718,7 @@ void ClienteBuffer::Esquece()
     jUlt = -1;
     ultimaExport = 0;
     esperouPor = 0;
+    quadroGuardado[0] = quadroGuardado[1] = 0; // corte de cena: o quadro guardado e da cena velha
 }
 
 void ClienteBuffer::EsperaEdicao(std::mutex& mx)
@@ -789,11 +827,33 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
     const uint32_t s = uint32_t(n % kSlotsEntrada);
     const bool esperou = esperouPor && esperouPor + 1 == n;
     const bool editada = esperou && esperaOk && esperouPor == ultimaExport;
+    // Quadros repetidos (sem atraso, repete = N): so 1 de cada N quadros e exportado, e a cor dele fica guardada; a saida
+    // de todo quadro e o quadro guardado mais novo cuja edicao ja chegou, com a edicao feita nele, sem movimento nenhum
+    // (o quadro processado entra antes do quadro novo e se repete ate o proximo; nada de edicao velha num quadro novo).
+    // Com 1 (todo quadro processado) fica o quadro atual com a edicao do anterior pelo movimento exato (sem atraso de tela)
+    const uint32_t pedido = cab->repete;
+    const uint32_t repete = cab->espera && pedido >= 2 ? std::min(pedido, 4u) : 0u;
     const bool exporta = (cab->consumido >= ultimaExport || (editada && cab->espera == 2)) &&
-                         cab->consumido >= cab->entrada[s].quadro && !(esperou && cab->espera == 1);
+                         cab->consumido >= cab->entrada[s].quadro && !(esperou && cab->espera == 1) &&
+                         !(repete && ultimaExport && n < ultimaExport + repete);
+    int iA = -1, kA = -1; // a copia guardada mostrada e o slot da edicao dela
+    if (repete && cab->aplica)
+    {
+        const uint64_t pronto = cercaOverlay->GetCompletedValue();
+        for (int i = 0; i < 2; ++i)
+            for (int j = 0; j < int(kSlotsEdicao); ++j)
+            {
+                const SlotEdicao& se = cab->edicao[j];
+                if (quadroGuardado[i] && se.quadro == quadroGuardado[i] && se.cerca && pronto >= se.cerca &&
+                    (iA < 0 || quadroGuardado[i] > quadroGuardado[iA]))
+                    iA = i, kA = j;
+            }
+    }
+    // a copia escrita por este quadro: nunca a mostrada
+    const int iG = !(repete && exporta) ? -1 : iA >= 0 ? 1 - iA : (quadroGuardado[0] <= quadroGuardado[1] ? 0 : 1);
     // a edicao publicada mais nova cuja escrita ja terminou, se a ancora dela ainda tem acumulador
     int k = -1, jEd = -1;
-    if (cab->aplica)
+    if (cab->aplica && !repete)
     {
         const uint64_t pronto = cercaOverlay->GetCompletedValue();
         for (int i = 0; i < int(kSlotsEdicao); ++i)
@@ -829,20 +889,23 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
         zera |= 1u << jNovo;
         ativos &= ~(1u << jNovo);
     }
-    if (!exporta && k < 0 && !ativos)
+    if (!exporta && k < 0 && kA < 0 && !ativos)
         return 0;
     ++diag.quadros;
     if (exporta)
         ++diag.exportados;
-    if (k >= 0)
-    {
-        cab->lido[k] = n;
-        cab->quadroAplicado = n;
-        const uint64_t idade = n - cab->edicao[k].quadro;
-        ++diag.aplicados;
-        diag.idadeSoma += idade;
-        diag.idadeMax = std::max(diag.idadeMax, idade);
-    }
+    for (const int kk : {k, kA})
+        if (kk >= 0)
+        {
+            cab->lido[kk] = n;
+            cab->quadroAplicado = n;
+            const uint64_t idade = n - cab->edicao[kk].quadro;
+            ++diag.aplicados;
+            diag.idadeSoma += idade;
+            diag.idadeMax = std::max(diag.idadeMax, idade);
+        }
+    if (iG >= 0)
+        quadroGuardado[iG] = n;
     if (exporta)
     {
         cab->entrada[s].quadro = n;
@@ -855,8 +918,8 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
     }
     MemoryBarrier();
 
-    // descritores deste quadro: 3 conjuntos (o jogo pode ter ate 3 quadros na GPU); SRV t0..t8, UAV u0..u8
-    const UINT tS = (proxDesc % 3) * kDescQuadro, tU = tS + 9;
+    // descritores deste quadro: 3 conjuntos (o jogo pode ter ate 3 quadros na GPU); SRV t0..t9, UAV u0..u9
+    const UINT tS = (proxDesc % 3) * kDescQuadro, tU = tS + 10;
     ++proxDesc;
     const UINT ant = pp, novo = pp ^ 1;
     const DXGI_FORMAT fMov = Leitura(fmtMov), fProf = Leitura(fmtProf), fCor = Leitura(fmtCor);
@@ -864,11 +927,13 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
     Srv(tS + 0, e.mov, fMov);
     Srv(tS + 1, e.prof, fProf);
     Srv(tS + 2, e.exposicao, e.exposicao ? Leitura(e.exposicao->GetDesc().Format) : DXGI_FORMAT_R32_FLOAT);
-    Srv(tS + 3, k >= 0 ? edicao[k].Get() : nullptr, DXGI_FORMAT_R16G16B16A16_FLOAT);
+    const int kLe = kA >= 0 ? kA : k; // o slot de edicao lido neste quadro
+    Srv(tS + 3, kLe >= 0 ? edicao[kLe].Get() : nullptr, DXGI_FORMAT_R16G16B16A16_FLOAT);
     for (int j = 0; j < 3; ++j)
         Srv(tS + 4 + j, acc[j][ant].Get(), fAcc);
     Srv(tS + 7, jEd >= 0 ? acc[jEd][novo].Get() : nullptr, fAcc);
     Srv(tS + 8, recon.Get(), DXGI_FORMAT_R32_UINT);
+    Srv(tS + 9, iA >= 0 ? guardada[iA].Get() : nullptr, DXGI_FORMAT_R16G16B16A16_FLOAT);
     ID3D12Resource* alvo = temp ? temp.Get() : e.cor;
     Uav(tU + 0, alvo, fCor);
     Uav(tU + 1, exporta ? cor[s].Get() : nullptr, DXGI_FORMAT_R16G16B16A16_FLOAT);
@@ -878,6 +943,7 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
     for (int j = 0; j < 3; ++j)
         Uav(tU + 5 + j, acc[j][novo].Get(), fAcc);
     Uav(tU + 8, recon.Get(), DXGI_FORMAT_R32_UINT);
+    Uav(tU + 9, iG >= 0 ? guardada[iG].Get() : nullptr, DXGI_FORMAT_R16G16B16A16_FLOAT);
 
     const UINT mw = e.movEspacoW ? e.movEspacoW : movW, mh = e.movEspacoH ? e.movEspacoH : movH;
     struct
@@ -890,12 +956,13 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
         float tanY, aspecto;
         UINT pad2;
         UINT movVW, movVH, profVW, profVH;
+        UINT mostra, guarda, pad3, pad4;
     } k_{UINT(corW), corH, movW, movH, profW, profH, exporta ? 1u : 0u, k >= 0 ? 1u : 0u,
          e.movEscalaX * float(corW) / float(mw), e.movEscalaY * float(corH) / float(mh), e.preExposicao,
          e.escalaExposicao, e.exposicao ? 1u : 0u, Srgb(fmtCor) ? 1u : 0u,
          (e.profInvertidaConhecida ? e.profInvertida : cab->profInvertidaUsada != 0) ? 1u : 0u, infinita ? 1u : 0u, perto,
          longe, ativos, zera, jExp >= 0 ? UINT(jExp) : 3u, TanMeioFov(e.fovY), float(corW) / float(corH), 0,
-         movValW, movValH, profValW, profValH};
+         movValW, movValH, profValW, profValH, iA >= 0 ? 1u : 0u, iG >= 0 ? 1u : 0u, 0, 0};
 
     const D3D12_RESOURCE_STATES SRV = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     auto estado = [&](int j, UINT i, D3D12_RESOURCE_STATES para) {
@@ -922,14 +989,22 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
     if (exporta)
         for (ID3D12Resource* r : {cor[s].Get(), mov[s].Get(), prof[s].Get(), exp[s].Get()})
             Barreira(c, r, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    if (k >= 0)
-        Barreira(c, edicao[k].Get(), D3D12_RESOURCE_STATE_COMMON, SRV);
+    if (kLe >= 0)
+        Barreira(c, edicao[kLe].Get(), D3D12_RESOURCE_STATE_COMMON, SRV);
+    auto estadoG = [&](int i, D3D12_RESOURCE_STATES para) {
+        Barreira(c, guardada[i].Get(), estadoGuardada[i], para);
+        estadoGuardada[i] = para;
+    };
+    if (iA >= 0)
+        estadoG(iA, SRV);
+    if (iG >= 0)
+        estadoG(iG, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
     ID3D12DescriptorHeap* hs[] = {heap.Get()};
     c->SetDescriptorHeaps(1, hs);
     c->SetComputeRootSignature(raiz.Get());
-    static_assert(sizeof(k_) == 28 * 4, "constantes: o mesmo layout do cbuffer K");
-    c->SetComputeRoot32BitConstants(0, 28, &k_, 0);
+    static_assert(sizeof(k_) == 32 * 4, "constantes: o mesmo layout do cbuffer K");
+    c->SetComputeRoot32BitConstants(0, 32, &k_, 0);
     c->SetComputeRootDescriptorTable(1, Gpu(tS));
     c->SetComputeRootDescriptorTable(2, Gpu(tU));
     c->SetPipelineState(psoMov.Get()); // CSAcum: acumuladores e o movimento exportado
@@ -953,14 +1028,14 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
         Barreira(c, recon.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, SRV);
         estadoRecon = SRV;
     }
-    if (exporta || k >= 0)
+    if (exporta || k >= 0 || iA >= 0)
     {
         c->SetPipelineState(psoCor.Get());
         c->Dispatch(UINT((corW + 7) / 8), (corH + 7) / 8, 1);
     }
 
-    if (k >= 0)
-        Barreira(c, edicao[k].Get(), SRV, D3D12_RESOURCE_STATE_COMMON);
+    if (kLe >= 0)
+        Barreira(c, edicao[kLe].Get(), SRV, D3D12_RESOURCE_STATE_COMMON);
     if (exporta)
         for (ID3D12Resource* r : {cor[s].Get(), mov[s].Get(), prof[s].Get(), exp[s].Get()})
             Barreira(c, r, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
@@ -968,7 +1043,7 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
     {
         Barreira(c, temp.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
         Barreira(c, e.cor, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
-        if (k >= 0)
+        if (k >= 0 || iA >= 0)
             c->CopyResource(e.cor, temp.Get());
         Barreira(c, e.cor, D3D12_RESOURCE_STATE_COPY_DEST, e.corEstado);
         Barreira(c, temp.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
@@ -985,7 +1060,7 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
         jUlt = jNovo;
         ultimaExport = n;
     }
-    if (exporta || k >= 0)
+    if (exporta || kLe >= 0)
         pendente = n; // o overlay espera a cerca do jogo: quadro exportado e leitura do slot de edicao
     pendenteLocal = ++valorLocal; // a fila de descarte sabe quando a GPU terminou este quadro
     return n;

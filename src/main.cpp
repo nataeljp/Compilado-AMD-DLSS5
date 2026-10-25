@@ -180,6 +180,7 @@ struct App
     bool redeOk = false;
     bool zeraHistorico = true;
     UINT64 quadros = 0;
+    UINT64 capturados = 0; // quadros capturados (quadros repetidos na captura de video sem atraso)
     // teste
     int quadrosTeste = 0;
     std::wstring gravaArquivo;
@@ -1157,8 +1158,11 @@ struct App
                 if (!fb.Abre(gpu, pid))
                     return false;
             }
-            // sem atraso: modo 2 = o jogo espera a edicao a cada 2 quadros, 3 = em todo quadro (cab->espera 1 e 2)
-            fb.Batimento(true, cfg.modo != 1 && redeOk, atraso < 0 && cfg.semAtraso >= 2 ? uint32_t(cfg.semAtraso - 1) : 0u);
+            // sem atraso: o jogo espera a edicao do quadro exportado antes (cab->espera 2) e mostra o quadro processado
+            // repetido em 1..4 quadros (o Ritmo vira os quadros repetidos)
+            const bool espera = atraso < 0 && cfg.semAtraso > 0;
+            fb.Batimento(true, cfg.modo != 1 && redeOk, espera ? 2u : 0u,
+                         espera ? uint32_t(std::clamp(cfg.ritmo, 1, 4)) : 0u);
             if (!fb.Pega(qb))
             {
                 if (fb.Aberta() && !fb.JogoVivo())
@@ -1188,6 +1192,11 @@ struct App
             q.cercaValor = 0;
         }
         else if (!cap.Pega(q))
+            return false;
+        // captura de video sem atraso, quadros repetidos (Ritmo N): so 1 de cada N quadros capturados e processado; nos
+        // outros a tela fica com o ultimo quadro processado (a edicao exata dele), nunca um quadro novo com edicao velha
+        if (!imagem && !buffer && atraso < 0 && cfg.semAtraso > 0 && cfg.ritmo > 1 &&
+            capturados++ % UINT64(std::clamp(cfg.ritmo, 1, 4)) != 0)
             return false;
         const auto t0 = std::chrono::steady_clock::now();
         RECT r{};

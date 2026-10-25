@@ -1516,10 +1516,18 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                                        e.completaSessao ? "" : ", sem os blocos 42/43/46");
                     ImGui::PopTextWrapPos();
                 }
-                DeslizadorInt("Ritmo", &cfg.ritmo, 1, 4, "%d",
-                              "A rede roda numa fila propria: todo quadro vai para a tela na hora, sem esperar a rede, e a\n"
-                              "resposta entra quando fica pronta, trazida pelo movimento ate o quadro atual.\n"
-                              "1: a rede recomeca assim que termina. N: no maximo uma vez a cada N quadros (libera a GPU).", 1.f);
+                if (cfg.semAtraso > 0)
+                    DeslizadorInt("Quadros repetidos", &cfg.ritmo, 1, 4, "x%.0f",
+                                  "Sem atraso: a rede edita o quadro mais novo e ele se repete nos N-1 quadros seguintes, no\n"
+                                  "lugar de um quadro novo com a edicao velha (que era o rastro). 1 = todo quadro processado;\n"
+                                  "2-4 = a rede roda 1 de cada N quadros (menos GPU; o movimento fica em degraus de N quadros).\n"
+                                  "Captura de buffer: o quadro processado aparece 1 quadro depois e se repete; captura de video:\n"
+                                  "a tela fica com o quadro processado ate o proximo.", 1.f);
+                else
+                    DeslizadorInt("Ritmo", &cfg.ritmo, 1, 4, "%d",
+                                  "A rede roda numa fila propria: todo quadro vai para a tela na hora, sem esperar a rede, e a\n"
+                                  "resposta entra quando fica pronta, trazida pelo movimento ate o quadro atual.\n"
+                                  "1: a rede recomeca assim que termina. N: no maximo uma vez a cada N quadros (libera a GPU).", 1.f);
             }
 
             Secao("MOVIMENTO E ESTABILIDADE");

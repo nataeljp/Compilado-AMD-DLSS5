@@ -30,7 +30,8 @@ namespace dlss5ov {
 // desconhecido ou absurdo (os shaders comparam o Z, como antes)
 inline float TanMeioFov(float fovY) { return fovY > 0.01f && fovY < 3.1f ? std::tan(0.5f * fovY) : 0.f; }
 
-constexpr uint32_t kVersao = 3; // 2: movimento RG32F acumulado ate a exportacao anterior; 3: espera (sem atraso)
+constexpr uint32_t kVersao = 4; // 2: movimento RG32F acumulado ate a exportacao anterior; 3: espera (sem atraso);
+                                // 4: quadros repetidos
 constexpr uint32_t kSlotsEntrada = 2;
 constexpr uint32_t kSlotsEdicao = 3;
 
@@ -82,6 +83,10 @@ struct Cabecalho
     volatile uint32_t aplica;           // o jogo soma a edicao (0: so exporta; ex. modo "original" no painel)
     volatile uint32_t espera;           // sem atraso: 1 = o quadro seguinte a cada exportacao espera a edicao dela (e
                                         // nao exporta: a rede roda a cada 2 quadros); 2 = todo quadro espera e exporta
+    volatile uint32_t repete;           // sem atraso (espera > 0): quadros repetidos N = 2..4. O jogo exporta 1 de cada N
+                                        // quadros, guarda a cor dele e mostra esse quadro com a edicao exata dele (sem
+                                        // movimento) nos N quadros seguintes, no lugar do quadro novo sem rede (1 = todo
+                                        // quadro processado, sem repeticao)
     volatile uint64_t consumido;        // ultimo quadro de entrada que o overlay ja copiou (o slot pode ser reescrito)
     volatile uint64_t lido[kSlotsEdicao]; // ultimo quadro do jogo que gravou leitura do slot de edicao k
     volatile uint64_t quadroJogo;         // ultimo quadro gravado pelo jogo

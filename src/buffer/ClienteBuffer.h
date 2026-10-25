@@ -86,7 +86,7 @@ class ClienteBuffer
     uint32_t geracao = 0;
     Com<ID3D12RootSignature> raiz;
     Com<ID3D12PipelineState> psoMov, psoProf, psoCor, psoLimpaRecon, psoRecon;
-    static constexpr UINT kDescQuadro = 18; // por conjunto de descritores: SRV t0..t8 e UAV u0..u8
+    static constexpr UINT kDescQuadro = 20; // por conjunto de descritores: SRV t0..t9 e UAV u0..u9
     Com<ID3D12DescriptorHeap> heap;
     // profundidade reconstruida na ancora da edicao (R32_UINT, resolucao da profundidade; local, nao compartilhada)
     Com<ID3D12Resource> recon;
@@ -128,6 +128,10 @@ class ClienteBuffer
     uint64_t esperouPor = 0, esperaSuspensaAte = 0;
     bool esperaOk = false;
     uint32_t estourosSeguidos = 0;
+    // quadros repetidos: a cor (x exposicao) dos 2 ultimos quadros exportados, e qual quadro cada copia guarda (0 = nada)
+    Com<ID3D12Resource> guardada[2];
+    D3D12_RESOURCE_STATES estadoGuardada[2] = {};
+    uint64_t quadroGuardado[2] = {};
 };
 
 } // namespace dlss5ov
