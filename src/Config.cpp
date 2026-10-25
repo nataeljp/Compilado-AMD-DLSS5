@@ -107,6 +107,7 @@ void Config::Carrega(const std::wstring& arquivo)
     I("modo", modo);
     I("semAtraso", semAtraso);
     semAtraso = std::clamp(semAtraso, 0, 3);
+    I("quadroGerado", gerado);
     B("movimento", movimento);
     B("usaConfianca", usaConfianca);
     I("ritmo", ritmo);
@@ -167,6 +168,7 @@ std::string Config::Texto() const
     }
     f << "  \"modo\": " << modo << ",\n";
     f << "  \"semAtraso\": " << semAtraso << ",\n";
+    f << "  \"quadroGerado\": " << gerado << ",\n";
     f << "  \"movimento\": " << b(movimento) << ",\n";
     f << "  \"usaConfianca\": " << b(usaConfianca) << ",\n";
     f << "  \"ritmo\": " << ritmo << ",\n";

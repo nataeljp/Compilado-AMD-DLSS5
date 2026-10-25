@@ -1517,12 +1517,22 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                     ImGui::PopTextWrapPos();
                 }
                 if (cfg.semAtraso > 0)
-                    DeslizadorInt("Quadros repetidos", &cfg.ritmo, 1, 4, "x%.0f",
-                                  "Sem atraso: a rede edita o quadro mais novo e ele se repete nos N-1 quadros seguintes, no\n"
-                                  "lugar de um quadro novo com a edicao velha (que era o rastro). 1 = todo quadro processado;\n"
-                                  "2-4 = a rede roda 1 de cada N quadros (menos GPU; o movimento fica em degraus de N quadros).\n"
-                                  "Captura de buffer: o quadro processado aparece 1 quadro depois e se repete; captura de video:\n"
-                                  "a tela fica com o quadro processado ate o proximo.", 1.f);
+                {
+                    DeslizadorInt("Quadros gerados", &cfg.ritmo, 1, 4, "x%.0f",
+                                  "Sem atraso (como o AMD Fluid Motion Frames, mas ate 4x): a rede edita 1 de cada N quadros\n"
+                                  "e os N-1 quadros seguintes sao gerados a partir dos processados -- sempre com a rede\n"
+                                  "aplicada, nunca um quadro novo com a edicao velha (o rastro). 1 = todo quadro processado.", 1.f);
+                    ImGui::BeginDisabled(cfg.ritmo < 2);
+                    const char* gerados[] = {"Quadro repetido", "Quadro mesclado"};
+                    Segmentos("gerado", gerados, 2, &cfg.gerado, 30 * g_e);
+                    Dica("Quadro repetido: o processado se repete nos quadros gerados (sem atraso extra: na captura de\n"
+                         "buffer ele aparece 1 quadro depois de feito).\n"
+                         "Quadro mesclado: entre o processado anterior e o novo, os gerados misturam os dois (50/50; em 3x\n"
+                         "50/50 e 40/60; em 4x 50/50, 40/60 e 30/70 do anterior/novo) e o novo vem depois deles. Misturar\n"
+                         "com o proximo exige que ele ja exista: o novo aparece N quadros depois de feito (como no AFMF e\n"
+                         "no FSR Frame Generation, que tambem seguram o quadro novo).");
+                    ImGui::EndDisabled();
+                }
                 else
                     DeslizadorInt("Ritmo", &cfg.ritmo, 1, 4, "%d",
                                   "A rede roda numa fila propria: todo quadro vai para a tela na hora, sem esperar a rede, e a\n"

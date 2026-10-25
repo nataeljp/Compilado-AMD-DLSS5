@@ -30,7 +30,8 @@ cbuffer K : register(b0)
     uint movVW, movVH, profVW, profVH; // a regiao valida do movimento e da profundidade do jogo neste quadro
     uint mostra;        // quadros repetidos: a saida e o quadro guardado da ancora + a edicao dela, sem movimento
     uint guarda;        // quadros repetidos: guarda a cor deste quadro (exportado) para mostrar quando a edicao chegar
-    uint pad3, pad4;
+    float peso;         // mesclado: quanto do processado seguinte (guardadaLe2 + edicao2) entra; 0 = so a ancora
+    uint pad4;
 };
 Texture2D<float2> movJogo : register(t0);
 Texture2D<float> profJogo : register(t1);
@@ -42,6 +43,8 @@ Texture2D<float2> accAnt2 : register(t6);
 Texture2D<float2> accEd : register(t7);   // o acumulador da ancora da edicao aplicada (ja deste quadro)
 Texture2D<uint> reconLe : register(t8);   // CSRecon: a menor distancia DESTE quadro que cai em cada pixel da ancora
 Texture2D<float4> guardadaLe : register(t9); // quadros repetidos: a cor (x exposicao) do quadro da edicao mostrada
+Texture2D<float4> guardadaLe2 : register(t10); // mesclado: a cor do processado seguinte
+Texture2D<float4> edicao2 : register(t11);     // mesclado: a edicao dele
 RWTexture2D<float4> corJogo : register(u0);
 RWTexture2D<float4> corSlot : register(u1);
 RWTexture2D<float2> movSlot : register(u2);
@@ -198,6 +201,20 @@ float NaoOculto(float2 qAnc, float z, uint2 pz)
     return 1.0 - smoothstep(0.05 + 2.0 * g, 0.15 + 2.0 * g, max(z - zmin, 0.0) / max(zmin, 1e-6));
 }
 
+// a cor guardada (x exposicao) com a edicao do overlay somada no espaco comprimido: a edicao encolhe ate nenhum canal
+// ficar negativo e o brilho para em 4x o original + 4 (as mesmas regras do caminho normal, abaixo)
+float3 Editado(float3 ca, float3 ev)
+{
+    const float3 ag = Comprime(ca);
+    float tg = 1.0;
+    [unroll] for (int i = 0; i < 3; ++i)
+        if (ev[i] < 0.0) tg = min(tg, ag[i] / max(-ev[i], 1e-6));
+    float3 yg = ag + ev * saturate(tg);
+    const float lo = max(Lum(ca), 0.0) * 4.0 + 4.0, limG = lo / (1.0 + lo), lyg = Lum(yg);
+    if (lyg > limG) yg *= limG / lyg;
+    return max(Expande(yg), 0.0);
+}
+
 [numthreads(8, 8, 1)] void CSCor(uint2 p : SV_DispatchThreadID)
 {
     if (p.x >= corW || p.y >= corH) return;
@@ -212,17 +229,12 @@ float NaoOculto(float2 qAnc, float z, uint2 pz)
         guardadaEsc[p] = float4(ce, 1);
     if (mostra)
     {
-        // quadro repetido: o quadro guardado da ancora com a edicao feita nele, pixel a pixel (nada trazido pelo movimento)
-        const float3 ca = guardadaLe.Load(int3(p, 0)).rgb;
-        const float3 ev = edicao.Load(int3(p, 0)).rgb;
-        const float3 ag = Comprime(ca);
-        float tg = 1.0;
-        [unroll] for (int i = 0; i < 3; ++i)
-            if (ev[i] < 0.0) tg = min(tg, ag[i] / max(-ev[i], 1e-6));
-        float3 yg = ag + ev * saturate(tg);
-        const float log_ = max(Lum(ca), 0.0) * 4.0 + 4.0, limG = log_ / (1.0 + log_), lyg = Lum(yg);
-        if (lyg > limG) yg *= limG / lyg;
-        const float3 og = max(Expande(yg), 0.0) / e;
+        // quadro repetido: o quadro guardado da ancora com a edicao feita nele, pixel a pixel (nada trazido pelo movimento);
+        // mesclado: misturado com o processado seguinte (tambem com a edicao dele) na proporcao `peso`
+        float3 og = Editado(guardadaLe.Load(int3(p, 0)).rgb, edicao.Load(int3(p, 0)).rgb);
+        if (peso > 0.0)
+            og = lerp(og, Editado(guardadaLe2.Load(int3(p, 0)).rgb, edicao2.Load(int3(p, 0)).rgb), peso);
+        og /= e;
         corJogo[p] = float4(srgb ? Srgb(og) : og, c4.a);
         return;
     }
@@ -394,9 +406,9 @@ bool ClienteBuffer::Inicia(ID3D12Device* d, const char* exe)
     evPublica = CreateEventW(nullptr, FALSE, FALSE, nome);
     evCerca = CreateEventW(nullptr, FALSE, FALSE, nullptr);
 
-    // raiz: 32 constantes, SRV t0..t9, UAV u0..u9, amostrador linear com borda presa
+    // raiz: 32 constantes, SRV t0..t11, UAV u0..u9, amostrador linear com borda presa
     D3D12_DESCRIPTOR_RANGE r[2]{};
-    r[0] = {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 10, 0, 0, 0};
+    r[0] = {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 12, 0, 0, 0};
     r[1] = {D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 10, 0, 0, 0};
     D3D12_ROOT_PARAMETER p[3]{};
     p[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
@@ -719,6 +731,7 @@ void ClienteBuffer::Esquece()
     ultimaExport = 0;
     esperouPor = 0;
     quadroGuardado[0] = quadroGuardado[1] = 0; // corte de cena: o quadro guardado e da cena velha
+    novoMostrado = chegouEm = 0;
 }
 
 void ClienteBuffer::EsperaEdicao(std::mutex& mx)
@@ -833,23 +846,50 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
     // Com 1 (todo quadro processado) fica o quadro atual com a edicao do anterior pelo movimento exato (sem atraso de tela)
     const uint32_t pedido = cab->repete;
     const uint32_t repete = cab->espera && pedido >= 2 ? std::min(pedido, 4u) : 0u;
-    const bool exporta = (cab->consumido >= ultimaExport || (editada && cab->espera == 2)) &&
-                         cab->consumido >= cab->entrada[s].quadro && !(esperou && cab->espera == 1) &&
-                         !(repete && ultimaExport && n < ultimaExport + repete);
+    bool exporta = (cab->consumido >= ultimaExport || (editada && cab->espera == 2)) &&
+                   cab->consumido >= cab->entrada[s].quadro && !(esperou && cab->espera == 1) &&
+                   !(repete && ultimaExport && n < ultimaExport + repete);
     int iA = -1, kA = -1; // a copia guardada mostrada e o slot da edicao dela
+    int iB = -1, kB = -1; // mesclado: o processado seguinte (o mais novo), misturado por cima de iA
+    float peso = 0.f;
     if (repete && cab->aplica)
     {
+        // a edicao de cada copia guardada, se ja chegou
+        int slot[2] = {-1, -1};
         const uint64_t pronto = cercaOverlay->GetCompletedValue();
         for (int i = 0; i < 2; ++i)
             for (int j = 0; j < int(kSlotsEdicao); ++j)
             {
                 const SlotEdicao& se = cab->edicao[j];
-                if (quadroGuardado[i] && se.quadro == quadroGuardado[i] && se.cerca && pronto >= se.cerca &&
-                    (iA < 0 || quadroGuardado[i] > quadroGuardado[iA]))
-                    iA = i, kA = j;
+                if (quadroGuardado[i] && se.quadro == quadroGuardado[i] && se.cerca && pronto >= se.cerca)
+                    slot[i] = j;
             }
+        int novo = -1; // a copia mais nova com edicao
+        for (int i = 0; i < 2; ++i)
+            if (slot[i] >= 0 && (novo < 0 || quadroGuardado[i] > quadroGuardado[novo]))
+                novo = i;
+        if (novo >= 0)
+        {
+            if (quadroGuardado[novo] != novoMostrado)
+                novoMostrado = quadroGuardado[novo], chegouEm = n;
+            iA = novo, kA = slot[novo];
+            // mesclado: nos N-1 quadros depois de a edicao do novo chegar, a mistura do anterior com ele (50/50, 40/60,
+            // 30/70 do anterior/novo); depois o novo sozinho. O novo aparece N quadros depois de feito
+            const int velho = 1 - novo;
+            const uint64_t fase = n - chegouEm;
+            static const float kPesos[3] = {0.5f, 0.6f, 0.7f};
+            if (cab->gerado == 1 && slot[velho] >= 0 && quadroGuardado[velho] < quadroGuardado[novo] && fase + 1 < repete)
+            {
+                iB = novo, kB = slot[novo];
+                iA = velho, kA = slot[velho];
+                peso = kPesos[std::min<uint64_t>(fase, 2)];
+            }
+        }
     }
-    // a copia escrita por este quadro: nunca a mostrada
+    // a copia escrita por este quadro: nunca uma mostrada (misturando, as duas estao em uso: a exportacao fica para o
+    // proximo quadro)
+    if (iB >= 0)
+        exporta = false;
     const int iG = !(repete && exporta) ? -1 : iA >= 0 ? 1 - iA : (quadroGuardado[0] <= quadroGuardado[1] ? 0 : 1);
     // a edicao publicada mais nova cuja escrita ja terminou, se a ancora dela ainda tem acumulador
     int k = -1, jEd = -1;
@@ -894,6 +934,8 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
     ++diag.quadros;
     if (exporta)
         ++diag.exportados;
+    if (kB >= 0)
+        cab->lido[kB] = n;
     for (const int kk : {k, kA})
         if (kk >= 0)
         {
@@ -918,8 +960,8 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
     }
     MemoryBarrier();
 
-    // descritores deste quadro: 3 conjuntos (o jogo pode ter ate 3 quadros na GPU); SRV t0..t9, UAV u0..u9
-    const UINT tS = (proxDesc % 3) * kDescQuadro, tU = tS + 10;
+    // descritores deste quadro: 3 conjuntos (o jogo pode ter ate 3 quadros na GPU); SRV t0..t11, UAV u0..u9
+    const UINT tS = (proxDesc % 3) * kDescQuadro, tU = tS + 12;
     ++proxDesc;
     const UINT ant = pp, novo = pp ^ 1;
     const DXGI_FORMAT fMov = Leitura(fmtMov), fProf = Leitura(fmtProf), fCor = Leitura(fmtCor);
@@ -934,6 +976,8 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
     Srv(tS + 7, jEd >= 0 ? acc[jEd][novo].Get() : nullptr, fAcc);
     Srv(tS + 8, recon.Get(), DXGI_FORMAT_R32_UINT);
     Srv(tS + 9, iA >= 0 ? guardada[iA].Get() : nullptr, DXGI_FORMAT_R16G16B16A16_FLOAT);
+    Srv(tS + 10, iB >= 0 ? guardada[iB].Get() : nullptr, DXGI_FORMAT_R16G16B16A16_FLOAT);
+    Srv(tS + 11, kB >= 0 ? edicao[kB].Get() : nullptr, DXGI_FORMAT_R16G16B16A16_FLOAT);
     ID3D12Resource* alvo = temp ? temp.Get() : e.cor;
     Uav(tU + 0, alvo, fCor);
     Uav(tU + 1, exporta ? cor[s].Get() : nullptr, DXGI_FORMAT_R16G16B16A16_FLOAT);
@@ -956,13 +1000,15 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
         float tanY, aspecto;
         UINT pad2;
         UINT movVW, movVH, profVW, profVH;
-        UINT mostra, guarda, pad3, pad4;
+        UINT mostra, guarda;
+        float peso;
+        UINT pad4;
     } k_{UINT(corW), corH, movW, movH, profW, profH, exporta ? 1u : 0u, k >= 0 ? 1u : 0u,
          e.movEscalaX * float(corW) / float(mw), e.movEscalaY * float(corH) / float(mh), e.preExposicao,
          e.escalaExposicao, e.exposicao ? 1u : 0u, Srgb(fmtCor) ? 1u : 0u,
          (e.profInvertidaConhecida ? e.profInvertida : cab->profInvertidaUsada != 0) ? 1u : 0u, infinita ? 1u : 0u, perto,
          longe, ativos, zera, jExp >= 0 ? UINT(jExp) : 3u, TanMeioFov(e.fovY), float(corW) / float(corH), 0,
-         movValW, movValH, profValW, profValH, iA >= 0 ? 1u : 0u, iG >= 0 ? 1u : 0u, 0, 0};
+         movValW, movValH, profValW, profValH, iA >= 0 ? 1u : 0u, iG >= 0 ? 1u : 0u, iB >= 0 ? peso : 0.f, 0};
 
     const D3D12_RESOURCE_STATES SRV = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     auto estado = [&](int j, UINT i, D3D12_RESOURCE_STATES para) {
@@ -991,12 +1037,16 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
             Barreira(c, r, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     if (kLe >= 0)
         Barreira(c, edicao[kLe].Get(), D3D12_RESOURCE_STATE_COMMON, SRV);
+    if (kB >= 0)
+        Barreira(c, edicao[kB].Get(), D3D12_RESOURCE_STATE_COMMON, SRV);
     auto estadoG = [&](int i, D3D12_RESOURCE_STATES para) {
         Barreira(c, guardada[i].Get(), estadoGuardada[i], para);
         estadoGuardada[i] = para;
     };
     if (iA >= 0)
         estadoG(iA, SRV);
+    if (iB >= 0)
+        estadoG(iB, SRV);
     if (iG >= 0)
         estadoG(iG, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
@@ -1036,6 +1086,8 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
 
     if (kLe >= 0)
         Barreira(c, edicao[kLe].Get(), SRV, D3D12_RESOURCE_STATE_COMMON);
+    if (kB >= 0)
+        Barreira(c, edicao[kB].Get(), SRV, D3D12_RESOURCE_STATE_COMMON);
     if (exporta)
         for (ID3D12Resource* r : {cor[s].Get(), mov[s].Get(), prof[s].Get(), exp[s].Get()})
             Barreira(c, r, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);

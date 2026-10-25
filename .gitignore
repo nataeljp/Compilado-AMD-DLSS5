@@ -19,3 +19,6 @@ runtime/adaptador/*.lib
 runtime/adaptador/*.exp
 # dependencias locais (pesos da NVIDIA convertidos e DLLs da NVIDIA: nao vao para o git)
 dependencias/
+
+externo/fidelityfx_sdk_download/
+externo/fidelityfx_sdk/

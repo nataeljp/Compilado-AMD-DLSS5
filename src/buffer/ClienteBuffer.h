@@ -86,7 +86,7 @@ class ClienteBuffer
     uint32_t geracao = 0;
     Com<ID3D12RootSignature> raiz;
     Com<ID3D12PipelineState> psoMov, psoProf, psoCor, psoLimpaRecon, psoRecon;
-    static constexpr UINT kDescQuadro = 20; // por conjunto de descritores: SRV t0..t9 e UAV u0..u9
+    static constexpr UINT kDescQuadro = 22; // por conjunto de descritores: SRV t0..t11 e UAV u0..u9
     Com<ID3D12DescriptorHeap> heap;
     // profundidade reconstruida na ancora da edicao (R32_UINT, resolucao da profundidade; local, nao compartilhada)
     Com<ID3D12Resource> recon;
@@ -132,6 +132,8 @@ class ClienteBuffer
     Com<ID3D12Resource> guardada[2];
     D3D12_RESOURCE_STATES estadoGuardada[2] = {};
     uint64_t quadroGuardado[2] = {};
+    // mesclado: o processado mais novo com edicao e o quadro do jogo em que ela chegou (os gerados contam a partir dele)
+    uint64_t novoMostrado = 0, chegouEm = 0;
 };
 
 } // namespace dlss5ov

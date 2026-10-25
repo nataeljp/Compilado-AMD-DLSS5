@@ -59,6 +59,10 @@ struct Config
     // quadros velhos (captura de video: a tela espera a rede). Captura de buffer: 1 = o jogo nao espera (a edicao chega
     // 2-3 quadros depois), 2 = o jogo espera a cada 2 quadros (1-2), 3 = espera em todo quadro (sempre 1)
     int semAtraso = 3;
+    // quadros gerados (sem atraso, com Ritmo 2..4, como o AMD Fluid Motion Frames): 0 repetido (o quadro processado se
+    // repete; sem atraso extra), 1 mesclado (mistura do processado anterior com o novo: 50/50, 40/60, 30/70; o novo vem
+    // depois deles, N quadros depois de feito)
+    int gerado = 0;
     bool movimento = true;  // movimento simulado por fluxo optico
     bool usaConfianca = true; // descarta o historico onde o fluxo de ida e volta nao bate (oclusao)
     int ritmo = 1;          // a rede roda a cada N quadros (1 = todo quadro; a rede nunca deve sumir em movimento)

@@ -122,6 +122,59 @@ struct App
     HWND Alvo() const { return buffer ? alvoBuffer : cap.Alvo(); }
     Tex inteiro, orig, fed, saida, fedAnt, saidaAnt; // orig: quadro no tamanho da rede; fed: o proxy dele
     Tex semNitidez; // a composicao antes da nitidez CAS (criada na primeira vez que a nitidez liga)
+    // quadros mesclados na captura de video: o processado anterior, o novo, a mistura e as misturas que faltam mostrar
+    // (peso do novo; 1 = o novo sozinho), uma por quadro capturado sem rede
+    Tex geradoAnt, geradoAtual, saidaGerada;
+    bool temGerado = false;
+    std::vector<float> geradosPendentes;
+    Passe pMistura;
+    // saidaGerada = geradoAnt * (1 - peso) + geradoAtual * peso
+    void Mistura(ID3D12GraphicsCommandList* c, float peso)
+    {
+        const D3D12_RESOURCE_STATES SRV =
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        geradoAnt.Para(c, SRV);
+        geradoAtual.Para(c, SRV);
+        saidaGerada.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        struct
+        {
+            UINT w, h;
+            float peso;
+            UINT pad;
+        } k{saidaGerada.w, saidaGerada.h, peso, 0};
+        pMistura.Roda(c, desc, gpu.dev.Get(), {{geradoAnt.r.Get(), geradoAnt.fmt}, {geradoAtual.r.Get(), geradoAtual.fmt}},
+                      {{saidaGerada.r.Get(), saidaGerada.fmt}}, &k, (saidaGerada.w + 7) / 8, (saidaGerada.h + 7) / 8);
+    }
+    // um quadro capturado sem rede (mesclado): a proxima mistura da fila, ou o processado novo, vai para a tela
+    void ApresentaGerado()
+    {
+        if (geradosPendentes.empty() || !temGerado)
+            return;
+        ID3D12Resource* bb = ov.Buffer();
+        if (!bb || ov.Largura() != geradoAtual.w || ov.Altura() != geradoAtual.h)
+            return;
+        const float peso = geradosPendentes.front();
+        geradosPendentes.erase(geradosPendentes.begin());
+        desc.Reinicia();
+        Ck(al[0]->Reset(), "reset(gerado)");
+        Ck(cl[0]->Reset(al[0].Get(), nullptr), "list(gerado)");
+        auto* c = cl[0].Get();
+        Tex* tela = &geradoAtual;
+        if (peso < 1.f)
+        {
+            Mistura(c, peso);
+            tela = &saidaGerada;
+        }
+        Barreira(c, bb, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST);
+        tela->Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        c->CopyResource(bb, tela->r.Get());
+        Barreira(c, bb, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
+        Ck(c->Close(), "close(gerado)");
+        ID3D12CommandList* l[] = {c};
+        gpu.fila->ExecuteCommandLists(1, l);
+        ov.Apresenta();
+        gpu.Espera();
+    }
     std::wstring dumpPasta;
     std::wstring pastaRuntime; // --runtime: outra pasta do runtime (testes)
     std::vector<uint32_t> pulaTeste; // --pula 1,2,3: blocos pulados fixos (medicao de custo por bloco)
@@ -222,6 +275,18 @@ struct App
                       "edicao para o jogo");
         pGuias.Cria(gpu.dev.Get(), hlsl::Guias, "CSGuias", 2, 2, 4, "guias do historico da rede");
         pNitidez.Cria(gpu.dev.Get(), hlsl::Nitidez, "CSNitidez", 1, 1, 8, "nitidez CAS");
+        pMistura.Cria(gpu.dev.Get(), R"(
+cbuffer C : register(b0) { uint w; uint h; float peso; uint pad; };
+Texture2D<float4> anterior : register(t0);
+Texture2D<float4> novo : register(t1);
+RWTexture2D<float4> saida : register(u0);
+[numthreads(8, 8, 1)] void CSMistura(uint2 p : SV_DispatchThreadID)
+{
+    if (p.x >= w || p.y >= h) return;
+    saida[p] = lerp(anterior.Load(int3(p, 0)), novo.Load(int3(p, 0)), peso);
+}
+)",
+                      "CSMistura", 2, 1, 4, "quadro mesclado");
         fluxo.Cria(gpu.dev.Get());
         temporal.Cria(gpu.dev.Get());
         EsperaPasses();
@@ -1162,7 +1227,7 @@ struct App
             // repetido em 1..4 quadros (o Ritmo vira os quadros repetidos)
             const bool espera = atraso < 0 && cfg.semAtraso > 0;
             fb.Batimento(true, cfg.modo != 1 && redeOk, espera ? 2u : 0u,
-                         espera ? uint32_t(std::clamp(cfg.ritmo, 1, 4)) : 0u);
+                         espera ? uint32_t(std::clamp(cfg.ritmo, 1, 4)) : 0u, uint32_t(std::clamp(cfg.gerado, 0, 1)));
             if (!fb.Pega(qb))
             {
                 if (fb.Aberta() && !fb.JogoVivo())
@@ -1197,7 +1262,10 @@ struct App
         // outros a tela fica com o ultimo quadro processado (a edicao exata dele), nunca um quadro novo com edicao velha
         if (!imagem && !buffer && atraso < 0 && cfg.semAtraso > 0 && cfg.ritmo > 1 &&
             capturados++ % UINT64(std::clamp(cfg.ritmo, 1, 4)) != 0)
+        {
+            ApresentaGerado(); // mesclado: a proxima mistura (ou o processado novo) neste quadro sem rede
             return false;
+        }
         const auto t0 = std::chrono::steady_clock::now();
         RECT r{};
         if (!imagem && !buffer && (IsIconic(cap.Alvo()) || !Captura::RetanguloCliente(cap.Alvo(), r)))
@@ -1510,10 +1578,47 @@ struct App
         const bool apresenta = !imagem && !buffer && bb && ov.Largura() == saida.w && ov.Altura() == saida.h;
         if (apresenta)
         {
+            // quadro mesclado (captura de video sem atraso, Ritmo 2..4): na tela vai a mistura do processado anterior com
+            // este (50/50); as outras misturas e este quadro vao nos quadros capturados sem rede que vem a seguir
+            const bool mescla = semAtraso && cfg.gerado == 1 && cfg.ritmo > 1;
+            Tex* tela = &saida;
+            geradosPendentes.clear();
+            if (mescla)
+            {
+                if (geradoAtual.w != saida.w || geradoAtual.h != saida.h || geradoAtual.fmt != saida.fmt)
+                {
+                    geradoAnt.Cria(gpu.dev.Get(), saida.w, saida.h, saida.fmt, L"quadro gerado: processado anterior");
+                    geradoAtual.Cria(gpu.dev.Get(), saida.w, saida.h, saida.fmt, L"quadro gerado: processado novo");
+                    saidaGerada.Cria(gpu.dev.Get(), saida.w, saida.h, saida.fmt, L"quadro gerado: mistura");
+                    temGerado = false;
+                }
+                if (temGerado)
+                {
+                    geradoAtual.Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                    geradoAnt.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
+                    c->CopyResource(geradoAnt.r.Get(), geradoAtual.r.Get());
+                }
+                saida.Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                geradoAtual.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
+                c->CopyResource(geradoAtual.r.Get(), saida.r.Get());
+                if (temGerado)
+                {
+                    static const float kPesos[3] = {0.5f, 0.6f, 0.7f};
+                    for (int i = 1; i < std::clamp(cfg.ritmo, 2, 4) - 1; ++i)
+                        geradosPendentes.push_back(kPesos[i]);
+                    geradosPendentes.push_back(1.f); // e o novo, por ultimo
+                    Mistura(c, kPesos[0]);
+                    tela = &saidaGerada;
+                }
+                temGerado = true;
+            }
             Barreira(c, bb, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST);
-            c->CopyResource(bb, saida.r.Get());
+            tela->Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
+            c->CopyResource(bb, tela->r.Get());
             Barreira(c, bb, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
         }
+        else
+            temGerado = false;
         if (!dumpPasta.empty() && quadrosTeste > 0 && quadros + 1 >= (UINT64)quadrosTeste)
             ultimoTemMov = temMov; // o ultimo quadro do dump: fedAnt guarda o anterior
         else
