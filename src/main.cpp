@@ -1379,7 +1379,8 @@ RWTexture2D<float4> saida : register(u0);
         // sem atraso a rede roda em todo quadro: um quadro sem resposta voltaria a trazer a edicao de outro quadro
         const bool vez = !temporal.Valido() || !temMov || zeraHistorico ||
                          quadros >= quadroEnvio + (UINT64)(semAtraso ? 1 : std::clamp(cfg.ritmo, 1, 4));
-        bool envia = sincrono && podeRede && vez;
+        // (com a rede ainda presa num quadro anterior -- VRAM cheia -- nada e enviado; a resposta dela e pega quando chegar)
+        bool envia = sincrono && podeRede && vez && !rede.EmVoo();
         if (envia)
         {
             AjustaProfundidade(temMov);
@@ -1394,8 +1395,9 @@ RWTexture2D<float4> saida : register(u0);
             if (rede.Envia(gpu.cerca.Get(), gpu.Sinaliza(), ParamsDaRede()))
             {
                 MarcaEnvio();
-                rede.EsperaChegar();
-                chegou = true;
+                // ate 1 s: com a VRAM cheia (o jogo usando quase tudo) a rede pode levar segundos por quadro; a tela nao
+                // congela esperando, o quadro sai sem a resposta e ela entra quando chegar
+                chegou = rede.EsperaChegar(1000);
             }
             envia = false;
         }
@@ -1894,6 +1896,12 @@ RWTexture2D<float4> saida : register(u0);
         if ((cfg.temporalRede == 1) != (temporalSessao == 1))
             e.historicoRede += (e.historicoRede.empty() ? "" : " ") + std::string("A mudança vale ao reabrir o programa.");
         e.avisoMemoria = emergenciaMemoria;
+        if (const double ms = rede.MsEmVoo(); ms > 2000.0)
+            e.avisoMemoria = Fmt("A rede está há %.0f s sem terminar um quadro: falta VRAM (o jogo e o overlay passam da placa e a "
+                                 "rede, que usa toda a memória dela em cada quadro, fica parada na RAM). Use a rede em 1080p ou "
+                                 "menos, ou a rede pequena (vale ao religar).",
+                                 ms / 1000.0) +
+                             (emergenciaMemoria.empty() ? std::string() : " " + emergenciaMemoria);
         e.exe = Utf8(exeAlvo);
         painel.DicaBandeja(Ligado() && !exeAlvo.empty() ? L"DLSS 5 Overlay - " + exeAlvo : L"DLSS 5 Overlay - sem jogo");
         e.perfis.clear();

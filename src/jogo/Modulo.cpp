@@ -450,7 +450,11 @@ DWORD WINAPI Instala(void*)
 {
     // entrada primeiro: o painel do overlay pode abrir antes de o jogo usar o FSR
     GanchosEntrada();
-    const wchar_t* candidatos[] = {L"amd_fidelityfx_upscaler_dx12.dll", L"amd_fidelityfx_dx12.dll"};
+    // FSR SDK 2 (FSR 3.1.4+/4): o jogo chama o carregador, que repassa ao upscaler -- e o upgrade de FSR do driver troca o
+    // upscaler do jogo pelo dele por ali (Cyberpunk: o gancho no upscaler do jogo nunca era chamado). So um deles e
+    // enganchado (os dois duplicariam os passes): o carregador primeiro, depois o upscaler direto e o FSR 3.1 antigo
+    const wchar_t* candidatos[] = {L"amd_fidelityfx_loader_dx12.dll", L"amd_fidelityfx_upscaler_dx12.dll",
+                                   L"amd_fidelityfx_dx12.dll"};
     for (int volta = 0;; ++volta)
     {
         GanchoMensagens(); // a janela do jogo pode aparecer depois

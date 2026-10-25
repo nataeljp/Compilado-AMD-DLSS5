@@ -187,13 +187,16 @@ void Rede::Encerra()
     emVoo = false;
 }
 
-void Rede::EsperaChegar()
+bool Rede::EsperaChegar(DWORD ms)
 {
     if (!emVoo || cerca->GetCompletedValue() >= valorJob)
-        return;
+        return true;
     Ck(cerca->SetEventOnCompletion(valorJob, evento), "SetEventOnCompletion(rede)");
-    WaitForSingleObject(evento, INFINITE);
+    WaitForSingleObject(evento, ms);
+    return cerca->GetCompletedValue() >= valorJob;
 }
+
+double Rede::MsEmVoo() const { return emVoo && enviadoEm ? double(GetTickCount64() - enviadoEm) : 0.0; }
 
 void Rede::Descarta()
 {
@@ -325,6 +328,7 @@ bool Rede::Envia(ID3D12Fence* cercaOverlay, UINT64 valorOverlay, const ParamsRed
     fila->ExecuteCommandLists(1, l1);
     Ck(fila->Signal(cerca.Get(), ++valor), "Signal(rede)");
     valorJob = valor;
+    enviadoEm = GetTickCount64();
     return true;
 }
 

@@ -914,18 +914,15 @@ void Painel::SecaoPerfil(const EstadoPainel& e, AcoesPainel& a, float lc)
     }
     Dica("Traz os ajustes de qualquer perfil (de qualquer jogo) ou do padrao do programa. Salvar grava sempre no perfil\n"
          "deste jogo: carregar o perfil de outro jogo nao mexe no arquivo dele.");
-    // para onde vai o Salvar
+    // para onde vai o Salvar (o "alterado" numa linha propria: ao lado de uma linha que quebra ele ficava uma letra por linha)
     ImGui::PushTextWrapPos(0.f);
     if (comJogo)
         ImGui::TextColored(cinza, "Salva em: %s.json%s", e.perfilJogo.c_str(), e.perfilExiste ? "" : "  (novo)");
     else
         ImGui::TextColored(cinza, "Sem jogo: salva no padrão do programa (config.json)");
-    if (e.perfilAlterado)
-    {
-        ImGui::SameLine();
-        ImGui::TextColored(amarelo, "·  alterado");
-    }
     ImGui::PopTextWrapPos();
+    if (e.perfilAlterado)
+        ImGui::TextColored(amarelo, "Alterado (não salvo)");
     if (Botao("Salvar", b3, e.perfilAlterado))
         a.perfilSalvar = true;
     Dica(comJogo ? "Grava os ajustes no perfil deste jogo. Ao sair do programa ou trocar de jogo eles tambem vao para la."

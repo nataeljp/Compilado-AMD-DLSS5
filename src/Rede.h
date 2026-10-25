@@ -44,7 +44,10 @@ class Rede
     bool Envia(ID3D12Fence* cercaOverlay, UINT64 valorOverlay, const ParamsRede& p);
     bool EmVoo() const { return emVoo; }
     bool Chegou() const { return emVoo && cerca->GetCompletedValue() >= valorJob; } // sem esperar
-    void EsperaChegar();
+    // espera a resposta ate `ms` (INFINITE = sem prazo); false = nao chegou (a rede segue em voo e o quadro sai sem ela)
+    bool EsperaChegar(DWORD ms = INFINITE);
+    // ha quanto tempo o trabalho em voo foi enviado (0 sem trabalho): a rede parada (VRAM cheia) aparece no painel
+    double MsEmVoo() const;
     // depois que chegou: libera o trabalho no runtime (a resposta ja e uma copia nossa)
     void Aposenta();
     // espera e descarta o trabalho em voo (troca de tamanho, encerramento)
@@ -93,6 +96,7 @@ class Rede
     void* ctx = nullptr;
     LmxxfNrJob job{};
     bool emVoo = false;
+    ULONGLONG enviadoEm = 0; // GetTickCount64 do Envia em voo
     bool falhou = false;
     UINT64 quadro = 0;
     std::wstring assets;
