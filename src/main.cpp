@@ -1418,13 +1418,14 @@ RWTexture2D<float4> saida : register(u0);
         // edicao estabilizada no tempo (e reprojetada nos quadros sem resposta)
         ParamsTemporal tp = cfg.temporal;
         tp.intensidade = cfg.ngx.intensidade;
-        if (semAtraso)
-        {
-            // a edicao deste quadro inteira: sem acumulo de quadros velhos nem grade afim (que so existem para trazer a
-            // resposta atrasada); a estabilidade no tempo e a do historico da propria rede, como na NVIDIA
-            tp.maxQuadros = 1;
+        // resposta deste quadro (sincrono: sem atraso, --imagem, --reproduz): sem grade afim, que so existe para trazer a
+        // resposta atrasada e corta o detalhe por pixel da rede (o brilho pontual: Lara 5,25 -> 1,14 L*, 45,8 -> 39,8 dB)
+        if (sincrono)
             tp.afim = false;
-        }
+        // sem atraso: a edicao deste quadro inteira, sem acumulo de quadros velhos; a estabilidade no tempo e a do
+        // historico da propria rede, como na NVIDIA
+        if (semAtraso)
+            tp.maxQuadros = 1;
         // resposta de um quadro anterior a um corte de cena e da cena velha: descartada
         const bool usa = chegou && cfg.modo != 1 && redeOk && quadroEnvio >= quadroCorte;
         if (usa)
