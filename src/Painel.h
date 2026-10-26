@@ -39,7 +39,7 @@ struct EstadoPainel
     // geracao de quadros (captura de buffer): estado do lancamento/swapchain e o ultimo jogo aberto pelo overlay
     std::string estadoGeracao;
     bool geracaoPronta = false;  // o jogo conectado esta com o swapchain da AMD
-    std::string ultimoJogo;      // nome do ultimo executavel aberto pelo overlay ("" = nenhum)
+    bool instaladoNoJogo = false; // a DLL esta na pasta do jogo conectado (como dxgi.dll)
 };
 
 struct AcoesPainel
@@ -56,8 +56,7 @@ struct AcoesPainel
     bool redefinir = false;    // padroes do programa
     bool zeraHistorico = false;
     bool ocultaMudou = false;
-    bool abrirJogo = false;   // escolher um executavel e abrir o jogo com o modulo (geracao de quadros)
-    bool abrirUltimo = false; // abrir de novo o ultimo jogo aberto pelo overlay
+    bool removerDoJogo = false; // tirar a dxgi.dll da pasta do jogo conectado (para a Lixeira)
 };
 
 class Painel

@@ -1374,7 +1374,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                 ImGui::TextColored(cor, "%s", s.empty() ? "Ctrl+Shift+D com o jogo em foco (FSR ou XeSS ligado no jogo)" : s.c_str());
                 ImGui::PopTextWrapPos();
 
-                // geracao de quadros da AMD: o jogo abre pelo overlay (o swapchain e trocado na criacao)
+                // geracao de quadros da AMD: a DLL na pasta do jogo troca o swapchain na criacao
                 ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kTexto2), "Geração de quadros (AMD)");
                 const char* geracoes[] = {"Desligada", "2x"};
                 int ig = cfg.geracao >= 2 ? 1 : 0;
@@ -1383,18 +1383,13 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                 Dica("A geracao de quadros do FidelityFX da AMD (Frame Interpolation + Optical Flow + o swapchain dela)\n"
                      "dentro do jogo: quadros novos de verdade entre os do jogo, com o movimento e a profundidade que ele\n"
                      "manda ao FSR. Os gerados ja levam a edicao da rede (ela esta no quadro do jogo).\n"
-                     "O jogo abre UMA vez pelo overlay (botao abaixo): a DLL entra antes do DirectX e o swapchain dele vira o\n"
-                     "da AMD. Dai em diante a geracao liga, desliga e muda so por aqui, sem reabrir. Aberto por fora, o jogo\n"
-                     "nao tem como receber a geracao. Desligue a geracao de quadros do proprio jogo (FSR Frame Generation /\n"
-                     "DLSS FG) e o AFMF do driver.");
-                if (Botao("Abrir jogo pelo overlay..."))
-                    a.abrirJogo = true;
-                if (!e.ultimoJogo.empty())
-                {
-                    ImGui::SameLine();
-                    if (Botao(("Abrir " + e.ultimoJogo).c_str()))
-                        a.abrirUltimo = true;
-                }
+                     "A DLL tem de entrar no jogo antes do DirectX: ao ligar a geracao com o jogo conectado, o overlay a\n"
+                     "copia para a pasta do jogo como dxgi.dll (nada mais muda la) e pede para reabrir o jogo UMA vez. Dai em\n"
+                     "diante o jogo ja abre com ela (pela Steam ou como for), o overlay conecta sozinho e a geracao liga,\n"
+                     "desliga e muda so por aqui. Uma dxgi.dll de outro programa (ReShade, OptiScaler) nunca e substituida.\n"
+                     "Desligue a geracao de quadros do proprio jogo (FSR Frame Generation / DLSS FG) e o AFMF do driver.");
+                if (e.instaladoNoJogo && Botao("Remover do jogo"))
+                    a.removerDoJogo = true;
                 if (!e.estadoGeracao.empty())
                 {
                     ImGui::PushTextWrapPos(0.f);

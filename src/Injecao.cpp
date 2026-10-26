@@ -1,6 +1,7 @@
 #include "Injecao.h"
 #include "buffer/Protocolo.h"
 #include <psapi.h>
+#include <shellapi.h>
 #include <tlhelp32.h>
 #include <algorithm>
 #include <cwctype>
@@ -159,9 +160,9 @@ ResultadoInjecao InjetaBuffer(DWORD pid, const std::wstring& dll)
     if (!acPasta.empty())
         r.motivo += std::string(r.motivo.empty() ? "" : " | ") + "aviso: o jogo tem anti-cheat instalado (" + Utf8(acPasta) +
                     "), inativo agora: use a captura de buffer so offline";
-    if (tem(L"dlss5buffer.dll"))
+    if (tem(L"dlss5buffer.dll") || ModuloPresente(pid))
     {
-        r.ok = true; // ja esta no jogo (ligou de novo)
+        r.ok = true; // ja esta no jogo (ligou de novo, ou instalado na pasta dele como dxgi.dll)
         CloseHandle(p);
         return r;
     }
@@ -318,6 +319,126 @@ ResultadoInjecao EntraNoInicio(DWORD pid, const std::wstring& dll, uint32_t gera
     r.ok = true;
     Log("buffer", Fmt("modulo no jogo reaberto pela Steam logo no inicio (pid %lu, geracao %ux)", (unsigned long)pid, geracao));
     return r;
+}
+
+bool ModuloPresente(DWORD pid)
+{
+    wchar_t nome[96];
+    dlss5ov::NomeModulo(nome, 96, pid);
+    HANDLE e = OpenEventW(SYNCHRONIZE, FALSE, nome);
+    if (e)
+        CloseHandle(e);
+    return e != nullptr;
+}
+
+DWORD ProcessoComModulo(DWORD exceto)
+{
+    DWORD achou = 0;
+    HANDLE s = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (s == INVALID_HANDLE_VALUE)
+        return 0;
+    PROCESSENTRY32W e{sizeof e};
+    for (BOOL ok = Process32FirstW(s, &e); ok && !achou; ok = Process32NextW(s, &e))
+    {
+        if (e.th32ProcessID == exceto || e.th32ProcessID == GetCurrentProcessId() || !ModuloPresente(e.th32ProcessID))
+            continue;
+        wchar_t nome[96];
+        dlss5ov::NomeMapa(nome, 96, e.th32ProcessID);
+        if (HANDLE m = OpenFileMappingW(FILE_MAP_READ, FALSE, nome))
+        {
+            CloseHandle(m);
+            achou = e.th32ProcessID;
+        }
+    }
+    CloseHandle(s);
+    return achou;
+}
+
+std::wstring ExeDoProcesso(DWORD pid)
+{
+    std::wstring exe;
+    if (HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid))
+    {
+        wchar_t b[MAX_PATH];
+        DWORD n = MAX_PATH;
+        if (QueryFullProcessImageNameW(p, 0, b, &n))
+            exe.assign(b, n);
+        CloseHandle(p);
+    }
+    return exe;
+}
+
+namespace {
+std::wstring DxgiDoJogo(const std::wstring& exe) { return exe.substr(0, exe.find_last_of(L"\\/")) + L"\\dxgi.dll"; }
+std::vector<char> LeArquivo(const std::wstring& a)
+{
+    std::vector<char> v;
+    HANDLE h = CreateFileW(a.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_EXISTING, 0, nullptr);
+    if (h == INVALID_HANDLE_VALUE)
+        return v;
+    LARGE_INTEGER t{};
+    GetFileSizeEx(h, &t);
+    v.resize(size_t(t.QuadPart));
+    DWORD lidos = 0;
+    if (!v.empty() && !ReadFile(h, v.data(), DWORD(v.size()), &lidos, nullptr))
+        v.clear();
+    CloseHandle(h);
+    return v;
+}
+bool EhNossa(const std::vector<char>& v)
+{
+    static const char marca[] = "DLSS5Ov_Modulo"; // o nome exportado pelo modulo
+    return std::search(v.begin(), v.end(), marca, marca + sizeof marca - 1) != v.end();
+}
+} // namespace
+
+Instalacao EstadoInstalacao(const std::wstring& exe, const std::wstring& dll)
+{
+    if (exe.empty())
+        return Instalacao::Nenhuma;
+    const std::vector<char> la = LeArquivo(DxgiDoJogo(exe));
+    if (la.empty())
+        return Instalacao::Nenhuma;
+    if (!EhNossa(la))
+        return Instalacao::Outra;
+    return la == LeArquivo(dll) ? Instalacao::Nossa : Instalacao::Desatualizada;
+}
+
+std::string InstalaNoJogo(const std::wstring& exe, const std::wstring& dll)
+{
+    if (!Existe(dll))
+        return "DLSS5Buffer.dll nao encontrada (" + Utf8(dll) + ")";
+    const std::wstring dst = DxgiDoJogo(exe);
+    const Instalacao e = EstadoInstalacao(exe, dll);
+    if (e == Instalacao::Outra)
+        return "ja existe uma dxgi.dll de outro programa na pasta do jogo (ReShade, OptiScaler?): nao substitui";
+    if (e == Instalacao::Nossa)
+        return "";
+    if (CopyFileW(dll.c_str(), dst.c_str(), FALSE))
+        return "";
+    // em uso (o jogo esta aberto com a versao antiga): o arquivo carregado pode ser renomeado; a nova vale ao reabrir
+    const std::wstring velha = dst + L".antiga." + std::to_wstring(GetTickCount64());
+    if (e == Instalacao::Desatualizada && MoveFileExW(dst.c_str(), velha.c_str(), 0) && CopyFileW(dll.c_str(), dst.c_str(), FALSE))
+        return "";
+    return Fmt("nao consegui copiar para a pasta do jogo (erro %lu; pasta protegida? abra o overlay como administrador)",
+               GetLastError());
+}
+
+std::string RemoveDoJogo(const std::wstring& exe)
+{
+    const std::wstring dst = DxgiDoJogo(exe);
+    if (!EhNossa(LeArquivo(dst)))
+        return "a dxgi.dll da pasta do jogo nao e a do overlay: nao mexi";
+    // para a Lixeira (desfaz), nunca apagada de vez
+    std::wstring de = dst + L'\0';
+    SHFILEOPSTRUCTW op{};
+    op.wFunc = FO_DELETE;
+    op.pFrom = de.c_str();
+    op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI;
+    if (SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted)
+        return "";
+    return "nao consegui tirar a dxgi.dll (o jogo esta aberto? feche e tente de novo)";
 }
 
 DWORD ProcuraProcesso(const std::wstring& nomeExe, DWORD exceto)

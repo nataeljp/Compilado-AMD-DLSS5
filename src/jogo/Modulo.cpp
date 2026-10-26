@@ -6,9 +6,11 @@
 //   - ID3D12CommandQueue::ExecuteCommandLists: quando essa lista e submetida, sinaliza a cerca do jogo;
 //   - entrada (com o painel do overlay aberto sobre o jogo): GetRawInputData/GetRawInputBuffer e as mensagens de mouse
 //     da janela do jogo -- o movimento e os cliques vao para o painel e o jogo recebe zero (a mira nao mexe).
-//   - jogo aberto pelo overlay com a geracao de quadros (Protocolo.h Lancamento): CreateDXGIFactory* e, nas fabricas,
-//     CreateSwapChainForHwnd/CreateSwapChain -- o jogo recebe o swapchain da AMD (buffer/Geracao.h), e a cada despacho
-//     do FSR a profundidade, o movimento e a camera vao para a geracao.
+//   - geracao de quadros: o modulo tem de estar no jogo antes do DirectX. Instalado na pasta do jogo como dxgi.dll (o
+//     jogo carrega a DLL sozinho em toda abertura; as funcoes da dxgi do Windows vao para ela por ProxyDxgi.asm) ou
+//     aberto pelo overlay (Protocolo.h Lancamento): nas fabricas DXGI, CreateSwapChainForHwnd/CreateSwapChain -- o jogo
+//     recebe o swapchain da AMD (buffer/Geracao.h), e a cada despacho do FSR a profundidade, o movimento e a camera vao
+//     para a geracao.
 // Registro em DLSS5Buffer.log ao lado da DLL.
 #include "../buffer/ClienteBuffer.h"
 #include "../buffer/Geracao.h"
@@ -66,8 +68,9 @@ volatile LONG g_rawVistos = 0;
 // nunca destruida: na saida do processo o Windows ja matou a thread de apresentacao da AMD, e esperar por ela (o que o
 // destrutor faz) deixava o jogo pendurado ao fechar
 dlss5ov::Geracao& g_ger = *new dlss5ov::Geracao;
-bool g_lancado = false;                // o jogo abriu pelo overlay: o swapchain vira o da AMD (a geracao liga e desliga
-                                       // depois so pelo painel, sem reabrir)
+bool g_lancado = false;                // o modulo entrou antes do DirectX (instalado como dxgi.dll ou aberto pelo
+                                       // overlay): o swapchain vira o da AMD; a geracao liga e desliga so pelo painel
+bool g_proxy = false;                  // carregado como dxgi.dll da pasta do jogo
 uint32_t g_geracaoLancamento = 0;      // o pedido do lancamento (vale ate o overlay conectar)
 thread_local bool t_criandoSc = false; // o swapchain da AMD cria o de verdade pela mesma fabrica: esse passa direto
 using PfnCriaFab = HRESULT(WINAPI*)(REFIID, void**);
@@ -705,6 +708,72 @@ DWORD WINAPI Instala(void*)
 
 } // namespace
 
+// ---- instalada na pasta do jogo como dxgi.dll: as funcoes da dxgi do Windows ----
+extern "C" void* g_dxgiFn[17]; // ProxyDxgi.asm
+namespace {
+const char* const kDxgiNomes[17] = {"ApplyCompatResolutionQuirking", "CompatString", "CompatValue", "DXGID3D10CreateDevice",
+                                    "DXGID3D10CreateLayeredDevice", "DXGID3D10GetLayeredDeviceSize",
+                                    "DXGID3D10RegisterLayers", "DXGIDeclareAdapterRemovalSupport",
+                                    "DXGIDisableVBlankVirtualization", "DXGIDumpJournal", "DXGIGetDebugInterface1",
+                                    "DXGIReportAdapterConfiguration", "PIXBeginCapture", "PIXEndCapture",
+                                    "PIXGetCaptureState", "SetAppCompatStringPointer", "UpdateHMDEmulationStatus"};
+PfnCriaFab oSisFab = nullptr, oSisFab1 = nullptr;
+PfnCriaFab2 oSisFab2 = nullptr;
+std::once_flag g_resolveDxgi;
+} // namespace
+
+extern "C" void ResolveDxgiSistema()
+{
+    std::call_once(g_resolveDxgi, [] {
+        wchar_t p[MAX_PATH];
+        GetSystemDirectoryW(p, MAX_PATH);
+        wcscat_s(p, L"\\dxgi.dll");
+        HMODULE d = LoadLibraryW(p);
+        if (!d)
+        {
+            Log("dxgi do Windows nao carregou");
+            return;
+        }
+        for (int i = 0; i < 17; ++i)
+            g_dxgiFn[i] = reinterpret_cast<void*>(GetProcAddress(d, kDxgiNomes[i]));
+        oSisFab = reinterpret_cast<PfnCriaFab>(GetProcAddress(d, "CreateDXGIFactory"));
+        oSisFab1 = reinterpret_cast<PfnCriaFab>(GetProcAddress(d, "CreateDXGIFactory1"));
+        oSisFab2 = reinterpret_cast<PfnCriaFab2>(GetProcAddress(d, "CreateDXGIFactory2"));
+    });
+}
+
+// as fabricas do jogo passam pelo modulo: a criacao do swapchain e enganchada nelas
+extern "C" HRESULT WINAPI PxCreateDXGIFactory(REFIID r, void** f)
+{
+    ResolveDxgiSistema();
+    const HRESULT h = oSisFab ? oSisFab(r, f) : E_NOTIMPL;
+    if (SUCCEEDED(h) && f && *f && g_lancado)
+        GanchoFabrica(static_cast<IUnknown*>(*f));
+    return h;
+}
+extern "C" HRESULT WINAPI PxCreateDXGIFactory1(REFIID r, void** f)
+{
+    ResolveDxgiSistema();
+    const HRESULT h = oSisFab1 ? oSisFab1(r, f) : E_NOTIMPL;
+    if (SUCCEEDED(h) && f && *f && g_lancado)
+        GanchoFabrica(static_cast<IUnknown*>(*f));
+    return h;
+}
+extern "C" HRESULT WINAPI PxCreateDXGIFactory2(UINT fl, REFIID r, void** f)
+{
+    ResolveDxgiSistema();
+    const HRESULT h = oSisFab2 ? oSisFab2(fl, r, f) : E_NOTIMPL;
+    if (SUCCEEDED(h) && f && *f && g_lancado)
+        GanchoFabrica(static_cast<IUnknown*>(*f));
+    return h;
+}
+
+// marcador: o overlay reconhece a dxgi.dll instalada por ele (e a versao do protocolo dela)
+extern "C" uint32_t DLSS5Ov_Modulo()
+{
+    return dlss5ov::kVersao;
+}
+
 BOOL APIENTRY DllMain(HMODULE m, DWORD motivo, LPVOID)
 {
     if (motivo == DLL_PROCESS_ATTACH)
@@ -718,9 +787,25 @@ BOOL APIENTRY DllMain(HMODULE m, DWORD motivo, LPVOID)
         g_log = _wfsopen(s.c_str(), L"w", 0x40 /* _SH_DENYNO */);
         char exe[MAX_PATH] = {};
         GetModuleFileNameA(nullptr, exe, MAX_PATH);
-        Log("DLSS5Buffer.dll carregada em %s (pid %lu)", exe, GetCurrentProcessId());
-        // aberto pelo overlay (o jogo esta suspenso esperando o evento pronto): o pedido de geracao de quadros
+        // uma copia so por processo (instalada como dxgi.dll e depois injetada, por exemplo): a segunda nao faz nada
         wchar_t nome[96];
+        dlss5ov::NomeModulo(nome, 96, GetCurrentProcessId());
+        CreateEventW(nullptr, TRUE, FALSE, nome); // fica aberto ate o processo sair
+        if (GetLastError() == ERROR_ALREADY_EXISTS)
+            return TRUE;
+        const wchar_t* base = wcsrchr(p, L'\\');
+        g_proxy = base && !_wcsicmp(base + 1, L"dxgi.dll");
+        Log("DLSS5Buffer.dll carregada em %s (pid %lu)%s", exe, GetCurrentProcessId(),
+            g_proxy ? " como dxgi.dll da pasta do jogo" : "");
+        if (g_proxy)
+        {
+            // instalada no jogo: entrou antes do DirectX, a geracao funciona sem abrir pelo overlay. O pedido vem do
+            // painel quando o overlay conecta (DLSS5_GERACAO, so para testes, vale antes disso)
+            g_lancado = true;
+            if (const wchar_t* t = _wgetenv(L"DLSS5_GERACAO"))
+                g_geracaoLancamento = uint32_t(_wtoi(t));
+        }
+        // aberto pelo overlay (o jogo esta suspenso esperando o evento pronto): o pedido de geracao de quadros
         dlss5ov::NomeLancamento(nome, 96, GetCurrentProcessId());
         bool lancado = false;
         if (HANDLE mp = OpenFileMappingW(FILE_MAP_READ, FALSE, nome))
@@ -737,7 +822,7 @@ BOOL APIENTRY DllMain(HMODULE m, DWORD motivo, LPVOID)
             }
             CloseHandle(mp);
         }
-        if (lancado)
+        if (lancado && !g_proxy) // como dxgi.dll as fabricas ja passam pelo modulo (PxCreateDXGIFactory*)
             if (HANDLE t = CreateThread(nullptr, 0, PreparaGeracao, nullptr, 0, nullptr))
                 CloseHandle(t);
         if (HANDLE t = CreateThread(nullptr, 0, Instala, nullptr, 0, nullptr))

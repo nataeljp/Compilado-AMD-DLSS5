@@ -25,4 +25,18 @@ ResultadoInjecao EntraNoInicio(DWORD pid, const std::wstring& dll, uint32_t gera
 // pid de um processo com esse nome de executavel (sem diferenciar maiusculas), menos `exceto`; 0 = nenhum
 DWORD ProcuraProcesso(const std::wstring& nomeExe, DWORD exceto);
 
+// o modulo esta no processo (instalado na pasta do jogo como dxgi.dll, ou injetado)
+bool ModuloPresente(DWORD pid);
+// um processo (menos `exceto`) com o modulo dentro e a memoria compartilhada criada (o FSR/XeSS ja rodou); 0 = nenhum
+DWORD ProcessoComModulo(DWORD exceto);
+// caminho completo do executavel do processo ("" sem acesso)
+std::wstring ExeDoProcesso(DWORD pid);
+// Instalacao na pasta do jogo: a DLSS5Buffer.dll vira a dxgi.dll do jogo (o Windows a carrega antes do DirectX em toda
+// abertura, inclusive pela Steam; as funcoes da dxgi do sistema seguem para ela). Nunca substitui a dxgi.dll de outro
+// programa (ReShade, OptiScaler...). Com o jogo aberto a copia antiga e renomeada e a nova vale na proxima abertura.
+enum class Instalacao { Nenhuma, Nossa, Desatualizada, Outra };
+Instalacao EstadoInstalacao(const std::wstring& exe, const std::wstring& dll);
+std::string InstalaNoJogo(const std::wstring& exe, const std::wstring& dll); // "" = ok, senao o motivo
+std::string RemoveDoJogo(const std::wstring& exe);
+
 } // namespace ov

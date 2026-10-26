@@ -22,7 +22,9 @@ $modulo = Get-ChildItem "$raiz\src\jogo\*.cpp" -ErrorAction SilentlyContinue
 if ($modulo) {
     $fontes = ($modulo | ForEach-Object { '"' + $_.FullName + '"' }) -join ' '
     $inc = "/I`"$raiz\externo\ffx`" /I`"$raiz\externo\detours`" $ffxInc"
-    $cl = "cl $flags /LD $inc /Fo`"$raiz\obj\buffer\\`" /Fe`"$Saida\DLSS5Buffer.dll`" $fontes $cli /link d3d12.lib dxgi.lib user32.lib `"$raiz\externo\detours\detours.lib`" $ffxLibs"
+    # as funcoes da dxgi.dll do Windows (a DLL instalada na pasta do jogo como dxgi.dll) e as exportacoes
+    $asm = "ml64 /nologo /c /Fo`"$raiz\obj\buffer\ProxyDxgi.obj`" `"$raiz\src\jogo\ProxyDxgi.asm`""
+    $cl = "$asm && cl $flags /LD $inc /Fo`"$raiz\obj\buffer\\`" /Fe`"$Saida\DLSS5Buffer.dll`" $fontes $cli `"$raiz\obj\buffer\ProxyDxgi.obj`" /link /DEF:`"$raiz\src\jogo\DLSS5Buffer.def`" /DELAYLOAD:dxgi.dll delayimp.lib d3d12.lib dxgi.lib user32.lib `"$raiz\externo\detours\detours.lib`" $ffxLibs"
     cmd /c "`"$vs`" >nul 2>nul & $cl" 2>&1 | Where-Object { $_ -match 'error|warning C4[0-9]{3}|LNK' } | Select-Object -First 30
     if ($LASTEXITCODE -ne 0) { "DLSS5Buffer.dll falhou ($LASTEXITCODE)"; exit 1 }
     "ok: $Saida\DLSS5Buffer.dll"

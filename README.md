@@ -69,13 +69,16 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
   - **Geração de quadros (AMD)**: a geração do FidelityFX SDK 1.1.4 (Frame Interpolation + Optical Flow + o swapchain
     de geração da AMD, compilados do código fonte, MIT), ligada como o provedor de referência da AMD: quadros novos de
     verdade entre os do jogo, com o movimento, a profundidade e a câmera que o jogo manda ao FSR. A interpolação parte do
-    backbuffer final, então os quadros gerados já levam a edição da rede. O jogo abre **uma vez pelo overlay**
-    ("Abrir jogo pelo overlay"): ele nasce suspenso, a DLL entra antes do DirectX, engancha `CreateDXGIFactory*` e o
-    swapchain do jogo vira o da AMD na criação; depois disso a geração liga, desliga e muda só pelo painel. Se a Steam
-    reabrir o jogo pelo cliente dela, o overlay entra no processo novo logo que ele nasce. Os shaders da AMD e os do
-    módulo compilam em segundo plano (no primeiro quadro do FSR a compilação parava o jogo por 14–25 s). Medido no
-    jogo de teste aberto pelo overlay, com a rede ligada: 27 quadros do jogo + 27 gerados por segundo, cada gerado
-    exatamente entre os dois reais (24,6 dB para cada lado). Desligue a geração do próprio jogo e o AFMF do driver.
+    backbuffer final, então os quadros gerados já levam a edição da rede. A DLL tem de entrar antes do DirectX: ao
+    ligar a geração com o jogo conectado, o overlay copia a `DLSS5Buffer.dll` para a pasta do executável do jogo como
+    `dxgi.dll` (as funções da dxgi do Windows seguem para ela por `src\jogo\ProxyDxgi.asm`) e pede para reabrir o jogo
+    **uma vez**. Daí em diante o jogo já abre com ela (pela Steam ou como for), o swapchain dele vira o da AMD na
+    criação, o overlay conecta sozinho (modo buffer) e a geração liga, desliga e muda só pelo painel. Uma `dxgi.dll` de
+    outro programa (ReShade, OptiScaler) nunca é substituída; "Remover do jogo" manda a nossa para a Lixeira; overlay
+    atualizado atualiza a cópia do jogo ao conectar. Os shaders da AMD e os do módulo compilam em segundo plano (no
+    primeiro quadro do FSR a compilação parava o jogo por 14–25 s). Medido no jogo de teste com a rede ligada: 27
+    quadros do jogo + 27 gerados por segundo, cada gerado exatamente entre os dois reais (24,6 dB para cada lado).
+    Desligue a geração do próprio jogo e o AFMF do driver.
   - O jogo espera a edição do quadro anterior (1 quadro, como a NVIDIA roda o DLSS 5: a rede dentro do tempo do quadro)
     e a soma pelo movimento acumulado desde o quadro que a rede viu (nenhum quadro pula sem o movimento dele ser
     contado: era o "liga/desliga"), e só para a
@@ -182,7 +185,7 @@ Os parâmetros do DLSS 5 seguem os nomes que a NVIDIA expõe no NGX (os mesmos d
 | `passes` | 1..3 | quantas vezes a rede inteira roda por quadro (1 = normal); vale ao religar |
 | `profundidade` | 0..4 | blocos da rede grande: 0 = 71, 1 = 68 (sem 42/43/46), 2 = 63 (sem 40–47), 3 = 55 (e sem 23–30), 4 = 47 (e sem o ViT 31–38; só com `reusoVit` desligado). Só blocos residuais saem; muda na hora; só no `config.json`. Não se aplica à rede pequena, que é outro modelo |
 | `movimento` | true/false | movimento simulado por fluxo óptico (as guias do histórico da própria rede na captura de vídeo) |
-| `geracaoQuadros` | 0/2 | captura de buffer: geração de quadros da AMD (0 desligada, 2 = 2x); o jogo abre pelo overlay |
+| `geracaoQuadros` | 0/2 | captura de buffer: geração de quadros da AMD (0 desligada, 2 = 2x); a DLL vai para a pasta do jogo (dxgi.dll) |
 | `ritmo`, `quadroGerado` | 1..4, 0/1 | só na captura de vídeo: **quadros gerados** — a rede edita 1 de cada N quadros e os N−1 seguintes são gerados dos processados (nunca um quadro novo com edição velha): 0 repetido (na captura de buffer o processado aparece 1 quadro depois), 1 mesclado (50/50, 40/60, 30/70 do anterior/novo; o novo aparece N quadros depois) |
 | `reusoVit` | true/false | reuso adaptativo do ViT do runtime lmxxf (vale ao reabrir) |
 | `temporalRede` | 0..3 | histórico da própria rede (`DLSS5_TEMPORAL_MODE` do runtime; vale ao reabrir, força 1 passe e desliga o `reusoVit`). 1 = a entrada de histórico da rede recebe a resposta anterior trazida pelo movimento (captura de buffer: movimento e profundidade do jogo; captura de vídeo: fluxo óptico) e a cabeça de histórico do bloco 70 decide a mistura; precisa do runtime deste branch (`LmxxfNrSetHistoryGuides`) e do `post70-history-head.f16` que o `monta_runtime.ps1` extrai. 2 e 3 = suavização de baixa frequência / realce na saída do runtime |

@@ -21,7 +21,6 @@
 #include "Painel.h"
 #include "Rede.h"
 #include "Shaders.h"
-#include <commdlg.h>
 #include <shellapi.h>
 #include <wincodec.h>
 #include <winrt/base.h>
@@ -121,6 +120,13 @@ struct App
     std::chrono::steady_clock::time_point tLancado{};
     bool janelaLancado = false; // a janela do jogo ja apareceu (ligou a captura de buffer)
     std::string estadoGeracao;
+    DWORD pidBuffer = 0;                       // processo do jogo conectado pela captura de buffer
+    DWORD pidRecusado = 0;                     // desligado pelo usuario: nao reconecta sozinho nesse processo
+    std::wstring exeJogo;                      // caminho completo do executavel do jogo conectado
+    Instalacao instalacao = Instalacao::Nenhuma; // a DLL na pasta do jogo conectado (como dxgi.dll)
+    bool tentouInstalar = false;               // uma tentativa por conexao
+    std::string erroInstalacao;
+    std::wstring Dll() const { return pasta + L"\\captura\\DLSS5Buffer.dll"; }
     int geracaoTeste = -1;      // --lanca-jogo --fica: a geracao pedida (aplicada depois do config)
     int fonteLigada = 0;        // a fonte com que ligou (trocar no painel religa)
     uint64_t quadroJogo = 0;    // numero do quadro do jogo em processamento (gravacao: alinha com o jogo)
@@ -813,6 +819,7 @@ RWTexture2D<float4> saida : register(u0);
         cap.Para();
         if (buffer)
         {
+            pidRecusado = pidBuffer; // ProcuraJogo nao religa sozinho o que foi desligado
             gpu.Espera();
             FechaFonte(); // sem batimento o modulo do jogo para de exportar e de somar
             buffer = false;
@@ -823,41 +830,41 @@ RWTexture2D<float4> saida : register(u0);
         }
         ov.Mostra(false);
     }
-    // ---- geracao de quadros: o jogo abre pelo overlay ----
-    std::wstring ArqLancar() const { return PastaPerfis() + L"\\_lancar.ini"; }
-    std::wstring UltimoJogo() const
+    // ---- geracao de quadros: a DLL na pasta do jogo (dxgi.dll) entra antes do DirectX em toda abertura ----
+    // jogo com o modulo dentro (instalado na pasta dele, ou injetado antes) e o FSR rodando: com o Modo de Rede em
+    // buffer o overlay conecta sozinho, sem Ctrl+Shift+D (o que o usuario desligou fica desligado)
+    void ProcuraJogo()
     {
-        std::wstring r;
-        if (FILE* f = _wfopen(ArqLancar().c_str(), L"r, ccs=UTF-8"))
-        {
-            wchar_t b[1024];
-            if (fgetws(b, 1024, f))
-                r = b;
-            fclose(f);
-        }
-        while (!r.empty() && (r.back() == L'\n' || r.back() == L'\r'))
-            r.pop_back();
-        return r;
+        static auto ultima = std::chrono::steady_clock::now();
+        const auto agora = std::chrono::steady_clock::now();
+        if (Ligado() || cfg.fonte != 1 || pidLancado || agora - ultima < std::chrono::seconds(1))
+            return;
+        ultima = agora;
+        if (const DWORD pid = ProcessoComModulo(pidRecusado))
+            if (HWND h = JanelaDoProcesso(pid))
+            {
+                Log("buffer", Fmt("jogo com o modulo dentro (pid %lu): conectando", (unsigned long)pid));
+                Liga(h);
+                if (!Ligado())
+                    pidRecusado = pid; // nao conectou: nao tenta de novo a cada segundo
+            }
     }
-    void LancaJogo(const std::wstring& exe)
+    void VigiaGeracao()
     {
-        if (FILE* f = _wfopen(ArqLancar().c_str(), L"w, ccs=UTF-8"))
-        {
-            fputws(exe.c_str(), f);
-            fclose(f);
-        }
-        DWORD pid = 0;
-        // a DLL entra uma vez, antes do DirectX; a geracao (e o resto) se ajusta depois so pelo painel
-        const uint32_t n = cfg.geracao >= 2 ? uint32_t(std::clamp(cfg.geracao, 2, 4)) : 0u;
-        const ResultadoInjecao r = AbreJogo(exe, pasta + L"\\captura\\DLSS5Buffer.dll", n, pid);
-        cfg.fonte = 1; // a captura de buffer liga sozinha quando a janela do jogo aparecer
-        jogoLancado = exe;
-        pidLancado = pid;
-        tLancado = std::chrono::steady_clock::now();
-        janelaLancado = false;
-        estadoGeracao = r.ok ? "jogo aberto com o módulo; esperando a janela dele" + (r.motivo.empty() ? "" : " | " + r.motivo)
-                             : "não abriu com a geração: " + r.motivo;
-        Log("geracao", estadoGeracao);
+        if (buffer && fb.Conectada() && fb.JogoVivo() && !fb.GeracaoPronta() && cfg.geracao >= 2)
+            InstalaGeracao();
+        ProcuraJogo();
+    }
+    // liga a geracao com o jogo conectado sem o swapchain da AMD: a DLL vai para a pasta dele, uma vez
+    void InstalaGeracao()
+    {
+        if (tentouInstalar || exeJogo.empty() || instalacao == Instalacao::Nossa || instalacao == Instalacao::Outra)
+            return;
+        tentouInstalar = true;
+        erroInstalacao = InstalaNoJogo(exeJogo, Dll());
+        instalacao = EstadoInstalacao(exeJogo, Dll());
+        Log("geracao", erroInstalacao.empty() ? "DLL instalada na pasta do jogo como dxgi.dll: " + Utf8(exeJogo)
+                                              : "nao instalou na pasta do jogo: " + erroInstalacao);
     }
     static HWND JanelaDoProcesso(DWORD pid)
     {
@@ -930,6 +937,11 @@ RWTexture2D<float4> saida : register(u0);
     {
         DWORD pid = 0;
         GetWindowThreadProcessId(h, &pid);
+        pidBuffer = pid;
+        exeJogo = ExeDoProcesso(pid);
+        instalacao = EstadoInstalacao(exeJogo, Dll());
+        tentouInstalar = false;
+        erroInstalacao.clear();
         CarregaPerfil(h);
         painel.Ancora(h);
         painel.DefineJogo(h);
@@ -938,7 +950,7 @@ RWTexture2D<float4> saida : register(u0);
         if (fb.Abre(gpu, pid))
             r.ok = true; // o modulo ja esta no jogo (religou, ou e o jogo de teste)
         else
-            r = InjetaBuffer(pid, pasta + L"\\captura\\DLSS5Buffer.dll");
+            r = InjetaBuffer(pid, Dll());
         if (!r.ok)
         {
             estadoBuffer = "nao conectou: " + r.motivo;
@@ -947,6 +959,13 @@ RWTexture2D<float4> saida : register(u0);
         }
         if (!r.motivo.empty())
             Log("buffer", r.motivo);
+        if (instalacao == Instalacao::Desatualizada) // o overlay foi atualizado: a copia na pasta do jogo tambem
+        {
+            const std::string m = InstalaNoJogo(exeJogo, Dll());
+            instalacao = EstadoInstalacao(exeJogo, Dll());
+            Log("geracao", m.empty() ? "dxgi.dll da pasta do jogo atualizada (vale na proxima abertura do jogo)"
+                                     : "nao atualizou a dxgi.dll da pasta do jogo: " + m);
+        }
         IniciaSessao();
         buffer = true;
         alvoBuffer = h;
@@ -1986,34 +2005,30 @@ RWTexture2D<float4> saida : register(u0);
         e.geracaoPronta = buffer && fb.Conectada() && fb.GeracaoPronta();
         e.estadoGeracao = estadoGeracao;
         if (buffer && fb.Conectada() && fb.JogoVivo())
-            e.estadoGeracao = e.geracaoPronta
-                                  ? (cfg.geracao >= 2 ? "geração ligada (swapchain da AMD em uso)"
-                                                      : "geração desligada (o jogo abriu pelo overlay: liga aqui, sem reabrir)")
-                                  : (cfg.geracao >= 2 ? "este jogo não abriu pelo overlay: feche e reabra com \"Abrir jogo pelo "
-                                                        "overlay\" (a DLL entra uma vez, antes do DirectX; depois é só ajustar aqui)"
-                                                      : "");
         {
-            const std::wstring u = UltimoJogo();
-            e.ultimoJogo = u.empty() ? "" : Utf8(u.substr(u.find_last_of(L"\\/") + 1));
+            e.estadoGeracao =
+                e.geracaoPronta          ? (cfg.geracao >= 2 ? "geração ligada (swapchain da AMD em uso)"
+                                                             : "geração desligada (liga aqui, sem reabrir o jogo)")
+                : cfg.geracao < 2        ? ""
+                : instalacao == Instalacao::Outra
+                    ? "a pasta do jogo já tem uma dxgi.dll de outro programa (ReShade, OptiScaler?): não substituí; tire-a "
+                      "de lá para usar a geração"
+                : !erroInstalacao.empty() ? "não instalou na pasta do jogo: " + erroInstalacao
+                                          : "DLL instalada na pasta do jogo: feche e abra o jogo uma vez (pela Steam ou como "
+                                            "quiser); daí em diante ele já abre com ela e é só ajustar aqui";
         }
+        e.instaladoNoJogo = buffer && (instalacao == Instalacao::Nossa || instalacao == Instalacao::Desatualizada);
         painel.DefineMouseJogo(buffer && fb.Conectada() && fb.JogoVivo() ? fb.Cab() : nullptr);
         const AcoesPainel a = painel.Quadro(cfg, e);
-        if (a.abrirJogo)
+        if (a.removerDoJogo && !exeJogo.empty())
         {
-            wchar_t arq[MAX_PATH] = {};
-            OPENFILENAMEW of{sizeof of};
-            of.hwndOwner = painel.Janela();
-            of.lpstrFilter = L"Jogo (*.exe)\0*.exe\0";
-            of.lpstrFile = arq;
-            of.nMaxFile = MAX_PATH;
-            of.lpstrTitle = L"Abrir jogo com geração de quadros";
-            of.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-            if (GetOpenFileNameW(&of))
-                LancaJogo(arq);
+            const std::string m = RemoveDoJogo(exeJogo);
+            instalacao = EstadoInstalacao(exeJogo, Dll());
+            estadoGeracao = m.empty() ? "dxgi.dll tirada da pasta do jogo (está na Lixeira); a geração sai na próxima "
+                                        "abertura do jogo"
+                                      : m;
+            Log("geracao", estadoGeracao);
         }
-        if (a.abrirUltimo)
-            if (const std::wstring u = UltimoJogo(); !u.empty())
-                LancaJogo(u);
         // perfis (na ordem: salvar antes de carregar, para o "salvar e carregar")
         if (a.perfilSalvar)
             SalvaPerfil();
@@ -2575,6 +2590,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 try
                 {
                     app.VigiaLancamento(); // o jogo aberto pelo overlay: liga a captura de buffer quando a janela aparece
+                    if (!app.imagem && app.pastaReproducao.empty())
+                        app.VigiaGeracao(); // DLL na pasta do jogo: instala quando pedida, conecta sozinho
                     app.Painel_();
                 }
                 catch (const std::exception& e)

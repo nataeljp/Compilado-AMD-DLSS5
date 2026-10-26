@@ -50,6 +50,8 @@ struct Lancamento
 };
 inline void NomeLancamento(wchar_t* b, size_t n, uint32_t pid) { swprintf(b, n, L"Local\\DLSS5Ov.Lancamento.%u", pid); }
 inline void NomeEventoPronto(wchar_t* b, size_t n, uint32_t pid) { swprintf(b, n, L"Local\\DLSS5Ov.Pronto.%u", pid); }
+// o modulo esta neste processo (instalado na pasta do jogo como dxgi.dll, ou injetado): nao colocar outro
+inline void NomeModulo(wchar_t* b, size_t n, uint32_t pid) { swprintf(b, n, L"Local\\DLSS5Ov.Modulo.%u", pid); }
 // qual: L"cor", L"mov", L"prof", L"exp", L"edicao", L"cercaJogo", L"cercaOverlay"
 inline void NomeRecurso(wchar_t* b, size_t n, uint32_t pid, uint32_t geracao, const wchar_t* qual, uint32_t slot)
 {

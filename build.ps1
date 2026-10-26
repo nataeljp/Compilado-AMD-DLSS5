@@ -1,4 +1,4 @@
-﻿# Compila o DLSS5Overlay.exe (MSVC 2022, SDK 10.0.26100 com C++/WinRT). Saida em bin\.
+# Compila o DLSS5Overlay.exe (MSVC 2022, SDK 10.0.26100 com C++/WinRT). Saida em bin\.
 # O Dear ImGui (externo\imgui) e compilado uma vez em obj\imgui; os fontes do projeto, sempre.
 param([string]$Saida = '')
 $ErrorActionPreference = 'Stop'
@@ -17,7 +17,7 @@ if ($falta) {
 }
 $fontes = (Get-ChildItem "$raiz\src\*.cpp" | ForEach-Object { '"' + $_.FullName + '"' }) -join ' '
 $objsImgui = ($imgui | ForEach-Object { "`"$raiz\obj\imgui\$_.obj`"" }) -join ' '
-$libs = 'd3d12.lib d3d11.lib dxgi.lib dcomp.lib d3dcompiler.lib dwmapi.lib windowscodecs.lib ole32.lib windowsapp.lib user32.lib shell32.lib gdiplus.lib comdlg32.lib'
+$libs = 'd3d12.lib d3d11.lib dxgi.lib dcomp.lib d3dcompiler.lib dwmapi.lib windowscodecs.lib ole32.lib windowsapp.lib user32.lib shell32.lib gdiplus.lib'
 # icone do exe e das janelas ("NR" em fundo vermelho): recursos\DLSS5Overlay.rc -> obj\DLSS5Overlay.res
 cmd /c "`"$vs`" >nul 2>nul & rc /nologo /fo `"$raiz\obj\DLSS5Overlay.res`" `"$raiz\recursos\DLSS5Overlay.rc`"" 2>&1 | Where-Object { $_ -match 'error' }
 if ($LASTEXITCODE -ne 0) { "rc falhou"; exit 1 }

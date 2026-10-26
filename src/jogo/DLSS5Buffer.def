@@ -1,0 +1,24 @@
+; Exportacoes da DLSS5Buffer.dll: as da dxgi.dll do Windows (para quando ela esta na pasta do jogo como dxgi.dll;
+; injetada como DLSS5Buffer.dll ninguem as chama) e o marcador do modulo
+EXPORTS
+    CreateDXGIFactory = PxCreateDXGIFactory
+    CreateDXGIFactory1 = PxCreateDXGIFactory1
+    CreateDXGIFactory2 = PxCreateDXGIFactory2
+    ApplyCompatResolutionQuirking = PxApplyCompatResolutionQuirking
+    CompatString = PxCompatString
+    CompatValue = PxCompatValue
+    DXGID3D10CreateDevice = PxDXGID3D10CreateDevice
+    DXGID3D10CreateLayeredDevice = PxDXGID3D10CreateLayeredDevice
+    DXGID3D10GetLayeredDeviceSize = PxDXGID3D10GetLayeredDeviceSize
+    DXGID3D10RegisterLayers = PxDXGID3D10RegisterLayers
+    DXGIDeclareAdapterRemovalSupport = PxDXGIDeclareAdapterRemovalSupport
+    DXGIDisableVBlankVirtualization = PxDXGIDisableVBlankVirtualization
+    DXGIDumpJournal = PxDXGIDumpJournal
+    DXGIGetDebugInterface1 = PxDXGIGetDebugInterface1
+    DXGIReportAdapterConfiguration = PxDXGIReportAdapterConfiguration
+    PIXBeginCapture = PxPIXBeginCapture
+    PIXEndCapture = PxPIXEndCapture
+    PIXGetCaptureState = PxPIXGetCaptureState
+    SetAppCompatStringPointer = PxSetAppCompatStringPointer
+    UpdateHMDEmulationStatus = PxUpdateHMDEmulationStatus
+    DLSS5Ov_Modulo
