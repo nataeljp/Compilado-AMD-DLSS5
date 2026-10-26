@@ -369,7 +369,11 @@ std::wstring ExeDoProcesso(DWORD pid)
 }
 
 namespace {
-std::wstring DxgiDoJogo(const std::wstring& exe) { return exe.substr(0, exe.find_last_of(L"\\/")) + L"\\dxgi.dll"; }
+std::wstring NaPasta(const std::wstring& exe, const wchar_t* nome)
+{
+    return exe.substr(0, exe.find_last_of(L"\\/")) + L"\\" + nome;
+}
+const wchar_t* const kProxies[2] = {L"version.dll", L"dxgi.dll"}; // a preferida primeiro
 std::wstring AlvoDoJogo(const std::wstring& exe) { return exe.substr(0, exe.find_last_of(L"\\/")) + L"\\DLSS5Overlay.alvo"; }
 bool ParaLixeira(const std::wstring& arq)
 {
@@ -401,7 +405,79 @@ bool EhNossa(const std::vector<char>& v)
     static const char marca[] = "DLSS5Ov_Modulo"; // o nome exportado pelo modulo
     return std::search(v.begin(), v.end(), marca, marca + sizeof marca - 1) != v.end();
 }
+
+// as DLLs que o executavel importa (minusculas), lidas da tabela de importacao (so os cabecalhos, nao o arquivo todo)
+std::vector<std::string> ImportsDe(const std::wstring& exe)
+{
+    std::vector<std::string> r;
+    HANDLE h = CreateFileW(exe.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_EXISTING, 0, nullptr);
+    if (h == INVALID_HANDLE_VALUE)
+        return r;
+    auto le = [&](uint64_t pos, void* d, DWORD n) {
+        LARGE_INTEGER p;
+        p.QuadPart = LONGLONG(pos);
+        DWORD lidos = 0;
+        return SetFilePointerEx(h, p, nullptr, FILE_BEGIN) && ReadFile(h, d, n, &lidos, nullptr) ? lidos : 0ul;
+    };
+    IMAGE_DOS_HEADER dos{};
+    IMAGE_NT_HEADERS64 nt{};
+    if (le(0, &dos, sizeof dos) == sizeof dos && dos.e_magic == IMAGE_DOS_SIGNATURE &&
+        le(uint64_t(dos.e_lfanew), &nt, sizeof nt) == sizeof nt && nt.Signature == IMAGE_NT_SIGNATURE &&
+        nt.OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC && nt.FileHeader.NumberOfSections)
+    {
+        std::vector<IMAGE_SECTION_HEADER> sec(nt.FileHeader.NumberOfSections);
+        const uint64_t posSec = uint64_t(dos.e_lfanew) + offsetof(IMAGE_NT_HEADERS64, OptionalHeader) +
+                                nt.FileHeader.SizeOfOptionalHeader;
+        const DWORD tam = DWORD(sec.size() * sizeof(IMAGE_SECTION_HEADER));
+        if (le(posSec, sec.data(), tam) == tam)
+        {
+            auto noArquivo = [&](DWORD rva) -> uint64_t {
+                for (const auto& s : sec)
+                    if (rva >= s.VirtualAddress && rva < s.VirtualAddress + std::max(s.Misc.VirtualSize, s.SizeOfRawData))
+                        return uint64_t(s.PointerToRawData) + (rva - s.VirtualAddress);
+                return 0;
+            };
+            const IMAGE_DATA_DIRECTORY dd = nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+            uint64_t pos = dd.VirtualAddress ? noArquivo(dd.VirtualAddress) : 0;
+            for (int i = 0; pos && i < 1024; ++i, pos += sizeof(IMAGE_IMPORT_DESCRIPTOR))
+            {
+                IMAGE_IMPORT_DESCRIPTOR d{};
+                if (le(pos, &d, sizeof d) != sizeof d || !d.Name)
+                    break;
+                char nome[64] = {};
+                if (const uint64_t pn = noArquivo(d.Name); pn && le(pn, nome, sizeof nome - 1))
+                {
+                    std::string s(nome);
+                    for (auto& ch : s)
+                        ch = char(tolower((unsigned char)ch));
+                    r.push_back(s);
+                }
+            }
+        }
+    }
+    CloseHandle(h);
+    return r;
+}
 } // namespace
+
+std::wstring NomeProxy(const std::wstring& exe)
+{
+    const std::vector<std::string> imp = ImportsDe(exe);
+    auto importa = [&](const wchar_t* n) {
+        return imp.empty() || std::find(imp.begin(), imp.end(), Utf8(n)) != imp.end();
+    };
+    auto livre = [&](const wchar_t* n) {
+        const std::vector<char> v = LeArquivo(NaPasta(exe, n));
+        return v.empty() || EhNossa(v);
+    };
+    // um nome que o executavel importa (carregado antes do DirectX) e livre (ou ja o nosso); version.dll primeiro
+    for (const wchar_t* n : kProxies)
+        if (importa(n) && livre(n))
+            return n;
+    // nenhum importado: a dxgi.dll (o DirectX a carrega pelo nome; a da pasta do jogo vem antes da do sistema)
+    return livre(L"dxgi.dll") ? L"dxgi.dll" : L"";
+}
 
 void GaranteAlvo(const std::wstring& exe)
 {
@@ -436,48 +512,70 @@ Instalacao EstadoInstalacao(const std::wstring& exe, const std::wstring& dll)
 {
     if (exe.empty())
         return Instalacao::Nenhuma;
-    const std::vector<char> la = LeArquivo(DxgiDoJogo(exe));
-    if (la.empty())
-        return Instalacao::Nenhuma;
-    if (!EhNossa(la))
-        return Instalacao::Outra;
-    return la == LeArquivo(dll) ? Instalacao::Nossa : Instalacao::Desatualizada;
+    const std::wstring nome = NomeProxy(exe);
+    bool nossa = false, noLugar = false, outraCopia = false;
+    for (const wchar_t* n : kProxies)
+    {
+        const std::vector<char> v = LeArquivo(NaPasta(exe, n));
+        if (v.empty() || !EhNossa(v))
+            continue;
+        nossa = true;
+        if (nome == n)
+            noLugar = v == LeArquivo(dll);
+        else
+            outraCopia = true; // instalacao antiga com o outro nome
+    }
+    if (noLugar && !outraCopia)
+        return Instalacao::Nossa;
+    if (nossa)
+        return Instalacao::Desatualizada;
+    return nome.empty() ? Instalacao::Outra : Instalacao::Nenhuma;
 }
 
 std::string InstalaNoJogo(const std::wstring& exe, const std::wstring& dll)
 {
     if (!Existe(dll))
         return "DLSS5Buffer.dll nao encontrada (" + Utf8(dll) + ")";
-    const std::wstring dst = DxgiDoJogo(exe);
-    const Instalacao e = EstadoInstalacao(exe, dll);
-    if (e == Instalacao::Outra)
-        return "ja existe uma dxgi.dll de outro programa na pasta do jogo (ReShade, OptiScaler?): nao substitui";
+    const std::wstring nome = NomeProxy(exe);
+    if (nome.empty())
+        return "a pasta do jogo ja tem version.dll e dxgi.dll de outros programas (Cyber Engine Tweaks, ReShade, OptiScaler?): "
+               "nao substitui";
     GaranteAlvo(exe); // antes da DLL: ela nunca age fora do jogo
-    if (e == Instalacao::Nossa)
-        return "";
-    if (CopyFileW(dll.c_str(), dst.c_str(), FALSE))
-        return "";
-    // em uso (o jogo esta aberto com a versao antiga): o arquivo carregado pode ser renomeado; a nova vale ao reabrir
-    const std::wstring velha = dst + L".antiga." + std::to_wstring(GetTickCount64());
-    if (e == Instalacao::Desatualizada && MoveFileExW(dst.c_str(), velha.c_str(), 0) && CopyFileW(dll.c_str(), dst.c_str(), FALSE))
-        return "";
-    return Fmt("nao consegui copiar para a pasta do jogo (erro %lu; pasta protegida? abra o overlay como administrador)",
-               GetLastError());
+    const std::wstring dst = NaPasta(exe, nome.c_str());
+    const std::vector<char> atual = LeArquivo(dst);
+    if (atual.empty() || atual != LeArquivo(dll))
+        if (!CopyFileW(dll.c_str(), dst.c_str(), FALSE))
+        {
+            // em uso (o jogo esta aberto com a versao antiga): o arquivo carregado pode ser renomeado; a nova vale ao reabrir
+            const std::wstring velha = dst + L".antiga." + std::to_wstring(GetTickCount64());
+            if (!(EhNossa(atual) && MoveFileExW(dst.c_str(), velha.c_str(), 0) && CopyFileW(dll.c_str(), dst.c_str(), FALSE)))
+                return Fmt("nao consegui copiar para a pasta do jogo (erro %lu; pasta protegida? abra o overlay como "
+                           "administrador)",
+                           GetLastError());
+        }
+    // a copia com o outro nome (instalacao antiga) vai para a Lixeira: uma so no jogo
+    for (const wchar_t* n : kProxies)
+        if (nome != n && EhNossa(LeArquivo(NaPasta(exe, n))))
+            ParaLixeira(NaPasta(exe, n));
+    return "";
 }
 
 std::string RemoveDoJogo(const std::wstring& exe)
 {
-    const std::wstring dst = DxgiDoJogo(exe);
-    if (!EhNossa(LeArquivo(dst)))
-        return "a dxgi.dll da pasta do jogo nao e a do overlay: nao mexi";
-    // para a Lixeira (desfaz), nunca apagada de vez
-    if (ParaLixeira(dst))
-    {
-        if (Existe(AlvoDoJogo(exe)))
-            ParaLixeira(AlvoDoJogo(exe));
-        return "";
-    }
-    return "nao consegui tirar a dxgi.dll (o jogo esta aberto? feche e tente de novo)";
+    bool tinha = false, falhou = false;
+    for (const wchar_t* n : kProxies)
+        if (EhNossa(LeArquivo(NaPasta(exe, n))))
+        {
+            tinha = true;
+            falhou |= !ParaLixeira(NaPasta(exe, n)); // para a Lixeira (desfaz), nunca apagada de vez
+        }
+    if (!tinha)
+        return "a pasta do jogo nao tem a DLL do overlay (version.dll / dxgi.dll): nao mexi";
+    if (falhou)
+        return "nao consegui tirar a DLL do overlay (o jogo esta aberto? feche e tente de novo)";
+    if (Existe(AlvoDoJogo(exe)))
+        ParaLixeira(AlvoDoJogo(exe));
+    return "";
 }
 
 DWORD ProcuraProcesso(const std::wstring& nomeExe, DWORD exceto)

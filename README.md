@@ -71,11 +71,14 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
     verdade entre os do jogo, com o movimento, a profundidade e a câmera que o jogo manda ao FSR. A interpolação parte do
     backbuffer final, então os quadros gerados já levam a edição da rede. A DLL tem de entrar antes do DirectX: ao
     ligar a geração com o jogo conectado, o overlay copia a `DLSS5Buffer.dll` para a pasta do executável do jogo como
-    `dxgi.dll` (as funções da dxgi do Windows seguem para ela por `src\jogo\ProxyDxgi.asm`) e pede para reabrir o jogo
-    **uma vez**. Daí em diante o jogo já abre com ela (pela Steam ou como for), o swapchain dele vira o da AMD na
-    criação, o overlay conecta sozinho (modo buffer) e a geração liga, desliga e muda só pelo painel. Uma `dxgi.dll` de
-    outro programa (ReShade, OptiScaler) nunca é substituída; "Remover do jogo" manda a nossa para a Lixeira; overlay
-    atualizado atualiza a cópia do jogo ao conectar. Os shaders da AMD e os do módulo compilam em segundo plano (no
+    `version.dll` — ou `dxgi.dll` —, uma DLL que o executável importa (lida da tabela de importação dele), então o Windows
+    a carrega antes do DirectX em toda abertura; as funções da DLL do Windows de mesmo nome seguem para ela por
+    `src\jogo\ProxyDxgi.asm`. Como `version.dll` ela engancha `CreateDXGIFactory*` na dxgi do Windows (já carregada, ou
+    pelo aviso de carga do carregador). O overlay pede para reabrir o jogo **uma vez**; daí em diante o jogo já abre com
+    ela (pela Steam ou como for), o swapchain dele vira o da AMD na criação, o overlay conecta sozinho (modo buffer) e a
+    geração liga, desliga e muda só pelo painel. A DLL de outro programa (Cyber Engine Tweaks usa `version.dll`; ReShade
+    e OptiScaler, `dxgi.dll`) nunca é substituída; "Remover do jogo" manda a nossa para a Lixeira; overlay atualizado
+    atualiza a cópia do jogo ao conectar (e uma instalação antiga com o outro nome vai para a Lixeira). Os shaders da AMD e os do módulo compilam em segundo plano (no
     primeiro quadro do FSR a compilação parava o jogo por 14–25 s). Medido no jogo de teste com a rede ligada: 27
     quadros do jogo + 27 gerados por segundo, cada gerado exatamente entre os dois reais (24,6 dB para cada lado).
     Desligue a geração do próprio jogo e o AFMF do driver.
@@ -85,15 +88,31 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
     (só a última guarda o quadro atual como anterior) e o swapchain apresenta até 3 gerados por quadro do jogo, em ordem,
     com o intervalo do jogo dividido por N. Com t = 0,5 as contas são as da AMD: o 2x não muda. O módulo escreve no log o
     ritmo real das apresentações (intervalo médio, desvio e maior).
-  - **Limite pela taxa do monitor**: a tela nunca recebe mais quadros por segundo que a taxa atual do monitor (acima dela
-    cada atualização mostra pedaços de vários quadros: rasgo e fantasma, como o TLOU2 a 4x num monitor de 60 Hz). O N em
-    uso cai até caber (jogo × N ≤ taxa, 5% de folga) e só sobe com folga, sem ficar trocando; o painel mostra o pedido, o
-    em uso, a taxa e a maior que o monitor aceita (60 Hz com o jogo a 60 q/s: nenhum gerado cabe — suba a taxa no Windows).
-  - **Só no executável do jogo**: na pasta do jogo a `dxgi.dll` é carregada por todo programa dali (o relatório de erros
+  - **Cada Present com o próprio quadro**: o preparo (profundidade e movimento dilatados) é gravado no despacho do FSR e a
+    AMD gera no Present. Um motor com a thread de render à frente grava o quadro seguinte antes do Present do atual — casar
+    pelo último preparado juntava a imagem de um quadro com o movimento do seguinte (gerado no lugar errado: fantasma e o
+    movimento indo e voltando). Os preparos ficam numa fila (3 jogos de recursos) e cada Present usa o mais novo já
+    **enviado** à GPU (gancho de `ExecuteCommandLists` desde o primeiro quadro). Medido no jogo de teste `--adiantado`
+    (grava à frente, envia em ordem): a DLL nova gera o mesmo quadro que o motor normal; a antiga, outro. O log diz
+    quantos quadros o jogo grava à frente.
+  - **Limite pela taxa do monitor**: a tela nunca recebe mais quadros por segundo que a taxa do monitor (acima dela cada
+    atualização mostra pedaços de vários quadros). O N em uso cai até caber (jogo × N ≤ taxa, 5% de folga) e só sobe com
+    folga. A taxa é a física do sinal (`QueryDisplayConfig` com `QDC_VIRTUAL_REFRESH_RATE_AWARE`): com a taxa dinâmica do
+    Windows 11 a área de trabalho fica "virtual" a 60 Hz e a tela segue a 120 — `EnumDisplaySettings` só via os 60 e a
+    geração saía desligada num monitor de 120 Hz com FreeSync. Lida pelo vigia, fora da thread de render.
+  - **Só no executável do jogo**: na pasta do jogo a DLL é carregada por todo programa dali (o relatório de erros
     `crs-*.exe` do TLOU2, lançadores). O módulo só age nos executáveis listados em `DLSS5Overlay.alvo` (escrito pelo
-    overlay na instalação); nos outros ela só repassa a dxgi do Windows, sem ganchos nem log.
-  - **Troca de swapchain**: quando o jogo solta o swapchain e cria outro (modo de tela, HDR), o módulo solta o antigo da
-    AMD antes — vivo, ele ocupava a janela e a criação do jogo falhava ("problema com o driver de vídeo").
+    overlay na instalação); nos outros ela só repassa a DLL do Windows, sem ganchos nem log.
+  - **Swapchain só do jogo**: o módulo não segura o swapchain da AMD; quando o jogo o solta (modo de tela, HDR, saída) a
+    AMD avisa antes de destruir (`ffxDlss5AoDestruirDX12`) e o contexto sai junto — preso, ele ocupava a janela (a
+    criação do novo falhava) e na saída as threads da AMD morriam com ele vivo.
+  - **Saída do processo**: carregada da pasta do jogo, a DLL entra antes do d3d12 e sai depois do driver. Os globais com
+    objetos do D3D12 (o cliente do overlay, os shaders compilados) nunca são destruídos — o destrutor deles chamava o
+    driver que já tinha saído e o `amdxc64.dll` abortava o processo (`0xc0000409`) a cada fechamento do jogo.
+  - **Diagnóstico no log** (`DLSS5Buffer.log` ao lado da DLL): a cada 5 s o maior intervalo entre quadros e os engasgos
+    (> 2x a média), o ritmo das apresentações e quantos quadros o jogo grava à frente; o **vigia** grava onde cada thread
+    está parada se os quadros param por 4 s ou a janela trava (módulo + deslocamento; os da DLL saem pelo
+    `DLSS5Buffer.map` gerado na compilação); acessos inválidos (até 5) com a pilha.
   - O jogo espera a edição do quadro anterior (1 quadro, como a NVIDIA roda o DLSS 5: a rede dentro do tempo do quadro)
     e a soma pelo movimento acumulado desde o quadro que a rede viu (nenhum quadro pula sem o movimento dele ser
     contado: era o "liga/desliga"), e só para a
@@ -200,7 +219,7 @@ Os parâmetros do DLSS 5 seguem os nomes que a NVIDIA expõe no NGX (os mesmos d
 | `passes` | 1..3 | quantas vezes a rede inteira roda por quadro (1 = normal); vale ao religar |
 | `profundidade` | 0..4 | blocos da rede grande: 0 = 71, 1 = 68 (sem 42/43/46), 2 = 63 (sem 40–47), 3 = 55 (e sem 23–30), 4 = 47 (e sem o ViT 31–38; só com `reusoVit` desligado). Só blocos residuais saem; muda na hora; só no `config.json`. Não se aplica à rede pequena, que é outro modelo |
 | `movimento` | true/false | movimento simulado por fluxo óptico (as guias do histórico da própria rede na captura de vídeo) |
-| `geracaoQuadros` | 0/2/3/4 | captura de buffer: geração de quadros da AMD (0 desligada, 2 = 2x .. 4 = 4x); a DLL vai para a pasta do jogo (dxgi.dll) |
+| `geracaoQuadros` | 0/2/3/4 | captura de buffer: geração de quadros da AMD (0 desligada, 2 = 2x .. 4 = 4x); a DLL vai para a pasta do jogo (version.dll ou dxgi.dll) |
 | `ritmo`, `quadroGerado` | 1..4, 0/1 | só na captura de vídeo: **quadros gerados** — a rede edita 1 de cada N quadros e os N−1 seguintes são gerados dos processados (nunca um quadro novo com edição velha): 0 repetido (na captura de buffer o processado aparece 1 quadro depois), 1 mesclado (50/50, 40/60, 30/70 do anterior/novo; o novo aparece N quadros depois) |
 | `reusoVit` | true/false | reuso adaptativo do ViT do runtime lmxxf (vale ao reabrir) |
 | `temporalRede` | 0..3 | histórico da própria rede (`DLSS5_TEMPORAL_MODE` do runtime; vale ao reabrir, força 1 passe e desliga o `reusoVit`). 1 = a entrada de histórico da rede recebe a resposta anterior trazida pelo movimento (captura de buffer: movimento e profundidade do jogo; captura de vídeo: fluxo óptico) e a cabeça de histórico do bloco 70 decide a mistura; precisa do runtime deste branch (`LmxxfNrSetHistoryGuides`) e do `post70-history-head.f16` que o `monta_runtime.ps1` extrai. 2 e 3 = suavização de baixa frequência / realce na saída do runtime |

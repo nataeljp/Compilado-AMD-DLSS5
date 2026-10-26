@@ -382,7 +382,7 @@ bool Compila(const char* entrada, ID3DBlob** b, std::string& erro)
 // os shaders do modulo, compilados em segundo plano desde o carregamento da DLL: no primeiro quadro do FSR (na thread
 // de renderizacao do jogo) a compilacao levava 14-25 s com o jogo parado
 const char* const kEntradas[5] = {"CSAcum", "CSProf", "CSCor", "CSLimpaRecon", "CSRecon"};
-Microsoft::WRL::ComPtr<ID3DBlob> g_blobs[5];
+ID3DBlob* g_blobs[5] = {}; // nunca soltos: na saida do processo o d3dcompiler ja saiu antes desta DLL (como dxgi.dll ela sai por ultimo)
 std::string g_erroCompila;
 std::atomic<int> g_compila{0}; // 0 nada, 1 compilando, 2 pronto, 3 falhou
 std::once_flag g_compilaUma;
@@ -470,7 +470,7 @@ bool ClienteBuffer::Inicia(ID3D12Device* d, const char* exe)
     Com<ID3D12PipelineState>* pso[5] = {&psoMov, &psoProf, &psoCor, &psoLimpaRecon, &psoRecon};
     for (int i = 0; i < 5; ++i)
     {
-        ID3DBlob* b = g_blobs[i].Get();
+        ID3DBlob* b = g_blobs[i];
         D3D12_COMPUTE_PIPELINE_STATE_DESC pd{};
         pd.pRootSignature = raiz.Get();
         pd.CS = {b->GetBufferPointer(), b->GetBufferSize()};

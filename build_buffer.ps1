@@ -1,4 +1,4 @@
-﻿# Captura de buffer: compila o jogo de teste (ferramentas\jogo_teste) e a DLSS5Buffer.dll (o modulo que o overlay coloca
+# Captura de buffer: compila o jogo de teste (ferramentas\jogo_teste) e a DLSS5Buffer.dll (o modulo que o overlay coloca
 # no jogo aberto). Saida: bin\captura\DLSS5Buffer.dll e obj\JogoTeste.exe (ou -Saida <pasta>).
 param([string]$Saida = '', [string]$JogoTeste = '')
 $ErrorActionPreference = 'Stop'
@@ -24,7 +24,7 @@ if ($modulo) {
     $inc = "/I`"$raiz\externo\ffx`" /I`"$raiz\externo\detours`" $ffxInc"
     # as funcoes da dxgi.dll do Windows (a DLL instalada na pasta do jogo como dxgi.dll) e as exportacoes
     $asm = "ml64 /nologo /c /Fo`"$raiz\obj\buffer\ProxyDxgi.obj`" `"$raiz\src\jogo\ProxyDxgi.asm`""
-    $cl = "$asm && cl $flags /LD $inc /Fo`"$raiz\obj\buffer\\`" /Fe`"$Saida\DLSS5Buffer.dll`" $fontes $cli `"$raiz\obj\buffer\ProxyDxgi.obj`" /link /DEF:`"$raiz\src\jogo\DLSS5Buffer.def`" /DELAYLOAD:dxgi.dll delayimp.lib d3d12.lib dxgi.lib user32.lib `"$raiz\externo\detours\detours.lib`" $ffxLibs"
+    $cl = "$asm && cl $flags /LD $inc /Fo`"$raiz\obj\buffer\\`" /Fe`"$Saida\DLSS5Buffer.dll`" $fontes $cli `"$raiz\obj\buffer\ProxyDxgi.obj`" /link /MAP:`"$Saida\DLSS5Buffer.map`" /DEF:`"$raiz\src\jogo\DLSS5Buffer.def`" /DELAYLOAD:dxgi.dll delayimp.lib d3d12.lib dxgi.lib user32.lib `"$raiz\externo\detours\detours.lib`" $ffxLibs"
     cmd /c "`"$vs`" >nul 2>nul & $cl" 2>&1 | Where-Object { $_ -match 'error|warning C4[0-9]{3}|LNK' } | Select-Object -First 30
     if ($LASTEXITCODE -ne 0) { "DLSS5Buffer.dll falhou ($LASTEXITCODE)"; exit 1 }
     "ok: $Saida\DLSS5Buffer.dll"

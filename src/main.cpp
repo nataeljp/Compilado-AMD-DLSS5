@@ -863,7 +863,8 @@ RWTexture2D<float4> saida : register(u0);
         tentouInstalar = true;
         erroInstalacao = InstalaNoJogo(exeJogo, Dll());
         instalacao = EstadoInstalacao(exeJogo, Dll());
-        Log("geracao", erroInstalacao.empty() ? "DLL instalada na pasta do jogo como dxgi.dll: " + Utf8(exeJogo)
+        Log("geracao", erroInstalacao.empty() ? "DLL instalada na pasta do jogo como " + Utf8(NomeProxy(exeJogo)) + ": " +
+                                                    Utf8(exeJogo)
                                               : "nao instalou na pasta do jogo: " + erroInstalacao);
     }
     static HWND JanelaDoProcesso(DWORD pid)
@@ -965,8 +966,9 @@ RWTexture2D<float4> saida : register(u0);
         {
             const std::string m = InstalaNoJogo(exeJogo, Dll());
             instalacao = EstadoInstalacao(exeJogo, Dll());
-            Log("geracao", m.empty() ? "dxgi.dll da pasta do jogo atualizada (vale na proxima abertura do jogo)"
-                                     : "nao atualizou a dxgi.dll da pasta do jogo: " + m);
+            Log("geracao", m.empty() ? "DLL da pasta do jogo atualizada (" + Utf8(NomeProxy(exeJogo)) +
+                                           "; vale na proxima abertura do jogo)"
+                                     : "nao atualizou a DLL da pasta do jogo: " + m);
         }
         IniciaSessao();
         buffer = true;
@@ -2028,8 +2030,8 @@ RWTexture2D<float4> saida : register(u0);
                                                              : std::string("geração desligada (liga aqui, sem reabrir o jogo)"))
                 : cfg.geracao < 2        ? ""
                 : instalacao == Instalacao::Outra
-                    ? "a pasta do jogo já tem uma dxgi.dll de outro programa (ReShade, OptiScaler?): não substituí; tire-a "
-                      "de lá para usar a geração"
+                    ? "a pasta do jogo já tem version.dll e dxgi.dll de outros programas (Cyber Engine Tweaks, ReShade, "
+                      "OptiScaler?): não substituí; tire uma delas para usar a geração"
                 : !erroInstalacao.empty() ? "não instalou na pasta do jogo: " + erroInstalacao
                                           : "DLL instalada na pasta do jogo: feche e abra o jogo uma vez (pela Steam ou como "
                                             "quiser); daí em diante ele já abre com ela e é só ajustar aqui";
@@ -2041,8 +2043,8 @@ RWTexture2D<float4> saida : register(u0);
         {
             const std::string m = RemoveDoJogo(exeJogo);
             instalacao = EstadoInstalacao(exeJogo, Dll());
-            estadoGeracao = m.empty() ? "dxgi.dll tirada da pasta do jogo (está na Lixeira); a geração sai na próxima "
-                                        "abertura do jogo"
+            estadoGeracao = m.empty() ? "DLL do overlay tirada da pasta do jogo (está na Lixeira); a geração sai na "
+                                        "próxima abertura do jogo"
                                       : m;
             Log("geracao", estadoGeracao);
         }

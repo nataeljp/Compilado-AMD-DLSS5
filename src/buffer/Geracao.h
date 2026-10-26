@@ -38,18 +38,20 @@ class Geracao
     HRESULT CriaSwapchain(IDXGIFactory* fabrica, ID3D12CommandQueue* fila, HWND janela, const DXGI_SWAP_CHAIN_DESC1* d,
                           const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* tela, IDXGISwapChain1** saida);
     HRESULT CriaSwapchain(IDXGIFactory* fabrica, ID3D12CommandQueue* fila, DXGI_SWAP_CHAIN_DESC* d, IDXGISwapChain** saida);
+    // o swapchain da AMD e so do jogo (o modulo nao o segura): quando o jogo o solta (troca de modo de tela, HDR, saida),
+    // a AMD avisa antes de destruir e o contexto sai junto -- preso, ele ocupava a janela (a criacao do novo falhava) e
+    // na saida do processo as threads da AMD morriam com ele vivo (o driver caia em amdxc64.dll)
     bool TemSwapchain() const;
-    // o jogo ja soltou o swapchain da AMD (so a referencia do modulo o segura)
-    bool SwapchainSolto() const;
-    // solta o swapchain da AMD e o contexto: o jogo vai criar outro (troca de modo de tela, HDR...). Com o antigo vivo a
-    // janela continua ocupada e a criacao do novo falha (E_ACCESSDENIED: o "problema com o driver de video" do TLOU2)
-    void SoltaSwapchain();
     // a cada quadro, na lista do jogo (antes do Present): prepara a interpolacao com a profundidade e o movimento deste
     // quadro e configura o swapchain. n = quadros apresentados por quadro do jogo (2..4: n - 1 gerados entre ele e o
     // anterior, em t = 1/n, 2/n...); 0/1 = desligada, o swapchain so apresenta os quadros do jogo. Muda a qualquer quadro.
     // A tela nunca recebe mais quadros por segundo que a taxa do monitor (acima dela cada atualizacao mostra pedacos de
     // varios quadros: rasgo + fantasma): o N em uso (EmUso) cai ate caber
     bool Quadro(ID3D12GraphicsCommandList* c, const QuadroGeracao& q, uint32_t n);
+    // ExecuteCommandLists do jogo (gancho do modulo): a lista com o preparo de um quadro foi para a GPU. A apresentacao
+    // usa o preparo mais novo ja enviado -- o motor pode gravar o quadro seguinte antes do Present deste, mas so o envia
+    // depois. Sem esta informacao (jogo de teste direto), a ordem de gravacao
+    void Submetido(ID3D12CommandList* const* l, UINT n);
     const char* UltimoErro() const;
     uint64_t Gerados() const; // quadros gerados ate aqui (cada chamada da AMD gera um)
     // o contexto da AMD (compilado em segundo plano a partir do primeiro quadro): 0 nada, 1 compilando, 2 pronto,
@@ -58,7 +60,13 @@ class Geracao
     double MsCompilacao() const;
     // o ritmo das apresentacoes do swapchain da AMD desde a ultima leitura: intervalo medio, desvio e maior (ms)
     uint32_t Ritmo(double& mediaMs, double& desvioMs, double& maxMs) const;
+    // a taxa do monitor, medida FORA da thread de render (consultar o monitor disputa trava com o DirectX: engasgo e ate
+    // bloqueio). Sem ela, sem limite
+    void DefineTaxa(uint32_t hz, uint32_t hzMax);
     uint32_t EmUso() const;    // quadros apresentados por quadro do jogo de fato (1 = sem geracao)
+    // desde a ultima leitura: apresentacoes com geracao, quantos quadros o jogo ja tinha preparado a frente de cada uma
+    // (media e maior) e quantas ficaram sem o preparo do proprio quadro
+    uint32_t Fila(double& mediaAFrente, uint64_t& maxAFrente, uint64_t& semPreparo) const;
     uint32_t Hz() const;       // a taxa atual do monitor da janela do jogo (0 = desconhecida)
     uint32_t HzMaximo() const; // a maior que ele aceita nesta resolucao
     double FpsJogo() const;    // quadros do jogo por segundo (entre as chamadas de Quadro)

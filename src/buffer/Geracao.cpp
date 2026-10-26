@@ -6,29 +6,33 @@
 #include <wrl/client.h>
 #include <algorithm>
 #include <atomic>
+#include <deque>
+#include <mutex>
 #include <chrono>
 #include <thread>
 #include <cstdio>
 #include <cstdlib>
 #include <cwchar>
 
-// o swapchain da AMD com externo\ffx_multiquadro.py: o ritmo das apresentacoes (le e zera)
+// o swapchain da AMD com externo\ffx_multiquadro.py: o ritmo das apresentacoes (le e zera) e o aviso de destruicao
 extern "C" void ffxDlss5RitmoDX12(double* mediaMs, double* desvioMs, double* maxMs, uint32_t* n);
+extern "C" FfxErrorCode ffxDlss5AoDestruirDX12(FfxSwapchain gameSwapChain, void (*aviso)(void*), void* ctx);
 
 namespace dlss5ov {
 
 namespace {
 // recursos compartilhados entre o fluxo optico e a interpolacao (os do provedor da AMD, sem o upscaler): o vetor e a
 // deteccao de corte de cena do fluxo optico; profundidade e movimento dilatados e a profundidade anterior reconstruida,
-// dois jogos (um por quadro em voo)
+// tres jogos (o jogo pode preparar ate 2 quadros a frente do que apresenta)
+constexpr int kJogos = 3;
 enum
 {
     R_FLUXO,
     R_CORTE,
     R_PROF_DIL,
-    R_MOV_DIL = R_PROF_DIL + 2,
-    R_PROF_REC = R_MOV_DIL + 2,
-    R_N = R_PROF_REC + 2
+    R_MOV_DIL = R_PROF_DIL + kJogos,
+    R_PROF_REC = R_MOV_DIL + kJogos,
+    R_N = R_PROF_REC + kJogos
 };
 
 FfxResourceStates Estado(D3D12_RESOURCE_STATES s)
@@ -59,6 +63,7 @@ FfxResourceStates Estado(D3D12_RESOURCE_STATES s)
 
 struct Geracao::Impl
 {
+    std::mutex mx; // Quadro (thread de render do jogo) x o aviso de destruicao (a thread que solta o swapchain)
     ID3D12Device* dev = nullptr;
     IDXGISwapChain4* sc = nullptr;
     FfxSwapchain ffxSc = nullptr;
@@ -83,9 +88,23 @@ struct Geracao::Impl
     FfxResourceInternal rec[R_N] = {};
     bool criado[R_N] = {};
 
-    uint32_t vez = 0;      // qual jogo de recursos dilatados e o deste quadro
     uint64_t quadro = 0;   // frameID: sobe exatamente 1 por quadro (outro passo reinicia a geracao da AMD)
-    FfxFrameInterpolationPrepareDescription prep[2] = {};
+    // Os quadros preparados (profundidade e movimento dilatados, no despacho do FSR) esperam a apresentacao deles, em
+    // ordem: o motor pode preparar o quadro seguinte antes de apresentar este (thread de render a frente), e a AMD so
+    // gera no Present -- casar pelo ultimo preparado juntava a imagem de um quadro com o movimento do seguinte (gerado no
+    // lugar errado: fantasma e o movimento indo e voltando)
+    struct Preparado
+    {
+        uint64_t id;
+        FfxFrameInterpolationPrepareDescription pd;
+        ID3D12CommandList* lista;  // a lista do jogo em que o preparo foi gravado
+        uint64_t enviado;          // ordem de envio a GPU (0 = ainda nao)
+    };
+    uint64_t ordemEnvio = 0;
+    bool comEnvio = false; // o gancho de ExecuteCommandLists informa os envios
+    std::mutex filaMx; // so a fila (nunca segurado em chamada da AMD: o Present dela segura as travas dela e chama Gera)
+    std::deque<Preparado> fila;
+    uint64_t aFrenteSoma = 0, aFrenteN = 0, aFrenteMax = 0, semPreparo = 0;
     uint64_t gerados = 0;
     uint64_t chamadas = 0; // apresentacoes com geracao (cada uma gera n - 1)
 
@@ -93,10 +112,8 @@ struct Geracao::Impl
     // (trocar entre 1 e 2 liga e desliga o swapchain da AMD: nada de ficar trocando)
     std::chrono::steady_clock::time_point tAnt{}, trocaDesde{};
     double msJogo = 0;
-    uint32_t hz = 0, hzMax = 0, nEmUso = 0;
-    ULONGLONG hzQuando = 0;
-    std::wstring hzMonitor;
-    DWORD hzW = 0, hzH = 0;
+    std::atomic<uint32_t> hz{0}, hzMax{0}; // DefineTaxa (outra thread)
+    uint32_t nEmUso = 0;
     void Mede();
     uint32_t NEmUso(uint32_t pedido);
 
@@ -122,6 +139,8 @@ struct Geracao::Impl
         });
     }
     static FfxErrorCode Gera(const FfxFrameGenerationDispatchDescription* d, void* ctx);
+    static void AoDestruir(void* ctx);
+    void Adota(FfxSwapchain s, ID3D12CommandQueue* fila);
 
     // teste: um quadro gerado e o real ao lado (DLSS5_GERACAO_DUMP)
     void Despejo(const FfxFrameGenerationDispatchDescription* d);
@@ -191,7 +210,7 @@ bool Geracao::Impl::Cria()
     criado[R_CORTE] = true;
     FfxFrameInterpolationSharedResourceDescriptions fr{};
     ffxFrameInterpolationGetSharedResourceDescriptions(&fic, &fr);
-    for (int i = 0; i < 2; ++i)
+    for (int i = 0; i < kJogos; ++i)
     {
         wchar_t nome[3][96];
         FfxCreateResourceDescription d[3] = {fr.dilatedDepth, fr.dilatedMotionVectors, fr.reconstructedPrevNearestDepth};
@@ -214,7 +233,48 @@ bool Geracao::Impl::Cria()
 FfxErrorCode Geracao::Impl::Gera(const FfxFrameGenerationDispatchDescription* d, void* ctx)
 {
     Impl* p = static_cast<Impl*>(ctx);
-    const FfxFrameInterpolationPrepareDescription& pd = p->prep[d->frameID & 1];
+    // o quadro deste backbuffer: o preparado mais antigo ainda nao apresentado (a apresentacao segue a ordem dos quadros)
+    Preparado pr{};
+    {
+        std::lock_guard<std::mutex> lk(p->filaMx);
+        // com os envios: o preparo mais novo ja enviado a GPU (a imagem deste Present saiu das listas enviadas antes
+        // dele); os mais velhos que ele saem (quadros que nunca foram apresentados). Sem: o mais antigo gravado
+        size_t k = p->fila.size();
+        if (p->comEnvio)
+        {
+            for (size_t i = 0; i < p->fila.size(); ++i)
+                if (p->fila[i].enviado && (k == p->fila.size() || p->fila[i].id > p->fila[k].id))
+                    k = i;
+        }
+        else if (!p->fila.empty())
+            k = 0;
+        if (k == p->fila.size())
+        {
+            ++p->semPreparo;
+            return FFX_ERROR_INVALID_ARGUMENT; // sem o movimento deste quadro: a apresentacao vai sem gerado
+        }
+        pr = p->fila[k];
+        uint64_t maisNovo = pr.id;
+        for (auto it = p->fila.begin(); it != p->fila.end();)
+        {
+            maisNovo = std::max(maisNovo, it->id);
+            it = it->id <= pr.id ? p->fila.erase(it) : it + 1;
+        }
+        const uint64_t aFrente = maisNovo - pr.id; // quadros que o jogo ja gravou a frente do apresentado
+        static const char* depura = std::getenv("DLSS5_GERACAO_FILA"); // teste: as decisoes da fila num arquivo
+        if (depura && p->chamadas < 40)
+            if (FILE* f = fopen(depura, "a"))
+            {
+                fprintf(f, "present %llu: escolhido %llu (envio %llu), mais novo %llu, configurado %llu, envio %d\n",
+                        (unsigned long long)p->chamadas, (unsigned long long)pr.id, (unsigned long long)pr.enviado,
+                        (unsigned long long)maisNovo, (unsigned long long)d->frameID, int(p->comEnvio));
+                fclose(f);
+            }
+        p->aFrenteSoma += aFrente;
+        ++p->aFrenteN;
+        p->aFrenteMax = std::max(p->aFrenteMax, aFrente);
+    }
+    const FfxFrameInterpolationPrepareDescription& pd = pr.pd;
     FfxOpticalflowDispatchDescription o{};
     o.commandList = d->commandList;
     o.color = d->presentColor;
@@ -240,9 +300,9 @@ FfxErrorCode Geracao::Impl::Gera(const FfxFrameGenerationDispatchDescription* d,
     f.cameraFar = pd.cameraFar;
     f.viewSpaceToMetersFactor = pd.viewSpaceToMetersFactor;
     f.cameraFovAngleVertical = pd.cameraFovAngleVertical;
-    f.dilatedDepth = p->Rec(R_PROF_DIL + p->vez);
-    f.dilatedMotionVectors = p->Rec(R_MOV_DIL + p->vez);
-    f.reconstructedPrevDepth = p->Rec(R_PROF_REC + p->vez);
+    f.dilatedDepth = pd.dilatedDepth;
+    f.dilatedMotionVectors = pd.dilatedMotionVectors;
+    f.reconstructedPrevDepth = pd.reconstructedPrevDepth;
     if (d->interpolationRect.width && d->interpolationRect.height)
         f.interpolationRect = d->interpolationRect;
     else
@@ -250,7 +310,7 @@ FfxErrorCode Geracao::Impl::Gera(const FfxFrameGenerationDispatchDescription* d,
     f.backBufferTransferFunction = d->backBufferTransferFunction;
     f.minMaxLuminance[0] = d->minMaxLuminance[0];
     f.minMaxLuminance[1] = d->minMaxLuminance[1];
-    f.frameID = d->frameID;
+    f.frameID = pr.id;
     const uint32_t m = std::clamp<uint32_t>(d->numInterpolatedFrames, 1, 3);
     for (uint32_t k = 0; k < m; ++k)
     {
@@ -380,10 +440,9 @@ HRESULT Geracao::CriaSwapchain(IDXGIFactory* fabrica, ID3D12CommandQueue* fila, 
     const FfxErrorCode e = ffxCreateFrameinterpolationSwapchainForHwndDX12(janela, d, tela, fila, fabrica, s);
     if (e != FFX_OK || !s)
         return p->Erro("ffxCreateFrameinterpolationSwapchainForHwndDX12", e), E_FAIL;
-    p->ffxSc = s;
-    p->sc = ffxGetDX12SwapchainPtr(s); // a referencia da criacao fica com o modulo
-    fila->GetDevice(IID_PPV_ARGS(&p->dev));
-    return p->sc->QueryInterface(IID_PPV_ARGS(saida));
+    const HRESULT h = ffxGetDX12SwapchainPtr(s)->QueryInterface(IID_PPV_ARGS(saida));
+    p->Adota(s, fila);
+    return h;
 }
 
 HRESULT Geracao::CriaSwapchain(IDXGIFactory* fabrica, ID3D12CommandQueue* fila, DXGI_SWAP_CHAIN_DESC* d,
@@ -404,34 +463,40 @@ bool Geracao::TemSwapchain() const
     return p->sc != nullptr;
 }
 
-bool Geracao::SwapchainSolto() const
+// o swapchain criado (com a referencia da criacao) passa ao jogo: o modulo guarda so o ponteiro e e avisado antes da
+// destruicao
+void Geracao::Impl::Adota(FfxSwapchain s, ID3D12CommandQueue* fila)
 {
-    if (!p->sc)
-        return false;
-    const ULONG r = p->sc->AddRef(); // a do modulo + as do jogo + esta
-    p->sc->Release();
-    return r <= 2;
+    std::lock_guard<std::mutex> lk(mx);
+    ffxSc = s;
+    sc = ffxGetDX12SwapchainPtr(s);
+    if (!dev)
+        fila->GetDevice(IID_PPV_ARGS(&dev));
+    ffxDlss5AoDestruirDX12(s, &Impl::AoDestruir, this);
+    sc->Release(); // a da criacao: o jogo ja tem a dele (QueryInterface)
 }
 
-void Geracao::SoltaSwapchain()
+// a AMD vai destruir o swapchain (o jogo soltou a ultima referencia; as apresentacoes em voo ja terminaram): o contexto
+// sai antes, e o proximo swapchain do jogo tambem vira o da AMD
+void Geracao::Impl::AoDestruir(void* ctx)
 {
+    Impl* p = static_cast<Impl*>(ctx);
     if (p->criador.joinable())
         p->criador.join();
-    p->Destroi(); // espera as apresentacoes da AMD
-    if (p->sc)
-        p->sc->Release();
-    if (p->dev)
-        p->dev->Release();
+    std::lock_guard<std::mutex> lk(p->mx);
+    p->ffxSc = nullptr; // Destroi nao espera de novo (nem toca no swapchain que esta saindo)
     p->sc = nullptr;
-    p->ffxSc = nullptr;
-    p->dev = nullptr;
+    {
+        std::lock_guard<std::mutex> lf(p->filaMx);
+        p->fila.clear();
+    }
+    p->Destroi();
     p->estado = 0;
     p->quadro = 0;
     p->nEmUso = 0;
 }
 
-// o ritmo do jogo (entre as chamadas de Quadro) e a taxa do monitor da janela (relida a cada 2 s; a maior que ele aceita,
-// so quando o monitor ou a resolucao mudam)
+// o ritmo do jogo (entre as chamadas de Quadro)
 void Geracao::Impl::Mede()
 {
     const auto agora = std::chrono::steady_clock::now();
@@ -442,31 +507,12 @@ void Geracao::Impl::Mede()
             msJogo = msJogo > 0 ? msJogo * 0.9 + ms * 0.1 : ms;
     }
     tAnt = agora;
-    const ULONGLONG t = GetTickCount64();
-    if (hzQuando && t - hzQuando < 2000)
-        return;
-    hzQuando = t;
-    HWND h = nullptr;
-    MONITORINFOEXW mi{};
-    mi.cbSize = sizeof mi;
-    DEVMODEW dm{};
-    dm.dmSize = sizeof dm;
-    if (!sc || FAILED(sc->GetHwnd(&h)) || !h || !GetMonitorInfoW(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mi) ||
-        !EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm))
-        return;
-    hz = dm.dmDisplayFrequency > 1 ? dm.dmDisplayFrequency : 0;
-    if (hzMonitor != mi.szDevice || hzW != dm.dmPelsWidth || hzH != dm.dmPelsHeight)
-    {
-        hzMonitor = mi.szDevice;
-        hzW = dm.dmPelsWidth;
-        hzH = dm.dmPelsHeight;
-        hzMax = hz;
-        DEVMODEW d{};
-        d.dmSize = sizeof d;
-        for (DWORD i = 0; EnumDisplaySettingsW(mi.szDevice, i, &d); ++i)
-            if (d.dmPelsWidth == hzW && d.dmPelsHeight == hzH)
-                hzMax = std::max<uint32_t>(hzMax, d.dmDisplayFrequency);
-    }
+}
+
+void Geracao::DefineTaxa(uint32_t hz, uint32_t hzMax)
+{
+    p->hz = hz;
+    p->hzMax = std::max(hz, hzMax);
 }
 
 uint32_t Geracao::Impl::NEmUso(uint32_t pedido)
@@ -484,9 +530,10 @@ uint32_t Geracao::Impl::NEmUso(uint32_t pedido)
         return 1; // o primeiro quadro: sem gerados ate saber o ritmo do jogo
     const double fps = 1000.0 / msJogo;
     uint32_t novo = nEmUso ? std::min(nEmUso, pedido) : pedido;
-    while (novo > 1 && fps * novo > hz * 1.05) // nao cabe: cai
+    const double taxa = hz;
+    while (novo > 1 && fps * novo > taxa * 1.05) // nao cabe: cai
         --novo;
-    while (novo < pedido && fps * (novo + 1) <= hz * 0.97) // cabe com folga: sobe
+    while (novo < pedido && fps * (novo + 1) <= taxa * 0.97) // cabe com folga: sobe
         ++novo;
     if (!nEmUso || nEmUso > pedido) // o primeiro quadro, ou o pedido baixou no painel: ja
     {
@@ -508,6 +555,7 @@ uint32_t Geracao::Impl::NEmUso(uint32_t pedido)
 
 bool Geracao::Quadro(ID3D12GraphicsCommandList* c, const QuadroGeracao& q, uint32_t n)
 {
+    std::lock_guard<std::mutex> lk(p->mx);
     if (!p->sc || !c || !q.prof || !q.mov || !q.renderW || !q.renderH)
         return false;
     p->Mede();
@@ -531,13 +579,15 @@ bool Geracao::Quadro(ID3D12GraphicsCommandList* c, const QuadroGeracao& q, uint3
             return false; // ja falhou com isto (UltimoErro diz por que): nao tenta em todo quadro
         p->CriaAoFundo(sd.Width, sd.Height, sd.Format, mrw, mrh, flags);
         p->quadro = 0;
+        std::lock_guard<std::mutex> lk(p->filaMx);
+        p->fila.clear();
         return false;
     }
-    // profundidade e movimento deste quadro, dilatados e com a profundidade anterior reconstruida (Prepare da AMD)
-    p->vez ^= 1;
+    // profundidade e movimento deste quadro, dilatados e com a profundidade anterior reconstruida (Prepare da AMD), num
+    // dos tres jogos de recursos; entra na fila e espera a apresentacao dele
     ++p->quadro;
-    FfxFrameInterpolationPrepareDescription& pd = p->prep[p->quadro & 1];
-    pd = {};
+    const int jogo = int(p->quadro % kJogos);
+    FfxFrameInterpolationPrepareDescription pd{};
     pd.commandList = ffxGetCommandListDX12(c);
     pd.renderSize = {q.renderW, q.renderH};
     pd.jitterOffset = {q.jitterX, q.jitterY};
@@ -550,12 +600,18 @@ bool Geracao::Quadro(ID3D12GraphicsCommandList* c, const QuadroGeracao& q, uint3
     pd.depth = ffxGetResourceDX12(q.prof, ffxGetResourceDescriptionDX12(q.prof), L"profundidade do jogo", Estado(q.profEstado));
     pd.motionVectors = ffxGetResourceDX12(q.mov, ffxGetResourceDescriptionDX12(q.mov), L"movimento do jogo", Estado(q.movEstado));
     pd.frameID = p->quadro;
-    pd.dilatedDepth = p->Rec(R_PROF_DIL + p->vez);
-    pd.dilatedMotionVectors = p->Rec(R_MOV_DIL + p->vez);
-    pd.reconstructedPrevDepth = p->Rec(R_PROF_REC + p->vez);
+    pd.dilatedDepth = p->Rec(R_PROF_DIL + jogo);
+    pd.dilatedMotionVectors = p->Rec(R_MOV_DIL + jogo);
+    pd.reconstructedPrevDepth = p->Rec(R_PROF_REC + jogo);
     FfxErrorCode e = ffxFrameInterpolationPrepare(&p->fic, &pd);
     if (e != FFX_OK)
         return p->Erro("ffxFrameInterpolationPrepare", e), false;
+    {
+        std::lock_guard<std::mutex> lk(p->filaMx);
+        p->fila.push_back({p->quadro, pd, static_cast<ID3D12CommandList*>(c), 0});
+        while (p->fila.size() > size_t(kJogos)) // mais preparados que apresentacoes (o jogo pulou um Present): o velho sai
+            p->fila.pop_front();
+    }
     // o swapchain da AMD chama Gera na apresentacao deste quadro
     FfxFrameGenerationConfig cfg{};
     cfg.swapChain = p->ffxSc;
@@ -590,6 +646,30 @@ int Geracao::EstadoContexto() const
 double Geracao::MsCompilacao() const
 {
     return p->msCompilacao;
+}
+
+void Geracao::Submetido(ID3D12CommandList* const* l, UINT n)
+{
+    std::lock_guard<std::mutex> lk(p->filaMx);
+    p->comEnvio = true;
+    for (UINT j = 0; j < n; ++j)
+        for (auto& f : p->fila)
+            if (f.lista == l[j] && !f.enviado)
+            {
+                f.enviado = ++p->ordemEnvio;
+                break;
+            }
+}
+
+uint32_t Geracao::Fila(double& mediaAFrente, uint64_t& maxAFrente, uint64_t& semPreparo) const
+{
+    std::lock_guard<std::mutex> lk(p->filaMx);
+    const uint32_t n = uint32_t(p->aFrenteN);
+    mediaAFrente = p->aFrenteN ? double(p->aFrenteSoma) / double(p->aFrenteN) : 0.0;
+    maxAFrente = p->aFrenteMax;
+    semPreparo = p->semPreparo;
+    p->aFrenteSoma = p->aFrenteN = p->aFrenteMax = p->semPreparo = 0;
+    return n;
 }
 
 uint32_t Geracao::EmUso() const

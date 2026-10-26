@@ -11,6 +11,10 @@
 // --como-jogo: faz o que um jogo faz, sem o cliente embutido -- cria o swapchain pela DXGI e chama o FSR pela DLL
 //   assinada da AMD (amd_fidelityfx_dx12.dll do FidelityFX SDK): e o teste da DLSS5Buffer.dll de verdade (aberto
 //   pelo overlay com a geracao, o swapchain vira o da AMD e o gancho do FSR alimenta a geracao)
+// --depura: a camada de validacao do D3D12 (a do Agility SDK 1.614 que vem no FidelityFX SDK, copiada para .\D3D12\ ao
+//   lado do exe); as mensagens de erro e aviso saem no stdout. --depura-gpu: tambem a validacao na GPU (lenta)
+// --adiantado (com --como-jogo): como um motor com a thread de render a frente -- o quadro seguinte (o FSR dele) e
+//   GRAVADO antes do Present do atual, mas so ENVIADO a GPU depois dele
 // --recria Q (com --como-jogo): no quadro Q solta o swapchain e cria outro na mesma janela, como um jogo que troca de
 //   modo de tela ou de HDR (o swapchain antigo preso por alguem faz a criacao falhar)
 #include "../../src/buffer/ClienteBuffer.h"
@@ -19,6 +23,9 @@
 #include "../../externo/ffx/ffx_upscale.h"
 #include "../../externo/ffx/dx12/ffx_api_dx12.h"
 #include <d3d12.h>
+#include <d3d12sdklayers.h>
+#include <winver.h>
+#pragma comment(lib, "version.lib")
 #include <dxgi1_6.h>
 #include <wrl/client.h>
 #include <algorithm>
@@ -74,6 +81,10 @@ struct Tex
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
 };
 
+// o Agility SDK em .\D3D12\ (so com a pasta presente; sem ela o D3D12 do Windows)
+extern "C" __declspec(dllexport) extern const UINT D3D12SDKVersion = 614;
+extern "C" __declspec(dllexport) extern const char* D3D12SDKPath = ".\\D3D12\\";
+
 int wmain(int argc, wchar_t** argv)
 {
     if (argc < 3)
@@ -87,9 +98,11 @@ int wmain(int argc, wchar_t** argv)
     bool raw = false, laco = false, geracao = false, semOverlay = false, comoJogo = false;
     std::wstring modulo;
     uint32_t multi = 2;
-    UINT64 recria = 0;
+    UINT64 recria = 0, trava = 0;
     for (int i = 3; i + 1 < argc; ++i)
     {
+        if (!wcscmp(argv[i], L"--trava")) // --trava Q: no quadro Q a thread do jogo para 8 s (o vigia do modulo)
+            trava = UINT64(_wtoi64(argv[i + 1]));
         if (!wcscmp(argv[i], L"--recria"))
             recria = UINT64(_wtoi64(argv[i + 1]));
         if (!wcscmp(argv[i], L"--multi"))
@@ -112,6 +125,27 @@ int wmain(int argc, wchar_t** argv)
         comoJogo |= !wcscmp(argv[i], L"--como-jogo");
     }
     semOverlay |= comoJogo; // o cliente e o da DLL injetada
+    GetFileVersionInfoSizeW(L"kernel32.dll", nullptr); // importa a version.dll, como o TLOU2 (a DLL instalada com esse nome)
+    bool depura = false, depuraGpu = false, adiantado = false;
+    for (int i = 3; i < argc; ++i)
+    {
+        adiantado |= !wcscmp(argv[i], L"--adiantado");
+        depura |= !wcscmp(argv[i], L"--depura");
+        depuraGpu |= !wcscmp(argv[i], L"--depura-gpu");
+    }
+    depura |= depuraGpu;
+    if (depura)
+    {
+        ComPtr<ID3D12Debug1> dbg;
+        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dbg))))
+        {
+            dbg->EnableDebugLayer();
+            dbg->SetEnableGPUBasedValidation(depuraGpu);
+            printf("depuracao do D3D12 ligada%s\n", depuraGpu ? " (com validacao na GPU)" : "");
+        }
+        else
+            printf("depuracao do D3D12 indisponivel (falta .\\D3D12\\d3d12SDKLayers.dll)\n");
+    }
     CreateDirectoryW(saida.c_str(), nullptr);
     // tamanho e quadros: meta.jsonl
     FILE* f = nullptr;
@@ -150,6 +184,25 @@ int wmain(int argc, wchar_t** argv)
 
     ComPtr<ID3D12Device> dev;
     Ck(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&dev)), "D3D12CreateDevice");
+    if (depura)
+    {
+        ComPtr<ID3D12InfoQueue1> iq;
+        DWORD cookie = 0;
+        if (SUCCEEDED(dev.As(&iq)))
+            iq->RegisterMessageCallback(
+                [](D3D12_MESSAGE_CATEGORY, D3D12_MESSAGE_SEVERITY sev, D3D12_MESSAGE_ID id, LPCSTR d, void*) {
+                    static std::mutex m;
+                    static int n = 0;
+                    std::lock_guard<std::mutex> lk(m);
+                    if (sev <= D3D12_MESSAGE_SEVERITY_WARNING && n++ < 200)
+                    {
+                        printf("D3D12 %s %d: %s\n", sev <= D3D12_MESSAGE_SEVERITY_ERROR ? "ERRO" : "aviso", int(id), d);
+                        fflush(stdout);
+                    }
+                },
+                D3D12_MESSAGE_CALLBACK_FLAG_NONE, nullptr, &cookie);
+        printf("mensagens do D3D12: %s\n", cookie ? "ligadas" : "sem ID3D12InfoQueue1");
+    }
     D3D12_COMMAND_QUEUE_DESC qd{D3D12_COMMAND_LIST_TYPE_DIRECT};
     ComPtr<ID3D12CommandQueue> fila;
     Ck(dev->CreateCommandQueue(&qd, IID_PPV_ARGS(&fila)), "fila");
@@ -158,6 +211,11 @@ int wmain(int argc, wchar_t** argv)
     Ck(dev->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&al)), "al");
     Ck(dev->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, al.Get(), nullptr, IID_PPV_ARGS(&cl)), "cl");
     cl->Close();
+    ComPtr<ID3D12CommandAllocator> al2; // --adiantado: a lista da apresentacao do quadro anterior
+    ComPtr<ID3D12GraphicsCommandList> cl2;
+    Ck(dev->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&al2)), "al2");
+    Ck(dev->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, al2.Get(), nullptr, IID_PPV_ARGS(&cl2)), "cl2");
+    cl2->Close();
     ComPtr<ID3D12Fence> cerca;
     UINT64 valor = 0;
     Ck(dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&cerca)), "cerca");
@@ -178,10 +236,13 @@ int wmain(int argc, wchar_t** argv)
         dev->GetCopyableFootprints(&rd, 0, 1, 0, &t.fp, nullptr, nullptr, nullptr);
         t.bpp = bpp;
     };
-    Tex cor, mov, prof, saidaFsr;
+    Tex cor, mov, prof, saidaFsr, saidaFsr2;
     cria(cor, DXGI_FORMAT_R16G16B16A16_FLOAT, 8, true, W, H);
     if (comoJogo)
+    {
         cria(saidaFsr, DXGI_FORMAT_R16G16B16A16_FLOAT, 8, true, W, H);
+        cria(saidaFsr2, DXGI_FORMAT_R16G16B16A16_FLOAT, 8, true, W, H); // --adiantado: a do quadro anterior
+    }
     cria(mov, DXGI_FORMAT_R32G32_FLOAT, 8, false, RW, RH);
     cria(prof, DXGI_FORMAT_R32_FLOAT, 4, false, RW, RH);
     // um buffer de upload para os tres e um de leitura para a saida
@@ -394,14 +455,18 @@ int wmain(int argc, wchar_t** argv)
             {
                 // o FSR do "jogo": entrada na resolucao de render, saida na da tela (a DLSS5Buffer.dll age aqui)
                 barreira(cor.r.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-                barreira(saidaFsr.r.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                // --adiantado: este quadro e gravado agora e so enviado depois do Present do anterior (saidas alternadas)
+                const UINT64 q = UINT64(v) * N + i;
+                Tex& saidaAgora = adiantado && (q & 1) ? saidaFsr2 : saidaFsr;
+                Tex& saidaTela = saidaAgora;
+                barreira(saidaAgora.r.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
                 ffxDispatchDescUpscale u{};
                 u.header.type = FFX_API_DISPATCH_DESC_TYPE_UPSCALE;
                 u.commandList = cl.Get();
                 u.color = ffxApiGetResourceDX12(cor.r.Get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
                 u.depth = ffxApiGetResourceDX12(prof.r.Get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
                 u.motionVectors = ffxApiGetResourceDX12(mov.r.Get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
-                u.output = ffxApiGetResourceDX12(saidaFsr.r.Get(), FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
+                u.output = ffxApiGetResourceDX12(saidaAgora.r.Get(), FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
                 u.motionVectorScale = {render < 1.f ? float(RW) : 1.f, render < 1.f ? float(RH) : 1.f};
                 u.renderSize = {RW, RH};
                 u.upscaleSize = {W, H};
@@ -414,13 +479,52 @@ int wmain(int argc, wchar_t** argv)
                 u.viewSpaceToMetersFactor = 1.f;
                 if (fsrDespacha(&fsr, &u.header) != FFX_API_RETURN_OK && v == 0 && i == 0)
                     fprintf(stderr, "como jogo: ffxDispatch falhou\n");
-                barreira(saidaFsr.r.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                barreira(saidaAgora.r.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+                if (adiantado)
+                {
+                    barreira(cor.r.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+                    barreira(mov.r.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+                    barreira(prof.r.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+                    Ck(cl->Close(), "close");
+                    if (q > 0)
+                    {
+                        // o quadro anterior: a copia da saida dele para o backbuffer e o Present (este ja foi gravado)
+                        Tex& anterior = (q & 1) ? saidaFsr : saidaFsr2;
+                        Ck(al2->Reset(), "reset2");
+                        Ck(cl2->Reset(al2.Get(), nullptr), "list2");
+                        ComPtr<ID3D12Resource> bbAnt;
+                        sc->GetBuffer(sc->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&bbAnt));
+                        D3D12_RESOURCE_BARRIER x[2] = {};
+                        x[0].Transition = {anterior.r.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_COMMON,
+                                           D3D12_RESOURCE_STATE_COPY_SOURCE};
+                        x[1].Transition = {bbAnt.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_PRESENT,
+                                           D3D12_RESOURCE_STATE_COPY_DEST};
+                        cl2->ResourceBarrier(2, x);
+                        cl2->CopyResource(bbAnt.Get(), anterior.r.Get());
+                        for (auto& b : x)
+                            std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+                        cl2->ResourceBarrier(2, x);
+                        Ck(cl2->Close(), "close2");
+                        ID3D12CommandList* lb[] = {cl2.Get()};
+                        fila->ExecuteCommandLists(1, lb);
+                        sc->Present(0, 0);
+                    }
+                    ID3D12CommandList* la[] = {cl.Get()};
+                    fila->ExecuteCommandLists(1, la); // este quadro, gravado antes do Present acima, vai depois dele
+                    Ck(fila->Signal(cerca.Get(), ++valor), "signal");
+                    cerca->SetEventOnCompletion(valor, ev);
+                    WaitForSingleObject(ev, INFINITE);
+                    proximo += passo;
+                    std::this_thread::sleep_until(proximo);
+                    continue;
+                }
+                barreira(saidaTela.r.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE);
                 ComPtr<ID3D12Resource> bb;
                 sc->GetBuffer(sc->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&bb));
                 barreira(bb.Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST);
-                cl->CopyResource(bb.Get(), saidaFsr.r.Get());
+                cl->CopyResource(bb.Get(), saidaTela.r.Get());
                 barreira(bb.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
-                barreira(saidaFsr.r.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
+                barreira(saidaTela.r.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
                 barreira(cor.r.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
                 barreira(mov.r.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
                 barreira(prof.r.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
@@ -431,6 +535,8 @@ int wmain(int argc, wchar_t** argv)
                 Ck(fila->Signal(cerca.Get(), ++valor), "signal");
                 cerca->SetEventOnCompletion(valor, ev);
                 WaitForSingleObject(ev, INFINITE);
+                if (trava && UINT64(v) * N + i + 1 == trava)
+                    Sleep(8000);
                 if (recria && UINT64(v) * N + i + 1 == recria)
                 {
                     // como um jogo que troca o modo de tela: solta o swapchain e cria outro na mesma janela
@@ -573,5 +679,13 @@ int wmain(int argc, wchar_t** argv)
                g_rawDx, g_rawDy, g_rawCliques);
     if (!comoJogo)
         cli.Encerra();
+    if (comoJogo && sc)
+    {
+        // como um jogo que fecha: solta o swapchain e da um tempo antes de sair (o log do modulo mostra a saida dele)
+        sc.Reset();
+        printf("swapchain solto\n");
+        fflush(stdout);
+        Sleep(1500);
+    }
     return 0;
 }

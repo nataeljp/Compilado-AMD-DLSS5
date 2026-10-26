@@ -1387,9 +1387,11 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                      "(a interpolacao da AMD com o instante do quadro no lugar do meio fixo), apresentados com o intervalo\n"
                      "do jogo dividido por 3 ou 4. Muda a qualquer momento, sem reabrir o jogo.\n"
                      "A DLL tem de entrar no jogo antes do DirectX: ao ligar a geracao com o jogo conectado, o overlay a\n"
-                     "copia para a pasta do jogo como dxgi.dll (nada mais muda la) e pede para reabrir o jogo UMA vez. Dai em\n"
+                     "copia para a pasta do jogo como version.dll (ou dxgi.dll; nada mais muda la) e pede para reabrir o\n"
+                     "jogo UMA vez. Dai em\n"
                      "diante o jogo ja abre com ela (pela Steam ou como for), o overlay conecta sozinho e a geracao liga,\n"
-                     "desliga e muda so por aqui. Uma dxgi.dll de outro programa (ReShade, OptiScaler) nunca e substituida.\n"
+                     "desliga e muda so por aqui. A DLL de outro programa (Cyber Engine Tweaks, ReShade, OptiScaler) nunca\n"
+                     "e substituida.\n"
                      "Desligue a geracao de quadros do proprio jogo (FSR Frame Generation / DLSS FG) e o AFMF do driver.");
                 if (e.instaladoNoJogo && Botao("Remover do jogo"))
                     a.removerDoJogo = true;

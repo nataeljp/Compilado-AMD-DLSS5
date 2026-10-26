@@ -1,6 +1,21 @@
-; Exportacoes da DLSS5Buffer.dll: as da dxgi.dll do Windows (para quando ela esta na pasta do jogo como dxgi.dll;
-; injetada como DLSS5Buffer.dll ninguem as chama) e o marcador do modulo
+; Exportacoes da DLSS5Buffer.dll: as da version.dll e da dxgi.dll do Windows (para quando ela esta na pasta do jogo com
+; um desses nomes; injetada como DLSS5Buffer.dll ninguem as chama) e o marcador do modulo
 EXPORTS
+    GetFileVersionInfoA = PvGetFileVersionInfoA
+    GetFileVersionInfoByHandle = PvGetFileVersionInfoByHandle
+    GetFileVersionInfoExA = PvGetFileVersionInfoExA
+    GetFileVersionInfoExW = PvGetFileVersionInfoExW
+    GetFileVersionInfoSizeA = PvGetFileVersionInfoSizeA
+    GetFileVersionInfoSizeExA = PvGetFileVersionInfoSizeExA
+    GetFileVersionInfoSizeExW = PvGetFileVersionInfoSizeExW
+    GetFileVersionInfoSizeW = PvGetFileVersionInfoSizeW
+    GetFileVersionInfoW = PvGetFileVersionInfoW
+    VerFindFileA = PvVerFindFileA
+    VerFindFileW = PvVerFindFileW
+    VerInstallFileA = PvVerInstallFileA
+    VerInstallFileW = PvVerInstallFileW
+    VerQueryValueA = PvVerQueryValueA
+    VerQueryValueW = PvVerQueryValueW
     CreateDXGIFactory = PxCreateDXGIFactory
     CreateDXGIFactory1 = PxCreateDXGIFactory1
     CreateDXGIFactory2 = PxCreateDXGIFactory2

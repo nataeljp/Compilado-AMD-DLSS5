@@ -31,11 +31,14 @@ bool ModuloPresente(DWORD pid);
 DWORD ProcessoComModulo(DWORD exceto);
 // caminho completo do executavel do processo ("" sem acesso)
 std::wstring ExeDoProcesso(DWORD pid);
-// Instalacao na pasta do jogo: a DLSS5Buffer.dll vira a dxgi.dll do jogo (o Windows a carrega antes do DirectX em toda
-// abertura, inclusive pela Steam; as funcoes da dxgi do sistema seguem para ela). Nunca substitui a dxgi.dll de outro
-// programa (ReShade, OptiScaler...). Com o jogo aberto a copia antiga e renomeada e a nova vale na proxima abertura.
+// Instalacao na pasta do jogo: a DLSS5Buffer.dll vira a version.dll (ou a dxgi.dll) do jogo -- uma DLL que o executavel
+// importa, entao o Windows a carrega antes do DirectX em toda abertura, inclusive pela Steam; as funcoes da DLL do sistema
+// seguem para ela. Nunca substitui a DLL de outro programa (Cyber Engine Tweaks usa version.dll; ReShade e OptiScaler,
+// dxgi.dll). Com o jogo aberto a copia antiga e renomeada e a nova vale na proxima abertura.
 enum class Instalacao { Nenhuma, Nossa, Desatualizada, Outra };
 Instalacao EstadoInstalacao(const std::wstring& exe, const std::wstring& dll);
+// o nome com que a DLL entra neste jogo ("" = version.dll e dxgi.dll ocupadas por outros programas)
+std::wstring NomeProxy(const std::wstring& exe);
 std::string InstalaNoJogo(const std::wstring& exe, const std::wstring& dll); // "" = ok, senao o motivo
 // a DLL na pasta age so nos executaveis da lista DLSS5Overlay.alvo (os outros programas da pasta -- relatorio de erros,
 // lancador -- so passam pela dxgi do Windows): poe este executavel nela

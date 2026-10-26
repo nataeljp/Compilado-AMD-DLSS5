@@ -324,4 +324,57 @@ tr(c, '''                            int64_t currentPresentQPC;
                             if (presenter->previousPresentQpc) // DLSS5 Overlay: ritmo
                                 dlss5RitmoAcumula(double(currentPresentQPC - presenter->previousPresentQpc) * 1000.0 / double(qpcFrequency));
                             presenter->previousPresentQpc = currentPresentQPC;''')
+# o dono do contexto (o modulo) e avisado na destruicao: o swapchain e so do jogo (nada fica preso a ele -- preso, a janela
+# continuava ocupada quando o jogo recriava o swapchain, e na saida do processo as threads da AMD morriam com ele vivo: o
+# driver caia em amdxc64.dll). O aviso vem depois das apresentacoes em voo e antes de soltar o resto
+tr(SC + 'FrameInterpolationSwapchainDX12.h', '''    UINT                numInterpolatedFrames           = 1; // DLSS5 Overlay: gerados por quadro do jogo (1 = 2x)
+''', '''    UINT                numInterpolatedFrames           = 1; // DLSS5 Overlay: gerados por quadro do jogo (1 = 2x)
+public:
+    void              (*dlss5AoDestruir)(void*)         = nullptr; // DLSS5 Overlay: aviso de destruicao ao dono
+    void*               dlss5AoDestruirCtx              = nullptr;
+protected:
+''')
+tr(c, '''FrameInterpolationSwapChainDX12::~FrameInterpolationSwapChainDX12()
+{
+    shutdown();
+}''', '''FrameInterpolationSwapChainDX12::~FrameInterpolationSwapChainDX12()
+{
+    // DLSS5 Overlay: o dono solta o que usa (a interpolacao dele roda nas apresentacoes: ja terminaram)
+    if (dlss5AoDestruir && presentInfo.device)
+    {
+        waitForPresents();
+        dlss5AoDestruir(dlss5AoDestruirCtx);
+    }
+    shutdown();
+}
+
+// DLSS5 Overlay: aviso de destruicao ao dono (chamado uma vez, na thread que solta a ultima referencia)
+extern "C" FfxErrorCode ffxDlss5AoDestruirDX12(FfxSwapchain gameSwapChain, void (*aviso)(void*), void* ctx)
+{
+    IDXGISwapChain4* swapChain = ffxGetDX12SwapchainPtr(gameSwapChain);
+    FrameInterpolationSwapChainDX12* fi = nullptr;
+    if (swapChain && SUCCEEDED(swapChain->QueryInterface(IID_PPV_ARGS(&fi))))
+    {
+        fi->dlss5AoDestruir    = aviso;
+        fi->dlss5AoDestruirCtx = ctx;
+        SafeRelease(fi);
+        return FFX_OK;
+    }
+    return FFX_ERROR_INVALID_ARGUMENT;
+}''')
+# o callback falhou (sem o preparo do quadro): a apresentacao vai so com o real (antes a AMD apresentava as saidas da
+# interpolacao assim mesmo, com o conteudo de 2 quadros atras: um gerado velho na tela)
+tr(c, '''        if (frameGenerationCallback(&desc, frameGenerationCallbackContext) == FFX_OK)
+        {
+            interpolationCommandList->execute(true);''', '''        const bool gerou = frameGenerationCallback(&desc, frameGenerationCallbackContext) == FFX_OK; // DLSS5 Overlay
+        if (gerou)
+        {
+            interpolationCommandList->execute(true);''')
+tr(c, '''        if (desc.numInterpolatedFrames > 0)
+        {
+            frameInterpolationResetCondition = false;
+            for (UINT k = 0; k < desc.numInterpolatedFrames; k++)''', '''        if (gerou && desc.numInterpolatedFrames > 0) // DLSS5 Overlay: falhou -> so o real
+        {
+            frameInterpolationResetCondition = false;
+            for (UINT k = 0; k < desc.numInterpolatedFrames; k++)''')
 print(f'ffx_multiquadro: {mudou} trechos aplicados')

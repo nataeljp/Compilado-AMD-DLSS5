@@ -17,7 +17,10 @@
 #include "ffx_api.h"
 #include "ffx_upscale.h"
 #include <detours.h>
+#include <tlhelp32.h>
+#include <winternl.h>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -25,11 +28,14 @@
 #include <cwctype>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace {
 
 std::mutex g_mx;
-dlss5ov::ClienteBuffer g_cli;
+// nunca destruido: instalada como dxgi.dll esta DLL carrega antes do d3d12 e sai depois dele na saida do processo -- o
+// destrutor soltava texturas e cercas num driver que ja saiu (amdxc64.dll abortava o processo, 0xc0000409)
+dlss5ov::ClienteBuffer& g_cli = *new dlss5ov::ClienteBuffer;
 bool g_clienteOk = false, g_clienteFalhou = false;
 ID3D12Device* g_dev = nullptr;
 ID3D12GraphicsCommandList* g_lista = nullptr; // a lista em que o cliente gravou (sinaliza quando for submetida)
@@ -71,7 +77,9 @@ volatile LONG g_rawVistos = 0;
 dlss5ov::Geracao& g_ger = *new dlss5ov::Geracao;
 bool g_lancado = false;                // o modulo entrou antes do DirectX (instalado como dxgi.dll ou aberto pelo
                                        // overlay): o swapchain vira o da AMD; a geracao liga e desliga so pelo painel
-bool g_proxy = false;                  // carregado como dxgi.dll da pasta do jogo
+bool g_proxy = false;                  // carregado da pasta do jogo como version.dll ou dxgi.dll
+bool g_comoDxgi = false;               // ... como dxgi.dll (as fabricas passam por PxCreateDXGIFactory*)
+std::atomic<HWND> g_janelaJogo{nullptr}; // a janela do swapchain do jogo (o vigia de travamento)
 uint32_t g_geracaoLancamento = 0;      // o pedido do lancamento (vale ate o overlay conectar)
 thread_local bool t_criandoSc = false; // o swapchain da AMD cria o de verdade pela mesma fabrica: esse passa direto
 using PfnCriaFab = HRESULT(WINAPI*)(REFIID, void**);
@@ -278,6 +286,7 @@ bool Float(DXGI_FORMAT f)
 void STDMETHODCALLTYPE Executa(ID3D12CommandQueue* q, UINT n, ID3D12CommandList* const* l)
 {
     oExecuta(q, n, l);
+    g_ger.Submetido(l, n); // a geracao casa cada Present com o preparo ja enviado
     std::lock_guard<std::mutex> lk(g_mx);
     if (!g_lista)
         return;
@@ -311,22 +320,17 @@ void GanchoFila(ID3D12Device* d)
 
 // ---- geracao de quadros ----
 // o swapchain da AMD vai para esta criacao: o primeiro do jogo, ou um novo depois que o jogo soltou o anterior (troca de
-// modo de tela, HDR...) -- o antigo, preso so pelo modulo, sai antes; vivo, ele ocupa a janela e a criacao do jogo falha
-// (E_ACCESSDENIED: o "problema com o driver de video" do TLOU2). Com o anterior ainda em uso o novo segue sem geracao
+// modo de tela, HDR...: a AMD avisou a destruicao, Geracao.h). Com o anterior ainda vivo o novo segue sem geracao
 bool LiberaParaCriar()
 {
-    if (!g_ger.TemSwapchain())
-        return true;
-    if (!g_ger.SwapchainSolto())
-        return false;
-    g_ger.SoltaSwapchain();
-    Log("geracao: o jogo soltou o swapchain anterior (troca de modo de tela?); o novo tambem vai ser o da AMD");
-    return true;
+    return !g_ger.TemSwapchain();
 }
 
 HRESULT STDMETHODCALLTYPE CriaScHwnd(IDXGIFactory2* f, IUnknown* d, HWND h, const DXGI_SWAP_CHAIN_DESC1* sd,
                                      const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* fs, IDXGIOutput* o, IDXGISwapChain1** sc)
 {
+    if (h && !t_criandoSc)
+        g_janelaJogo = h;
     Microsoft::WRL::ComPtr<ID3D12CommandQueue> fila;
     if (!t_criandoSc && g_lancado && d && sd && SUCCEEDED(d->QueryInterface(IID_PPV_ARGS(&fila))) && LiberaParaCriar())
     {
@@ -346,6 +350,8 @@ HRESULT STDMETHODCALLTYPE CriaScHwnd(IDXGIFactory2* f, IUnknown* d, HWND h, cons
 
 HRESULT STDMETHODCALLTYPE CriaSc(IDXGIFactory* f, IUnknown* d, DXGI_SWAP_CHAIN_DESC* sd, IDXGISwapChain** sc)
 {
+    if (sd && sd->OutputWindow && !t_criandoSc)
+        g_janelaJogo = sd->OutputWindow;
     Microsoft::WRL::ComPtr<ID3D12CommandQueue> fila;
     if (!t_criandoSc && g_lancado && d && sd && SUCCEEDED(d->QueryInterface(IID_PPV_ARGS(&fila))) && LiberaParaCriar())
     {
@@ -403,12 +409,13 @@ HRESULT WINAPI CriaFab2(UINT fl, REFIID r, void** f)
     return h;
 }
 
-// o jogo nasceu suspenso: engancha a criacao das fabricas DXGI antes de ele criar qualquer uma e avisa o overlay, que
-// entao solta o jogo
-DWORD WINAPI PreparaGeracao(void*)
+// as fabricas DXGI do jogo passam pelo modulo (CreateDXGIFactory* da dxgi do Windows): a criacao do swapchain e
+// enganchada nelas. Uma vez so
+bool GanchaFabricasDxgi(HMODULE dxgi)
 {
-    if (HMODULE dxgi = LoadLibraryW(L"dxgi.dll"))
-    {
+    static std::once_flag uma;
+    static bool ok = false;
+    std::call_once(uma, [&] {
         oCriaFab = reinterpret_cast<PfnCriaFab>(GetProcAddress(dxgi, "CreateDXGIFactory"));
         oCriaFab1 = reinterpret_cast<PfnCriaFab>(GetProcAddress(dxgi, "CreateDXGIFactory1"));
         oCriaFab2 = reinterpret_cast<PfnCriaFab2>(GetProcAddress(dxgi, "CreateDXGIFactory2"));
@@ -420,9 +427,64 @@ DWORD WINAPI PreparaGeracao(void*)
             DetourAttach(reinterpret_cast<PVOID*>(&oCriaFab1), reinterpret_cast<PVOID>(&CriaFab1));
         if (oCriaFab2)
             DetourAttach(reinterpret_cast<PVOID*>(&oCriaFab2), reinterpret_cast<PVOID>(&CriaFab2));
-        const LONG r = DetourTransactionCommit();
+        ok = DetourTransactionCommit() == NO_ERROR;
+    });
+    return ok;
+}
+
+// instalada como version.dll: a dxgi do Windows ja esta carregada (o jogo a importa) ou o carregador avisa quando ela
+// carregar -- os ganchos entram antes de o jogo criar qualquer fabrica
+struct AvisoCarga
+{
+    ULONG Flags;
+    const UNICODE_STRING* FullDllName;
+    const UNICODE_STRING* BaseDllName;
+    PVOID DllBase;
+    ULONG SizeOfImage;
+};
+typedef VOID(CALLBACK* PfnAvisoCarga)(ULONG motivo, const AvisoCarga* d, PVOID ctx);
+typedef NTSTATUS(NTAPI* PfnLdrRegistra)(ULONG flags, PfnAvisoCarga cb, PVOID ctx, PVOID* cookie);
+
+std::wstring DxgiDoSistema()
+{
+    wchar_t p[MAX_PATH];
+    GetSystemDirectoryW(p, MAX_PATH);
+    wcscat_s(p, L"\\dxgi.dll");
+    return p;
+}
+
+VOID CALLBACK DllCarregada(ULONG motivo, const AvisoCarga* d, PVOID)
+{
+    if (motivo != 1 || !d || !d->FullDllName || !d->FullDllName->Buffer) // 1 = carregada
+        return;
+    const std::wstring nome(d->FullDllName->Buffer, d->FullDllName->Length / sizeof(wchar_t));
+    if (!_wcsicmp(nome.c_str(), DxgiDoSistema().c_str()))
+        GanchaFabricasDxgi(static_cast<HMODULE>(d->DllBase));
+}
+
+void GanchaDxgiNaCarga()
+{
+    if (HMODULE dxgi = GetModuleHandleW(DxgiDoSistema().c_str()))
+    {
+        Log("geracao: ganchos nas fabricas DXGI (dxgi do Windows ja carregada): %s", GanchaFabricasDxgi(dxgi) ? "ok" : "falharam");
+        return;
+    }
+    static PVOID cookie = nullptr;
+    auto registra = reinterpret_cast<PfnLdrRegistra>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "LdrRegisterDllNotification"));
+    const bool ok = registra && registra(0, DllCarregada, nullptr, &cookie) >= 0;
+    Log("geracao: os ganchos nas fabricas DXGI entram quando a dxgi do Windows carregar (aviso do carregador: %s)",
+        ok ? "ok" : "falhou");
+}
+
+// o jogo nasceu suspenso: engancha a criacao das fabricas DXGI antes de ele criar qualquer uma e avisa o overlay, que
+// entao solta o jogo
+DWORD WINAPI PreparaGeracao(void*)
+{
+    if (HMODULE dxgi = LoadLibraryW(L"dxgi.dll"))
+    {
+        const bool ok = GanchaFabricasDxgi(dxgi);
         Log("jogo aberto pelo overlay (geracao %s no lancamento): ganchos nas fabricas DXGI %s",
-            g_geracaoLancamento >= 2 ? "ligada" : "desligada", r == NO_ERROR ? "ok" : "falharam");
+            g_geracaoLancamento >= 2 ? "ligada" : "desligada", ok ? "ok" : "falharam");
     }
     else
         Log("geracao: dxgi.dll nao carregou");
@@ -439,9 +501,36 @@ DWORD WINAPI PreparaGeracao(void*)
 // a cada despacho do FSR: a profundidade, o movimento e a camera deste quadro para a geracao (ela parte do backbuffer
 // final, que ja tem a edicao da rede)
 uint64_t g_quadrosGeracao = 0; // quadros do jogo que passaram pela geracao (diagnostico)
+std::atomic<ULONGLONG> g_ultimoQuadro{0}; // GetTickCount64 do ultimo despacho do FSR (o vigia)
+// engasgos: o maior intervalo entre quadros e quantos passaram de 2x a media (o log de 5 s)
+double g_maiorMs = 0, g_mediaMs = 0;
+uint32_t g_engasgos = 0;
+
+void MedeIntervalo()
+{
+    static LARGE_INTEGER freq{}, ant{};
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    if (!freq.QuadPart)
+        QueryPerformanceFrequency(&freq);
+    if (ant.QuadPart)
+    {
+        const double ms = double(t.QuadPart - ant.QuadPart) * 1000.0 / double(freq.QuadPart);
+        if (ms < 1000.0)
+        {
+            g_maiorMs = std::max(g_maiorMs, ms);
+            if (g_mediaMs > 0 && ms > 2.0 * g_mediaMs && ms > 8.0)
+                ++g_engasgos;
+            g_mediaMs = g_mediaMs > 0 ? g_mediaMs * 0.95 + ms * 0.05 : ms;
+        }
+    }
+    ant = t;
+    g_ultimoQuadro = GetTickCount64();
+}
 
 void GeracaoQuadro(ffxContext* ctx, const ffxDispatchDescUpscale* u, ID3D12GraphicsCommandList* lista)
 {
+    MedeIntervalo();
     if (!g_ger.TemSwapchain())
         return;
     uint32_t flags = 0, mrw = 0, mrh = 0;
@@ -514,12 +603,20 @@ void GeracaoQuadro(ffxContext* ctx, const ffxDispatchDescUpscale* u, ID3D12Graph
     {
         const double s = double(agora - marca) / 1000.0, jogo = double(g_quadrosGeracao - quadrosAntes) / s,
                      gerados = double(g_ger.Gerados() - antes) / s;
-        double media = 0, desvio = 0, maior = 0;
+        double media = 0, desvio = 0, maior = 0, aFrente = 0;
+        uint64_t aFrenteMax = 0, semPreparo = 0;
         const uint32_t n = g_ger.Ritmo(media, desvio, maior);
-        Log("geracao: pedida %ux, em uso %ux (monitor %u Hz, aceita ate %u), jogo %.0f quadros/s + %.0f gerados/s = %.0f "
-            "apresentados/s | ritmo: %u apresentacoes, a cada %.2f ms (desvio %.2f, maior %.2f)",
+        if (g_ger.Fila(aFrente, aFrenteMax, semPreparo))
+            Log("geracao: o jogo prepara %.2f quadros a frente do que apresenta (maior %llu); %llu apresentacoes sem o "
+                "preparo do proprio quadro",
+                aFrente, (unsigned long long)aFrenteMax, (unsigned long long)semPreparo);
+        Log("geracao: pedida %ux, em uso %ux (monitor %u Hz, aceita ate %u), jogo %.0f quadros/s (maior intervalo %.1f ms, "
+            "%u engasgos > 2x a media) + %.0f gerados/s = %.0f apresentados/s | ritmo: %u apresentacoes, a cada %.2f ms "
+            "(desvio %.2f, maior %.2f)",
             pedida >= 2 ? std::min<uint32_t>(pedida, 4) : 1, pedida >= 2 ? g_ger.EmUso() : 1, g_ger.Hz(), g_ger.HzMaximo(),
-            jogo, gerados, jogo + gerados, n, media, desvio, maior);
+            jogo, g_maiorMs, g_engasgos, gerados, jogo + gerados, n, media, desvio, maior);
+        g_maiorMs = 0;
+        g_engasgos = 0;
         antes = g_ger.Gerados();
         quadrosAntes = g_quadrosGeracao;
         marca = agora;
@@ -555,6 +652,14 @@ ffxReturnCode_t Despacha(ffxContext* ctx, const ffxDispatchDescHeader* desc)
     auto* prof = static_cast<ID3D12Resource*>(u->depth.resource);
     if (!lista || !cor || !mov || !prof)
         return r;
+    // o gancho dos envios a GPU ja no primeiro quadro: a geracao casa cada Present com o preparo enviado antes dele (sem
+    // isso ela se desalinha na partida e junta a imagem de um quadro com o movimento do seguinte)
+    static std::once_flag filaUma;
+    std::call_once(filaUma, [&] {
+        Microsoft::WRL::ComPtr<ID3D12Device> d;
+        if (SUCCEEDED(lista->GetDevice(IID_PPV_ARGS(&d))))
+            GanchoFila(d.Get());
+    });
     GeracaoQuadro(ctx, u, lista);
     if (g_clienteOk)
         g_cli.EsperaEdicao(g_mx); // sem atraso: a edicao do quadro anterior, sem segurar o mutex (o Execute usa)
@@ -583,7 +688,6 @@ ffxReturnCode_t Despacha(ffxContext* ctx, const ffxDispatchDescHeader* desc)
         Log(g_clienteOk ? "cliente pronto (%s)" : "cliente falhou: %s", g_clienteOk ? nome : g_cli.UltimoErro());
         if (!g_clienteOk)
             return r;
-        GanchoFila(g_dev);
     }
     uint32_t flags = 0, maxRenderW = 0, maxRenderH = 0;
     if (ctx)
@@ -701,8 +805,232 @@ ffxReturnCode_t Despacha(ffxContext* ctx, const ffxDispatchDescHeader* desc)
 }
 
 // procura a DLL do upscaler do jogo (pode carregar depois: o jogo so carrega o FSR quando ele e escolhido no menu)
+// ---- vigia de travamento: se os quadros param ou a janela do jogo trava, o log ganha onde cada thread esta parada
+// (modulo + deslocamento; os do modulo saem pelo DLSS5Buffer.map da compilacao) ----
+void NomeEndereco(DWORD64 a, char* b, size_t n)
+{
+    HMODULE md = nullptr;
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(a), &md) &&
+        md)
+    {
+        char p[MAX_PATH];
+        GetModuleFileNameA(md, p, MAX_PATH);
+        const char* nome = strrchr(p, '\\');
+        snprintf(b, n, "%s+0x%llx", nome ? nome + 1 : p, (unsigned long long)(a - DWORD64(md)));
+    }
+    else
+        snprintf(b, n, "0x%llx", (unsigned long long)a);
+}
+
+// desenrola uma pilha a partir do contexto (a thread ja foi solta: parada numa espera a pilha nao muda; se ela andou, a
+// leitura pode falhar e o __except corta)
+int Desenrola(CONTEXT c, DWORD64* pcs, int max)
+{
+    int k = 0;
+    __try
+    {
+        while (k < max && c.Rip)
+        {
+            pcs[k++] = c.Rip;
+            DWORD64 base = 0;
+            PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(c.Rip, &base, nullptr);
+            if (!f)
+            {
+                c.Rip = *reinterpret_cast<DWORD64*>(c.Rsp); // funcao folha: o retorno no topo da pilha
+                c.Rsp += 8;
+            }
+            else
+            {
+                void* hd = nullptr;
+                DWORD64 ef = 0;
+                RtlVirtualUnwind(UNW_FLAG_NHANDLER, base, c.Rip, f, &c, &hd, &ef, nullptr);
+            }
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+    return k;
+}
+
+void RelataPilhas(const char* motivo)
+{
+    Log("VIGIA: %s -- onde cada thread esta:", motivo);
+    HANDLE s = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (s == INVALID_HANDLE_VALUE)
+        return;
+    THREADENTRY32 te{sizeof te};
+    const DWORD pid = GetCurrentProcessId(), eu = GetCurrentThreadId();
+    for (BOOL ok = Thread32First(s, &te); ok; ok = Thread32Next(s, &te))
+    {
+        if (te.th32OwnerProcessID != pid || te.th32ThreadID == eu)
+            continue;
+        HANDLE t = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_LIMITED_INFORMATION, FALSE,
+                              te.th32ThreadID);
+        if (!t)
+            continue;
+        CONTEXT c{};
+        c.ContextFlags = CONTEXT_FULL;
+        bool pegou = false;
+        if (SuspendThread(t) != DWORD(-1)) // so o instante do contexto: nada e alocado com ela parada
+        {
+            pegou = GetThreadContext(t, &c) != 0;
+            ResumeThread(t);
+        }
+        char nome[64] = "";
+        PWSTR w = nullptr;
+        if (SUCCEEDED(GetThreadDescription(t, &w)) && w)
+        {
+            WideCharToMultiByte(CP_UTF8, 0, w, -1, nome, sizeof nome, nullptr, nullptr);
+            LocalFree(w);
+        }
+        CloseHandle(t);
+        if (!pegou)
+            continue;
+        DWORD64 pcs[20];
+        const int n = Desenrola(c, pcs, 20);
+        char linha[2048];
+        int p = snprintf(linha, sizeof linha, "  thread %lu '%s':", te.th32ThreadID, nome);
+        for (int i = 0; i < n && p < int(sizeof linha) - 80; ++i)
+        {
+            char e[96];
+            NomeEndereco(pcs[i], e, sizeof e);
+            p += snprintf(linha + p, sizeof linha - p, " %s", e);
+        }
+        Log("%s", linha);
+    }
+    CloseHandle(s);
+}
+
+// a taxa fisica do sinal de video do monitor `gdi` (QueryDisplayConfig com QDC_VIRTUAL_REFRESH_RATE_AWARE): com a taxa
+// dinamica do Windows 11 a area de trabalho fica "virtual" a 60 Hz e a tela segue a 120 -- EnumDisplaySettings so ve os 60
+// (a geracao saia desligada num monitor de 120 Hz com FreeSync). 0 = sem a informacao
+uint32_t TaxaDoSinal(const wchar_t* gdi)
+{
+    const UINT32 fl = QDC_ONLY_ACTIVE_PATHS | 0x40; // QDC_VIRTUAL_REFRESH_RATE_AWARE (Windows 11)
+    UINT32 np = 0, nm = 0;
+    if (GetDisplayConfigBufferSizes(fl, &np, &nm) != ERROR_SUCCESS || !np || !nm)
+        return 0;
+    std::vector<DISPLAYCONFIG_PATH_INFO> pa(np);
+    std::vector<DISPLAYCONFIG_MODE_INFO> mo(nm);
+    if (QueryDisplayConfig(fl, &np, pa.data(), &nm, mo.data(), nullptr) != ERROR_SUCCESS)
+        return 0;
+    for (UINT32 i = 0; i < np; ++i)
+    {
+        DISPLAYCONFIG_SOURCE_DEVICE_NAME sn{};
+        sn.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+        sn.header.size = sizeof sn;
+        sn.header.adapterId = pa[i].sourceInfo.adapterId;
+        sn.header.id = pa[i].sourceInfo.id;
+        if (DisplayConfigGetDeviceInfo(&sn.header) != ERROR_SUCCESS || _wcsicmp(sn.viewGdiDeviceName, gdi))
+            continue;
+        const UINT32 k = pa[i].targetInfo.modeInfoIdx;
+        if (k < nm && mo[k].infoType == DISPLAYCONFIG_MODE_INFO_TYPE_TARGET)
+        {
+            const DISPLAYCONFIG_RATIONAL& v = mo[k].targetMode.targetVideoSignalInfo.vSyncFreq;
+            return v.Denominator ? uint32_t(double(v.Numerator) / v.Denominator + 0.5) : 0;
+        }
+    }
+    return 0;
+}
+
+// a taxa do monitor da janela do jogo e a maior que ele aceita nesta resolucao (nesta thread, nunca na de render)
+void MedeTaxa(HWND j)
+{
+    static std::wstring monitor;
+    static DWORD w = 0, h = 0;
+    static uint32_t maximo = 0;
+    MONITORINFOEXW mi{};
+    mi.cbSize = sizeof mi;
+    DEVMODEW dm{};
+    dm.dmSize = sizeof dm;
+    if (!j || !GetMonitorInfoW(MonitorFromWindow(j, MONITOR_DEFAULTTONEAREST), &mi) ||
+        !EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm))
+        return;
+    const uint32_t sinal = TaxaDoSinal(mi.szDevice);
+    const uint32_t hz = sinal ? sinal : dm.dmDisplayFrequency > 1 ? dm.dmDisplayFrequency : 0;
+    if (monitor != mi.szDevice || w != dm.dmPelsWidth || h != dm.dmPelsHeight)
+    {
+        monitor = mi.szDevice;
+        w = dm.dmPelsWidth;
+        h = dm.dmPelsHeight;
+        maximo = hz;
+        DEVMODEW d{};
+        d.dmSize = sizeof d;
+        for (DWORD i = 0; EnumDisplaySettingsW(mi.szDevice, i, &d); ++i)
+            if (d.dmPelsWidth == w && d.dmPelsHeight == h)
+                maximo = std::max<uint32_t>(maximo, d.dmDisplayFrequency);
+    }
+    g_ger.DefineTaxa(hz, maximo);
+}
+
+// acessos invalidos (o TLOU2 caiu com 0xc0000005 no proprio codigo, com o overlay conectando): onde foi e a pilha, no log.
+// So registra (o jogo pode tratar o dele); no maximo 5
+LONG CALLBACK Excecao(EXCEPTION_POINTERS* e)
+{
+    static std::atomic<int> vistos{0};
+    if (e->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || vistos++ >= 5)
+        return EXCEPTION_CONTINUE_SEARCH;
+    DWORD64 pcs[20];
+    const int n = Desenrola(*e->ContextRecord, pcs, 20);
+    char linha[2048];
+    int p = snprintf(linha, sizeof linha, "ACESSO INVALIDO (%s 0x%llx) na thread %lu:",
+                     e->ExceptionRecord->ExceptionInformation[0] ? "escrita em" : "leitura de",
+                     (unsigned long long)e->ExceptionRecord->ExceptionInformation[1], GetCurrentThreadId());
+    for (int i = 0; i < n && p < int(sizeof linha) - 80; ++i)
+    {
+        char s[96];
+        NomeEndereco(pcs[i], s, sizeof s);
+        p += snprintf(linha + p, sizeof linha - p, " %s", s);
+    }
+    Log("%s", linha);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+DWORD WINAPI Vigia(void*)
+{
+    AddVectoredExceptionHandler(0, Excecao);
+    int relatos = 0, voltas = 0;
+    bool relatado = false;
+    ULONGLONG travadaDesde = 0;
+    for (;;)
+    {
+        Sleep(500);
+        const ULONGLONG agora = GetTickCount64(), ult = g_ultimoQuadro.load();
+        const HWND j = g_janelaJogo.load();
+        if (voltas++ % 4 == 0)
+            MedeTaxa(j);
+        static bool tinha = false; // o swapchain da AMD saiu (o jogo o soltou: troca de modo de tela ou saida)
+        if (tinha && !g_ger.TemSwapchain())
+            Log("geracao: o jogo soltou o swapchain da AMD (o contexto saiu junto)");
+        tinha = g_ger.TemSwapchain();
+        if (relatos >= 3)
+            continue;
+        const bool semQuadro = ult && agora - ult > 4000;
+        const bool travada = j && IsWindow(j) && IsHungAppWindow(j);
+        travadaDesde = travada ? (travadaDesde ? travadaDesde : agora) : 0;
+        if (!semQuadro && !travada)
+        {
+            relatado = false;
+            continue;
+        }
+        if (relatado || (!semQuadro && agora - travadaDesde < 3000))
+            continue;
+        char motivo[160];
+        snprintf(motivo, sizeof motivo, "%s%s", semQuadro ? "sem quadro do FSR ha mais de 4 s" : "",
+                 travada ? (semQuadro ? " e a janela do jogo nao responde" : "a janela do jogo nao responde ha 3 s") : "");
+        RelataPilhas(motivo);
+        relatado = true;
+        ++relatos;
+    }
+    return 0;
+}
+
 DWORD WINAPI Instala(void*)
 {
+    if (HANDLE t = CreateThread(nullptr, 0, Vigia, nullptr, 0, nullptr))
+        CloseHandle(t);
     // os shaders do modulo compilam enquanto o jogo carrega (no primeiro quadro do FSR parariam o jogo por 14-25 s)
     dlss5ov::ClienteBuffer::PreCompila();
     // entrada primeiro: o painel do overlay pode abrir antes de o jogo usar o FSR
@@ -740,8 +1068,9 @@ DWORD WINAPI Instala(void*)
 
 } // namespace
 
-// ---- instalada na pasta do jogo como dxgi.dll: as funcoes da dxgi do Windows ----
+// ---- instalada na pasta do jogo como version.dll ou dxgi.dll: as funcoes da DLL do Windows de mesmo nome ----
 extern "C" void* g_dxgiFn[17]; // ProxyDxgi.asm
+extern "C" void* g_verFn[15];
 namespace {
 const char* const kDxgiNomes[17] = {"ApplyCompatResolutionQuirking", "CompatString", "CompatValue", "DXGID3D10CreateDevice",
                                     "DXGID3D10CreateLayeredDevice", "DXGID3D10GetLayeredDeviceSize",
@@ -749,9 +1078,14 @@ const char* const kDxgiNomes[17] = {"ApplyCompatResolutionQuirking", "CompatStri
                                     "DXGIDisableVBlankVirtualization", "DXGIDumpJournal", "DXGIGetDebugInterface1",
                                     "DXGIReportAdapterConfiguration", "PIXBeginCapture", "PIXEndCapture",
                                     "PIXGetCaptureState", "SetAppCompatStringPointer", "UpdateHMDEmulationStatus"};
+const char* const kVerNomes[15] = {"GetFileVersionInfoA", "GetFileVersionInfoByHandle", "GetFileVersionInfoExA",
+                                   "GetFileVersionInfoExW", "GetFileVersionInfoSizeA", "GetFileVersionInfoSizeExA",
+                                   "GetFileVersionInfoSizeExW", "GetFileVersionInfoSizeW", "GetFileVersionInfoW",
+                                   "VerFindFileA", "VerFindFileW", "VerInstallFileA", "VerInstallFileW", "VerQueryValueA",
+                                   "VerQueryValueW"};
 PfnCriaFab oSisFab = nullptr, oSisFab1 = nullptr;
 PfnCriaFab2 oSisFab2 = nullptr;
-std::once_flag g_resolveDxgi;
+std::once_flag g_resolveDxgi, g_resolveVersion;
 
 // Na pasta do jogo a dxgi.dll e carregada por todo programa dali (o relatorio de erros, o lancador...). O modulo so age
 // no executavel em que o overlay a instalou (DLSS5Overlay.alvo ao lado dela, um executavel por linha); sem a lista, em
@@ -810,6 +1144,18 @@ extern "C" void ResolveDxgiSistema()
     });
 }
 
+extern "C" void ResolveVersionSistema()
+{
+    std::call_once(g_resolveVersion, [] {
+        wchar_t p[MAX_PATH];
+        GetSystemDirectoryW(p, MAX_PATH);
+        wcscat_s(p, L"\\version.dll");
+        if (HMODULE d = LoadLibraryW(p))
+            for (int i = 0; i < 15; ++i)
+                g_verFn[i] = reinterpret_cast<void*>(GetProcAddress(d, kVerNomes[i]));
+    });
+}
+
 // as fabricas do jogo passam pelo modulo: a criacao do swapchain e enganchada nelas
 extern "C" HRESULT WINAPI PxCreateDXGIFactory(REFIID r, void** f)
 {
@@ -836,7 +1182,7 @@ extern "C" HRESULT WINAPI PxCreateDXGIFactory2(UINT fl, REFIID r, void** f)
     return h;
 }
 
-// marcador: o overlay reconhece a dxgi.dll instalada por ele (e a versao do protocolo dela)
+// marcador: o overlay reconhece a DLL instalada por ele (version.dll ou dxgi.dll) e a versao do protocolo dela
 extern "C" uint32_t DLSS5Ov_Modulo()
 {
     return dlss5ov::kVersao;
@@ -851,9 +1197,10 @@ BOOL APIENTRY DllMain(HMODULE m, DWORD motivo, LPVOID)
         wchar_t p[MAX_PATH];
         GetModuleFileNameW(m, p, MAX_PATH);
         const wchar_t* base = wcsrchr(p, L'\\');
-        g_proxy = base && !_wcsicmp(base + 1, L"dxgi.dll");
+        g_comoDxgi = base && !_wcsicmp(base + 1, L"dxgi.dll");
+        g_proxy = g_comoDxgi || (base && !_wcsicmp(base + 1, L"version.dll"));
         if (g_proxy && !EhOJogo(p))
-            return TRUE; // outro programa da pasta do jogo: so a dxgi do Windows (ProxyDxgi.asm)
+            return TRUE; // outro programa da pasta do jogo: so a DLL do Windows (ProxyDxgi.asm)
         std::wstring s(p);
         s = s.substr(0, s.find_last_of(L"\\/")) + L"\\DLSS5Buffer.log";
         g_log = _wfsopen(s.c_str(), L"w", 0x40 /* _SH_DENYNO */);
@@ -866,7 +1213,7 @@ BOOL APIENTRY DllMain(HMODULE m, DWORD motivo, LPVOID)
         if (GetLastError() == ERROR_ALREADY_EXISTS)
             return TRUE;
         Log("DLSS5Buffer.dll carregada em %s (pid %lu)%s", exe, GetCurrentProcessId(),
-            g_proxy ? " como dxgi.dll da pasta do jogo" : "");
+            g_comoDxgi ? " como dxgi.dll da pasta do jogo" : g_proxy ? " como version.dll da pasta do jogo" : "");
         if (g_proxy)
         {
             // instalada no jogo: entrou antes do DirectX, a geracao funciona sem abrir pelo overlay. O pedido vem do
@@ -874,6 +1221,8 @@ BOOL APIENTRY DllMain(HMODULE m, DWORD motivo, LPVOID)
             g_lancado = true;
             if (const wchar_t* t = _wgetenv(L"DLSS5_GERACAO"))
                 g_geracaoLancamento = uint32_t(_wtoi(t));
+            if (!g_comoDxgi) // como version.dll: as fabricas da dxgi do Windows sao enganchadas (como dxgi.dll ja passam aqui)
+                GanchaDxgiNaCarga();
         }
         // aberto pelo overlay (o jogo esta suspenso esperando o evento pronto): o pedido de geracao de quadros
         dlss5ov::NomeLancamento(nome, 96, GetCurrentProcessId());
@@ -892,7 +1241,7 @@ BOOL APIENTRY DllMain(HMODULE m, DWORD motivo, LPVOID)
             }
             CloseHandle(mp);
         }
-        if (lancado && !g_proxy) // como dxgi.dll as fabricas ja passam pelo modulo (PxCreateDXGIFactory*)
+        if (lancado && !g_proxy) // da pasta do jogo as fabricas ja passam pelo modulo
             if (HANDLE t = CreateThread(nullptr, 0, PreparaGeracao, nullptr, 0, nullptr))
                 CloseHandle(t);
         if (HANDLE t = CreateThread(nullptr, 0, Instala, nullptr, 0, nullptr))
