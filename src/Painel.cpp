@@ -1552,13 +1552,11 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                            "Escala do peso que a propria rede da a resposta anterior (forca x 0,74 x a decisao da cabeca de\n"
                            "historico). 1 = o da rede; menor = menos rastro e mais cintilacao; 0 = sem historico.", 1.f);
                 Deslizador("Limite do histórico", &cfg.recorteHistorico, 0.f, 4.f, "%.2f",
-                           "A resposta anterior da rede so entra dentro da faixa que a propria rede da AGORA em volta do\n"
-                           "pixel: media +- este numero de desvios da saida crua no 3x3 (o recorte por variancia do TAA).\n"
-                           "Corta o rastro em degraus: o que a rede pinta em volta de um objeto em movimento ficava no fundo\n"
-                           "que passa atras dele (mesma cor e profundidade, as guardas aceitavam) e andava com esse fundo,\n"
-                           "uma copia por quadro da rede. Medido a cada pixel e quadro: vale em qualquer jogo e fps.\n"
-                           "Menor = menos rastro e um pouco mais de cintilacao; 0 = sem limite (como antes).\n"
-                           "Precisa do runtime e do adaptador deste branch recompilados.", 1.f);
+                           "Nosso, nao da NVIDIA: a resposta anterior da rede so entra dentro da faixa que a propria rede\n"
+                           "da AGORA em volta do pixel (media +- este numero de desvios da saida crua no 3x3, o recorte por\n"
+                           "variancia do TAA). Foi feito contra o rastro da resposta atrasada (modo removido); sem ela so\n"
+                           "piora: cintilacao 0,237 -> 0,256, rastro e fantasma tambem (jogo de teste). 0 = sem limite\n"
+                           "(padrao, como a NVIDIA).", 0.f);
                 ImGui::EndDisabled();
                 if (!e.historicoRede.empty())
                 {

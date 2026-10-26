@@ -63,11 +63,13 @@ struct Config
     int profundidade = 0;   // blocos da rede grande: 0 = 71, 1 = 68, 2 = 63, 3 = 55, 4 = 47 (residuais pulados); mais rapido
     bool profundidadeAuto = false; // a profundidade segue a velocidade (medido: corta no maximo ~4,7 ms e estraga a imagem)
     int profundidadeMax = 3;      // no automatico, o nivel mais raso permitido
-    int temporalRede = 0;   // historico da propria rede (runtime lmxxf DLSS5_TEMPORAL_MODE): 0 desligado, 1 historico (com as
+    int temporalRede = 1;   // historico da propria rede (runtime lmxxf DLSS5_TEMPORAL_MODE): 0 desligado, 1 historico (com as
                             // guias de movimento e profundidade do overlay), 2 baixa freq., 3 realce; vale ao reabrir
     float realceTemporal = 1.f; // forca do modo 3 (0..2)
     float forcaHistorico = 1.f; // modo 1: escala do peso que a cabeca de historico da rede decide (0..1; 1 = o da rede)
-    float recorteHistorico = 1.f; // modo 1: recorte do historico pela vizinhanca da saida crua, desvios (0 = sem recorte)
+    float recorteHistorico = 0.f; // modo 1: recorte do historico pela vizinhanca da saida crua, desvios (0 = sem recorte;
+                                  // sem a resposta atrasada ele so piorava: cintilacao 0,237 -> 0,256, rastro e fantasma
+                                  // tambem, medido no jogo de teste)
     // A decodificacao da NVIDIA (ColorStrength / TransferStrength do runtime) fica em 1: repetia o Tom e a Forca da edicao
     bool reusoVit = true;   // reuso adaptativo do ViT do lmxxf (com perda pequena; vale ao reabrir o programa)
     float divisao = 0.5f;   // posicao da divisao no modo comparacao
