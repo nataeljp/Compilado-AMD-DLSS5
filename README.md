@@ -85,6 +85,15 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
     (só a última guarda o quadro atual como anterior) e o swapchain apresenta até 3 gerados por quadro do jogo, em ordem,
     com o intervalo do jogo dividido por N. Com t = 0,5 as contas são as da AMD: o 2x não muda. O módulo escreve no log o
     ritmo real das apresentações (intervalo médio, desvio e maior).
+  - **Limite pela taxa do monitor**: a tela nunca recebe mais quadros por segundo que a taxa atual do monitor (acima dela
+    cada atualização mostra pedaços de vários quadros: rasgo e fantasma, como o TLOU2 a 4x num monitor de 60 Hz). O N em
+    uso cai até caber (jogo × N ≤ taxa, 5% de folga) e só sobe com folga, sem ficar trocando; o painel mostra o pedido, o
+    em uso, a taxa e a maior que o monitor aceita (60 Hz com o jogo a 60 q/s: nenhum gerado cabe — suba a taxa no Windows).
+  - **Só no executável do jogo**: na pasta do jogo a `dxgi.dll` é carregada por todo programa dali (o relatório de erros
+    `crs-*.exe` do TLOU2, lançadores). O módulo só age nos executáveis listados em `DLSS5Overlay.alvo` (escrito pelo
+    overlay na instalação); nos outros ela só repassa a dxgi do Windows, sem ganchos nem log.
+  - **Troca de swapchain**: quando o jogo solta o swapchain e cria outro (modo de tela, HDR), o módulo solta o antigo da
+    AMD antes — vivo, ele ocupava a janela e a criação do jogo falhava ("problema com o driver de vídeo").
   - O jogo espera a edição do quadro anterior (1 quadro, como a NVIDIA roda o DLSS 5: a rede dentro do tempo do quadro)
     e a soma pelo movimento acumulado desde o quadro que a rede viu (nenhum quadro pula sem o movimento dele ser
     contado: era o "liga/desliga"), e só para a

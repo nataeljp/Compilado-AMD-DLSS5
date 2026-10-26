@@ -22,6 +22,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <mutex>
+#include <cwctype>
 #include <string>
 #include <unordered_map>
 
@@ -309,11 +310,25 @@ void GanchoFila(ID3D12Device* d)
 }
 
 // ---- geracao de quadros ----
+// o swapchain da AMD vai para esta criacao: o primeiro do jogo, ou um novo depois que o jogo soltou o anterior (troca de
+// modo de tela, HDR...) -- o antigo, preso so pelo modulo, sai antes; vivo, ele ocupa a janela e a criacao do jogo falha
+// (E_ACCESSDENIED: o "problema com o driver de video" do TLOU2). Com o anterior ainda em uso o novo segue sem geracao
+bool LiberaParaCriar()
+{
+    if (!g_ger.TemSwapchain())
+        return true;
+    if (!g_ger.SwapchainSolto())
+        return false;
+    g_ger.SoltaSwapchain();
+    Log("geracao: o jogo soltou o swapchain anterior (troca de modo de tela?); o novo tambem vai ser o da AMD");
+    return true;
+}
+
 HRESULT STDMETHODCALLTYPE CriaScHwnd(IDXGIFactory2* f, IUnknown* d, HWND h, const DXGI_SWAP_CHAIN_DESC1* sd,
                                      const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* fs, IDXGIOutput* o, IDXGISwapChain1** sc)
 {
     Microsoft::WRL::ComPtr<ID3D12CommandQueue> fila;
-    if (!t_criandoSc && g_lancado && !g_ger.TemSwapchain() && d && sd && SUCCEEDED(d->QueryInterface(IID_PPV_ARGS(&fila))))
+    if (!t_criandoSc && g_lancado && d && sd && SUCCEEDED(d->QueryInterface(IID_PPV_ARGS(&fila))) && LiberaParaCriar())
     {
         t_criandoSc = true;
         const HRESULT r = g_ger.CriaSwapchain(f, fila.Get(), h, sd, fs, sc);
@@ -332,7 +347,7 @@ HRESULT STDMETHODCALLTYPE CriaScHwnd(IDXGIFactory2* f, IUnknown* d, HWND h, cons
 HRESULT STDMETHODCALLTYPE CriaSc(IDXGIFactory* f, IUnknown* d, DXGI_SWAP_CHAIN_DESC* sd, IDXGISwapChain** sc)
 {
     Microsoft::WRL::ComPtr<ID3D12CommandQueue> fila;
-    if (!t_criandoSc && g_lancado && !g_ger.TemSwapchain() && d && sd && SUCCEEDED(d->QueryInterface(IID_PPV_ARGS(&fila))))
+    if (!t_criandoSc && g_lancado && d && sd && SUCCEEDED(d->QueryInterface(IID_PPV_ARGS(&fila))) && LiberaParaCriar())
     {
         t_criandoSc = true;
         const HRESULT r = g_ger.CriaSwapchain(f, fila.Get(), sd, sc);
@@ -473,6 +488,13 @@ void GeracaoQuadro(ffxContext* ctx, const ffxDispatchDescUpscale* u, ID3D12Graph
     static int estadoDito = 0;
     g_ger.Quadro(lista, g, std::min<uint32_t>(pedida, 4));
     ++g_quadrosGeracao;
+    if (cab)
+    {
+        cab->geracaoEmUso = pedida >= 2 ? g_ger.EmUso() : 0;
+        cab->hzMonitor = g_ger.Hz();
+        cab->hzMaximo = g_ger.HzMaximo();
+        cab->fpsJogo10 = uint32_t(g_ger.FpsJogo() * 10.0 + 0.5);
+    }
     if (const int est = g_ger.EstadoContexto(); est != estadoDito && est >= 1)
     {
         estadoDito = est;
@@ -494,10 +516,10 @@ void GeracaoQuadro(ffxContext* ctx, const ffxDispatchDescUpscale* u, ID3D12Graph
                      gerados = double(g_ger.Gerados() - antes) / s;
         double media = 0, desvio = 0, maior = 0;
         const uint32_t n = g_ger.Ritmo(media, desvio, maior);
-        Log("geracao: %s, jogo %.0f quadros/s + %.0f gerados/s = %.0f apresentados/s | ritmo: %u apresentacoes, a cada "
-            "%.2f ms (desvio %.2f, maior %.2f)",
-            pedida >= 2 ? (pedida >= 4 ? "ligada 4x" : pedida == 3 ? "ligada 3x" : "ligada 2x") : "desligada", jogo, gerados,
-            jogo + gerados, n, media, desvio, maior);
+        Log("geracao: pedida %ux, em uso %ux (monitor %u Hz, aceita ate %u), jogo %.0f quadros/s + %.0f gerados/s = %.0f "
+            "apresentados/s | ritmo: %u apresentacoes, a cada %.2f ms (desvio %.2f, maior %.2f)",
+            pedida >= 2 ? std::min<uint32_t>(pedida, 4) : 1, pedida >= 2 ? g_ger.EmUso() : 1, g_ger.Hz(), g_ger.HzMaximo(),
+            jogo, gerados, jogo + gerados, n, media, desvio, maior);
         antes = g_ger.Gerados();
         quadrosAntes = g_quadrosGeracao;
         marca = agora;
@@ -730,6 +752,42 @@ const char* const kDxgiNomes[17] = {"ApplyCompatResolutionQuirking", "CompatStri
 PfnCriaFab oSisFab = nullptr, oSisFab1 = nullptr;
 PfnCriaFab2 oSisFab2 = nullptr;
 std::once_flag g_resolveDxgi;
+
+// Na pasta do jogo a dxgi.dll e carregada por todo programa dali (o relatorio de erros, o lancador...). O modulo so age
+// no executavel em que o overlay a instalou (DLSS5Overlay.alvo ao lado dela, um executavel por linha); sem a lista, em
+// todos menos os auxiliares conhecidos. Nos outros ela so repassa a dxgi do Windows, sem ganchos nem log
+bool EhOJogo(const wchar_t* dll)
+{
+    wchar_t eu[MAX_PATH];
+    GetModuleFileNameW(nullptr, eu, MAX_PATH);
+    const wchar_t* b = wcsrchr(eu, L'\\');
+    const std::wstring exe = b ? b + 1 : eu;
+    std::wstring alvo(dll);
+    alvo = alvo.substr(0, alvo.find_last_of(L"\\/")) + L"\\DLSS5Overlay.alvo";
+    if (FILE* f = _wfopen(alvo.c_str(), L"r"))
+    {
+        bool achou = false;
+        char linha[MAX_PATH];
+        while (!achou && fgets(linha, sizeof linha, f))
+        {
+            std::string l(linha);
+            while (!l.empty() && (l.back() == '\n' || l.back() == '\r' || l.back() == ' '))
+                l.pop_back();
+            wchar_t w[MAX_PATH] = {};
+            MultiByteToWideChar(CP_UTF8, 0, l.c_str(), -1, w, MAX_PATH);
+            achou = !l.empty() && !_wcsicmp(w, exe.c_str());
+        }
+        fclose(f);
+        return achou;
+    }
+    std::wstring e = exe;
+    for (auto& ch : e)
+        ch = towlower(ch);
+    for (const wchar_t* x : {L"crs-", L"crash", L"report", L"launcher", L"unins", L"setup", L"redist", L"updater", L"helper"})
+        if (e.find(x) != std::wstring::npos)
+            return false;
+    return true;
+}
 } // namespace
 
 extern "C" void ResolveDxgiSistema()
@@ -792,6 +850,10 @@ BOOL APIENTRY DllMain(HMODULE m, DWORD motivo, LPVOID)
         DisableThreadLibraryCalls(m);
         wchar_t p[MAX_PATH];
         GetModuleFileNameW(m, p, MAX_PATH);
+        const wchar_t* base = wcsrchr(p, L'\\');
+        g_proxy = base && !_wcsicmp(base + 1, L"dxgi.dll");
+        if (g_proxy && !EhOJogo(p))
+            return TRUE; // outro programa da pasta do jogo: so a dxgi do Windows (ProxyDxgi.asm)
         std::wstring s(p);
         s = s.substr(0, s.find_last_of(L"\\/")) + L"\\DLSS5Buffer.log";
         g_log = _wfsopen(s.c_str(), L"w", 0x40 /* _SH_DENYNO */);
@@ -803,8 +865,6 @@ BOOL APIENTRY DllMain(HMODULE m, DWORD motivo, LPVOID)
         CreateEventW(nullptr, TRUE, FALSE, nome); // fica aberto ate o processo sair
         if (GetLastError() == ERROR_ALREADY_EXISTS)
             return TRUE;
-        const wchar_t* base = wcsrchr(p, L'\\');
-        g_proxy = base && !_wcsicmp(base + 1, L"dxgi.dll");
         Log("DLSS5Buffer.dll carregada em %s (pid %lu)%s", exe, GetCurrentProcessId(),
             g_proxy ? " como dxgi.dll da pasta do jogo" : "");
         if (g_proxy)

@@ -370,6 +370,16 @@ std::wstring ExeDoProcesso(DWORD pid)
 
 namespace {
 std::wstring DxgiDoJogo(const std::wstring& exe) { return exe.substr(0, exe.find_last_of(L"\\/")) + L"\\dxgi.dll"; }
+std::wstring AlvoDoJogo(const std::wstring& exe) { return exe.substr(0, exe.find_last_of(L"\\/")) + L"\\DLSS5Overlay.alvo"; }
+bool ParaLixeira(const std::wstring& arq)
+{
+    std::wstring de = arq + L'\0';
+    SHFILEOPSTRUCTW op{};
+    op.wFunc = FO_DELETE;
+    op.pFrom = de.c_str();
+    op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI;
+    return SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted;
+}
 std::vector<char> LeArquivo(const std::wstring& a)
 {
     std::vector<char> v;
@@ -393,6 +403,35 @@ bool EhNossa(const std::vector<char>& v)
 }
 } // namespace
 
+void GaranteAlvo(const std::wstring& exe)
+{
+    if (exe.empty())
+        return;
+    const std::wstring arq = AlvoDoJogo(exe);
+    const std::string nome = Utf8(exe.substr(exe.find_last_of(L"\\/") + 1));
+    const std::vector<char> v = LeArquivo(arq);
+    std::string tudo(v.begin(), v.end()), linha;
+    for (size_t i = 0; i <= tudo.size(); ++i)
+    {
+        if (i == tudo.size() || tudo[i] == '\n' || tudo[i] == '\r')
+        {
+            if (!linha.empty() && !_stricmp(linha.c_str(), nome.c_str()))
+                return; // ja esta
+            linha.clear();
+        }
+        else
+            linha += tudo[i];
+    }
+    if (!tudo.empty() && tudo.back() != '\n')
+        tudo += '\n';
+    tudo += nome + '\n';
+    if (FILE* f = _wfopen(arq.c_str(), L"wb"))
+    {
+        fwrite(tudo.data(), 1, tudo.size(), f);
+        fclose(f);
+    }
+}
+
 Instalacao EstadoInstalacao(const std::wstring& exe, const std::wstring& dll)
 {
     if (exe.empty())
@@ -413,6 +452,7 @@ std::string InstalaNoJogo(const std::wstring& exe, const std::wstring& dll)
     const Instalacao e = EstadoInstalacao(exe, dll);
     if (e == Instalacao::Outra)
         return "ja existe uma dxgi.dll de outro programa na pasta do jogo (ReShade, OptiScaler?): nao substitui";
+    GaranteAlvo(exe); // antes da DLL: ela nunca age fora do jogo
     if (e == Instalacao::Nossa)
         return "";
     if (CopyFileW(dll.c_str(), dst.c_str(), FALSE))
@@ -431,13 +471,12 @@ std::string RemoveDoJogo(const std::wstring& exe)
     if (!EhNossa(LeArquivo(dst)))
         return "a dxgi.dll da pasta do jogo nao e a do overlay: nao mexi";
     // para a Lixeira (desfaz), nunca apagada de vez
-    std::wstring de = dst + L'\0';
-    SHFILEOPSTRUCTW op{};
-    op.wFunc = FO_DELETE;
-    op.pFrom = de.c_str();
-    op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI;
-    if (SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted)
+    if (ParaLixeira(dst))
+    {
+        if (Existe(AlvoDoJogo(exe)))
+            ParaLixeira(AlvoDoJogo(exe));
         return "";
+    }
     return "nao consegui tirar a dxgi.dll (o jogo esta aberto? feche e tente de novo)";
 }
 

@@ -89,6 +89,17 @@ struct Geracao::Impl
     uint64_t gerados = 0;
     uint64_t chamadas = 0; // apresentacoes com geracao (cada uma gera n - 1)
 
+    // a tela nunca recebe mais quadros por segundo que a taxa do monitor: o N em uso cai ate caber e so sobe com folga
+    // (trocar entre 1 e 2 liga e desliga o swapchain da AMD: nada de ficar trocando)
+    std::chrono::steady_clock::time_point tAnt{}, trocaDesde{};
+    double msJogo = 0;
+    uint32_t hz = 0, hzMax = 0, nEmUso = 0;
+    ULONGLONG hzQuando = 0;
+    std::wstring hzMonitor;
+    DWORD hzW = 0, hzH = 0;
+    void Mede();
+    uint32_t NEmUso(uint32_t pedido);
+
     void Erro(const char* f, int codigo)
     {
         snprintf(erro, sizeof erro, "%s (0x%x)", f, codigo);
@@ -393,11 +404,115 @@ bool Geracao::TemSwapchain() const
     return p->sc != nullptr;
 }
 
+bool Geracao::SwapchainSolto() const
+{
+    if (!p->sc)
+        return false;
+    const ULONG r = p->sc->AddRef(); // a do modulo + as do jogo + esta
+    p->sc->Release();
+    return r <= 2;
+}
+
+void Geracao::SoltaSwapchain()
+{
+    if (p->criador.joinable())
+        p->criador.join();
+    p->Destroi(); // espera as apresentacoes da AMD
+    if (p->sc)
+        p->sc->Release();
+    if (p->dev)
+        p->dev->Release();
+    p->sc = nullptr;
+    p->ffxSc = nullptr;
+    p->dev = nullptr;
+    p->estado = 0;
+    p->quadro = 0;
+    p->nEmUso = 0;
+}
+
+// o ritmo do jogo (entre as chamadas de Quadro) e a taxa do monitor da janela (relida a cada 2 s; a maior que ele aceita,
+// so quando o monitor ou a resolucao mudam)
+void Geracao::Impl::Mede()
+{
+    const auto agora = std::chrono::steady_clock::now();
+    if (tAnt.time_since_epoch().count())
+    {
+        const double ms = std::chrono::duration<double, std::milli>(agora - tAnt).count();
+        if (ms > 0.5 && ms < 250.0)
+            msJogo = msJogo > 0 ? msJogo * 0.9 + ms * 0.1 : ms;
+    }
+    tAnt = agora;
+    const ULONGLONG t = GetTickCount64();
+    if (hzQuando && t - hzQuando < 2000)
+        return;
+    hzQuando = t;
+    HWND h = nullptr;
+    MONITORINFOEXW mi{};
+    mi.cbSize = sizeof mi;
+    DEVMODEW dm{};
+    dm.dmSize = sizeof dm;
+    if (!sc || FAILED(sc->GetHwnd(&h)) || !h || !GetMonitorInfoW(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mi) ||
+        !EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm))
+        return;
+    hz = dm.dmDisplayFrequency > 1 ? dm.dmDisplayFrequency : 0;
+    if (hzMonitor != mi.szDevice || hzW != dm.dmPelsWidth || hzH != dm.dmPelsHeight)
+    {
+        hzMonitor = mi.szDevice;
+        hzW = dm.dmPelsWidth;
+        hzH = dm.dmPelsHeight;
+        hzMax = hz;
+        DEVMODEW d{};
+        d.dmSize = sizeof d;
+        for (DWORD i = 0; EnumDisplaySettingsW(mi.szDevice, i, &d); ++i)
+            if (d.dmPelsWidth == hzW && d.dmPelsHeight == hzH)
+                hzMax = std::max<uint32_t>(hzMax, d.dmDisplayFrequency);
+    }
+}
+
+uint32_t Geracao::Impl::NEmUso(uint32_t pedido)
+{
+    static const bool semLimite = std::getenv("DLSS5_GERACAO_SEM_LIMITE") != nullptr; // testes de ritmo
+    if (pedido < 2)
+    {
+        nEmUso = 1;
+        trocaDesde = {};
+        return 1;
+    }
+    if (semLimite || !hz)
+        return nEmUso = pedido;
+    if (msJogo <= 0)
+        return 1; // o primeiro quadro: sem gerados ate saber o ritmo do jogo
+    const double fps = 1000.0 / msJogo;
+    uint32_t novo = nEmUso ? std::min(nEmUso, pedido) : pedido;
+    while (novo > 1 && fps * novo > hz * 1.05) // nao cabe: cai
+        --novo;
+    while (novo < pedido && fps * (novo + 1) <= hz * 0.97) // cabe com folga: sobe
+        ++novo;
+    if (!nEmUso || nEmUso > pedido) // o primeiro quadro, ou o pedido baixou no painel: ja
+    {
+        trocaDesde = {};
+        return nEmUso = novo;
+    }
+    const auto agora = std::chrono::steady_clock::now();
+    if (novo == nEmUso)
+        trocaDesde = {};
+    else if (!trocaDesde.time_since_epoch().count())
+        trocaDesde = agora;
+    else if (agora - trocaDesde >= std::chrono::milliseconds(novo < nEmUso ? 500 : 1500))
+    {
+        nEmUso = novo;
+        trocaDesde = {};
+    }
+    return nEmUso;
+}
+
 bool Geracao::Quadro(ID3D12GraphicsCommandList* c, const QuadroGeracao& q, uint32_t n)
 {
-    const bool ligada = n >= 2;
     if (!p->sc || !c || !q.prof || !q.mov || !q.renderW || !q.renderH)
         return false;
+    p->Mede();
+    n = p->NEmUso(std::min<uint32_t>(n, 4));
+    const bool ligada = n >= 2;
     DXGI_SWAP_CHAIN_DESC1 sd{};
     p->sc->GetDesc1(&sd);
     const uint32_t flags = (q.movNaTela ? FFX_FRAMEINTERPOLATION_ENABLE_DISPLAY_RESOLUTION_MOTION_VECTORS : 0) |
@@ -475,6 +590,26 @@ int Geracao::EstadoContexto() const
 double Geracao::MsCompilacao() const
 {
     return p->msCompilacao;
+}
+
+uint32_t Geracao::EmUso() const
+{
+    return p->nEmUso ? p->nEmUso : 1;
+}
+
+uint32_t Geracao::Hz() const
+{
+    return p->hz;
+}
+
+uint32_t Geracao::HzMaximo() const
+{
+    return p->hzMax;
+}
+
+double Geracao::FpsJogo() const
+{
+    return p->msJogo > 0 ? 1000.0 / p->msJogo : 0.0;
 }
 
 uint32_t Geracao::Ritmo(double& mediaMs, double& desvioMs, double& maxMs) const

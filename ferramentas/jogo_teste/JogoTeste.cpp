@@ -11,6 +11,8 @@
 // --como-jogo: faz o que um jogo faz, sem o cliente embutido -- cria o swapchain pela DXGI e chama o FSR pela DLL
 //   assinada da AMD (amd_fidelityfx_dx12.dll do FidelityFX SDK): e o teste da DLSS5Buffer.dll de verdade (aberto
 //   pelo overlay com a geracao, o swapchain vira o da AMD e o gancho do FSR alimenta a geracao)
+// --recria Q (com --como-jogo): no quadro Q solta o swapchain e cria outro na mesma janela, como um jogo que troca de
+//   modo de tela ou de HDR (o swapchain antigo preso por alguem faz a criacao falhar)
 #include "../../src/buffer/ClienteBuffer.h"
 #include "../../src/buffer/Geracao.h"
 #include "../../externo/ffx/ffx_api.h"
@@ -85,8 +87,11 @@ int wmain(int argc, wchar_t** argv)
     bool raw = false, laco = false, geracao = false, semOverlay = false, comoJogo = false;
     std::wstring modulo;
     uint32_t multi = 2;
+    UINT64 recria = 0;
     for (int i = 3; i + 1 < argc; ++i)
     {
+        if (!wcscmp(argv[i], L"--recria"))
+            recria = UINT64(_wtoi64(argv[i + 1]));
         if (!wcscmp(argv[i], L"--multi"))
             multi = uint32_t(std::clamp(_wtoi(argv[i + 1]), 2, 4));
         if (!wcscmp(argv[i], L"--voltas"))
@@ -224,6 +229,7 @@ int wmain(int argc, wchar_t** argv)
 
     // como um jogo: o swapchain pela DXGI (a DLSS5Buffer.dll aberta com a geracao troca pelo da AMD) e o FSR pela DLL
     // da AMD (a DLSS5Buffer.dll engancha ffxCreateContext/ffxDispatch dela)
+    DXGI_SWAP_CHAIN_DESC1 sdJogo{};
     PfnFfxCreateContext fsrCria = nullptr;
     PfnFfxDispatch fsrDespacha = nullptr;
     ffxContext fsr = nullptr;
@@ -269,6 +275,7 @@ int wmain(int argc, wchar_t** argv)
         sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
         sd.BufferCount = 3;
         sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+        sdJogo = sd;
         ComPtr<IDXGISwapChain1> sc1;
         Ck(fab->CreateSwapChainForHwnd(fila.Get(), jan, &sd, nullptr, nullptr, &sc1), "CreateSwapChainForHwnd");
         sc1.As(&sc);
@@ -424,6 +431,30 @@ int wmain(int argc, wchar_t** argv)
                 Ck(fila->Signal(cerca.Get(), ++valor), "signal");
                 cerca->SetEventOnCompletion(valor, ev);
                 WaitForSingleObject(ev, INFINITE);
+                if (recria && UINT64(v) * N + i + 1 == recria)
+                {
+                    // como um jogo que troca o modo de tela: solta o swapchain e cria outro na mesma janela
+                    sc.Reset();
+                    for (int k = 0; k < 20; ++k) // a DXGI solta a janela um pouco depois (como um jogo entre telas)
+                    {
+                        bomba();
+                        Sleep(10);
+                    }
+                    ComPtr<IDXGIFactory2> fab;
+                    Ck(CreateDXGIFactory2(0, IID_PPV_ARGS(&fab)), "CreateDXGIFactory2");
+                    ComPtr<IDXGISwapChain1> sc1;
+                    const HRESULT hr = fab->CreateSwapChainForHwnd(fila.Get(), jan, &sdJogo, nullptr, nullptr, &sc1);
+                    if (FAILED(hr))
+                    {
+                        printf("recriar o swapchain falhou: 0x%08lx\n", (unsigned long)hr);
+                        fflush(stdout);
+                        return 8;
+                    }
+                    sc1.As(&sc);
+                    sc->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709);
+                    printf("swapchain recriado no quadro %llu\n", (unsigned long long)recria);
+                    fflush(stdout);
+                }
                 proximo += passo;
                 std::this_thread::sleep_until(proximo);
                 continue;

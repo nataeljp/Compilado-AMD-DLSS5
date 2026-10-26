@@ -37,6 +37,9 @@ std::wstring ExeDoProcesso(DWORD pid);
 enum class Instalacao { Nenhuma, Nossa, Desatualizada, Outra };
 Instalacao EstadoInstalacao(const std::wstring& exe, const std::wstring& dll);
 std::string InstalaNoJogo(const std::wstring& exe, const std::wstring& dll); // "" = ok, senao o motivo
+// a DLL na pasta age so nos executaveis da lista DLSS5Overlay.alvo (os outros programas da pasta -- relatorio de erros,
+// lancador -- so passam pela dxgi do Windows): poe este executavel nela
+void GaranteAlvo(const std::wstring& exe);
 std::string RemoveDoJogo(const std::wstring& exe);
 
 } // namespace ov

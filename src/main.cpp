@@ -940,6 +940,8 @@ RWTexture2D<float4> saida : register(u0);
         pidBuffer = pid;
         exeJogo = ExeDoProcesso(pid);
         instalacao = EstadoInstalacao(exeJogo, Dll());
+        if (instalacao == Instalacao::Nossa || instalacao == Instalacao::Desatualizada)
+            GaranteAlvo(exeJogo); // instalacoes de antes da lista: a DLL passa a agir so neste executavel
         tentouInstalar = false;
         erroInstalacao.clear();
         CarregaPerfil(h);
@@ -2006,8 +2008,22 @@ RWTexture2D<float4> saida : register(u0);
         e.estadoGeracao = estadoGeracao;
         if (buffer && fb.Conectada() && fb.JogoVivo())
         {
+            const int pedida = std::min(cfg.geracao, 4);
+            const uint32_t emUso = fb.GeracaoEmUso(), hz = fb.HzMonitor(), hzMax = fb.HzMaximo();
+            const double fpsJogo = fb.FpsJogo();
             e.estadoGeracao =
-                e.geracaoPronta          ? (cfg.geracao >= 2 ? "geração " + std::to_string(std::min(cfg.geracao, 4)) +
+                e.geracaoPronta && cfg.geracao >= 2 && emUso && int(emUso) < pedida
+                    ? (emUso >= 2 ? Fmt("geração %dx pedida, %ux em uso: o monitor está a %u Hz e o jogo a %.0f q/s (a tela "
+                                        "não mostra mais que %u quadros por segundo; acima disso é rasgo)",
+                                        pedida, emUso, hz, fpsJogo, hz)
+                                  : Fmt("geração %dx pedida e nenhuma em uso: o monitor está a %u Hz e o jogo já faz %.0f q/s, "
+                                        "não cabe quadro gerado. ",
+                                        pedida, hz, fpsJogo) +
+                                        (hzMax > hz ? Fmt("O monitor aceita %u Hz: troque em Configurações > Sistema > Tela > "
+                                                          "Tela avançada > taxa de atualização.",
+                                                          hzMax)
+                                                    : std::string("Limite o jogo a 30 ou 40 q/s para usar 3x ou 2x.")))
+                : e.geracaoPronta        ? (cfg.geracao >= 2 ? "geração " + std::to_string(pedida) +
                                                                    "x ligada (swapchain da AMD em uso)"
                                                              : std::string("geração desligada (liga aqui, sem reabrir o jogo)"))
                 : cfg.geracao < 2        ? ""
