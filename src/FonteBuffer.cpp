@@ -192,7 +192,7 @@ Tex* FonteBuffer::EdicaoLivre()
     return &edicao[k];
 }
 
-void FonteBuffer::Publica(uint64_t n)
+void FonteBuffer::Publica(uint64_t n, bool luzLog)
 {
     if (slotEscrita < 0 || !Conectada())
         return;
@@ -200,6 +200,7 @@ void FonteBuffer::Publica(uint64_t n)
     if (FAILED(gpu->fila->Signal(cercaOverlay.Get(), v)))
         return;
     cab->edicao[slotEscrita].cerca = v;
+    cab->edicao[slotEscrita].luz = luzLog ? 1u : 0u;
     MemoryBarrier();
     cab->edicao[slotEscrita].quadro = n;
     ultimoPublicado = slotEscrita;

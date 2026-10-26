@@ -30,8 +30,9 @@ namespace dlss5ov {
 // desconhecido ou absurdo (os shaders comparam o Z, como antes)
 inline float TanMeioFov(float fovY) { return fovY > 0.01f && fovY < 3.1f ? std::tan(0.5f * fovY) : 0.f; }
 
-constexpr uint32_t kVersao = 5; // 2: movimento RG32F acumulado ate a exportacao anterior; 3: espera (sem atraso);
-                                // 4: quadros repetidos; 5: modo dos quadros gerados (repetido / mesclado)
+constexpr uint32_t kVersao = 6; // 2: movimento RG32F acumulado ate a exportacao anterior; 3: espera (sem atraso);
+                                // 4: quadros repetidos; 5: modo dos quadros gerados (repetido / mesclado);
+                                // 6: a luz de cada edicao (linear / logaritmica)
 constexpr uint32_t kSlotsEntrada = 2;
 constexpr uint32_t kSlotsEdicao = 3;
 
@@ -49,8 +50,9 @@ inline void NomeRecurso(wchar_t* b, size_t n, uint32_t pid, uint32_t geracao, co
 //   mov    RG32F,   movW x movH  (pixels da COR, acumulado do quadro atual ate a exportacao anterior: p_ant = p + mov)
 //   prof   R32F,    profW x profH (como o jogo entrega; profInvertida diz se perto = 1)
 //   exp    R32F,    1 x 1         (a exposicao aplicada na cor; 1 sem exposicao do jogo)
-//   edicao RGBA16F, corW x corH   (escrita pelo overlay; alfa = log2 da distancia da camera de cada pixel, para o
-//                                  jogo so reprojetar a edicao para a mesma superficie)
+//   edicao RGBA16F, corW x corH   (escrita pelo overlay; rgb = C(saida) - C(cor), C(x) = x / (1 + luma), ou na luz
+//                                  logaritmica log2(saida / cor) com piso 1/512; alfa = log2 da distancia da camera de
+//                                  cada pixel, para o jogo so reprojetar a edicao para a mesma superficie)
 
 struct SlotEntrada // escrito pelo jogo
 {
@@ -64,6 +66,8 @@ struct SlotEdicao // escrito pelo overlay
 {
     volatile uint64_t quadro; // a edicao foi feita na cor do quadro N do jogo (0 = vazio)
     volatile uint64_t cerca;  // a escrita terminou quando cercaOverlay >= cerca
+    volatile uint32_t luz;    // 0 = luz linear (diferenca no espaco comprimido), 1 = logaritmica (log2 da razao)
+    uint32_t pad;
 };
 
 struct Cabecalho

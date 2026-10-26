@@ -237,7 +237,7 @@ cbuffer C : register(b0) { uint fw; uint fh; uint dw; uint dh; float forca; uint
                            uint pad3; uint pad4;
                            float satR; float satY; float satG; float satC; float satB; float satM;
                            float luzR; float luzY; float luzG; float luzC; float luzB; float luzM;
-                           uint usaMatiz; uint temCrua; uint padA0; uint padA1; };
+                           uint usaMatiz; uint temCrua; uint luzLog; uint padA1; };
 Texture2D<float4> inteiro : register(t0);
 Texture2D<float4> fed : register(t1);
 Texture2D<float4> edicao : register(t2);
@@ -347,7 +347,10 @@ float3 CorPorMatiz(float3 c)
     // o resultado parte do quadro com o mesmo ajuste que a rede viu; o lado "original" fica intacto
     const float3 base = PreAjuste(o, TelaDe(o, hdr != 0 && sanduiche == 0, filmica != 0), preLuz, preSombra, preLimiar,
                                   preLimiarSombra, preCor);
-    float3 r = base + forca * e;
+    // luz linear: a diferenca somada; logaritmica: a razao de luz (log2) multiplicada -- sem edicao (e = 0) o pixel fica
+    // igual, e abaixo do piso 1/512 a razao vale sobre o piso (preto nao vira divisao por zero)
+    float3 r = luzLog ? base + max(base, 1.0 / 512.0) * (exp2(forca * e) - 1.0) : base + forca * e;
+    if (luzLog) e = r - base; // "So a edicao" mostra a diferenca nos dois modos
     if (usaMatiz) r = sanduiche ? SoftKnee(CorPorMatiz(SoftKneeInv(r))) : CorPorMatiz(r);
     bool orig = modo == 1 || (modo == 2 && (float)p.x < divisao * fw);
     float3 c = orig ? Tela(o, false, folga) : Tela(r, grada != 0, folga);
@@ -439,12 +442,12 @@ float3 Le(int2 q)
 )";
 
 // captura de buffer: a edicao que o jogo soma no quadro seguinte, no espaco comprimido (C(x) = x / (1 + luma), o mesmo
-// do Temporal e do modulo do jogo): C(saida) - C(cor do jogo)
+// do Temporal e do modulo do jogo): C(saida) - C(cor do jogo); na luz logaritmica, log2(saida / cor do jogo)
 // No alfa vai log2 da distancia da camera do pixel: o jogo so reprojeta a edicao de um ponto para a MESMA superficie
 // (onde o objeto acabou de sair, o vetor aponta para o objeto; sem o teste, a edicao dele virava rastro no fundo).
 inline const char* Exporta = R"(
 cbuffer C : register(b0) { uint w; uint h; uint profW; uint profH; float perto; float longe; uint invertida; uint infinita;
-                           float tanY; float aspecto; uint pad0; uint pad1; };
+                           float tanY; float aspecto; uint luzLog; uint pad1; };
 Texture2D<float4> cor : register(t0);   // a cor que o jogo mandou (linear x exposicao)
 Texture2D<float4> saida : register(t1); // o resultado no mesmo espaco
 Texture2D<float> prof : register(t2);   // a profundidade que o jogo mandou
@@ -491,7 +494,9 @@ float Radial(float z, float2 uv)
     r = all(isfinite(r)) ? r : o;
     const uint2 pp = min(uint2((p + 0.5) * float2(profW, profH) / float2(w, h)), uint2(profW - 1, profH - 1));
     const float z = Radial(Dist(prof.Load(int3(pp, 0))), (p + 0.5) / float2(w, h));
-    edicao[p] = float4(Comprime(r) - Comprime(o), log2(max(z, 1e-6)));
+    // luz linear: a diferenca no espaco comprimido; logaritmica: log2 da razao de luz (piso 1/512)
+    const float3 ed = luzLog ? log2(max(r, 1.0 / 512.0) / max(o, 1.0 / 512.0)) : Comprime(r) - Comprime(o);
+    edicao[p] = float4(ed, log2(max(z, 1e-6)));
 }
 )";
 

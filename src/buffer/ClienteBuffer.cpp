@@ -26,12 +26,12 @@ cbuffer K : register(b0)
     uint ativos, zera;  // acumuladores: os que seguem e os que comecam neste quadro (ancora = este quadro)
     uint jExporta;      // acumulador cujo deslocamento vai como movimento exportado (3 = so o deste quadro)
     float tanY, aspecto; // tan(fovY / 2) e largura / altura: distancia radial (0 = sem FOV: Z da camera)
-    uint pad2;
+    uint luzLog;        // a edicao lida (edicao) e logaritmica: log2 da razao de luz, nao a diferenca comprimida
     uint movVW, movVH, profVW, profVH; // a regiao valida do movimento e da profundidade do jogo neste quadro
     uint mostra;        // quadros repetidos: a saida e o quadro guardado da ancora + a edicao dela, sem movimento
     uint guarda;        // quadros repetidos: guarda a cor deste quadro (exportado) para mostrar quando a edicao chegar
     float peso;         // mesclado: quanto do processado seguinte (guardadaLe2 + edicao2) entra; 0 = so a ancora
-    uint pad4;
+    uint luzLog2;       // a luz da edicao2
 };
 Texture2D<float2> movJogo : register(t0);
 Texture2D<float> profJogo : register(t1);
@@ -201,10 +201,18 @@ float NaoOculto(float2 qAnc, float z, uint2 pz)
     return 1.0 - smoothstep(0.05 + 2.0 * g, 0.15 + 2.0 * g, max(z - zmin, 0.0) / max(zmin, 1e-6));
 }
 
-// a cor guardada (x exposicao) com a edicao do overlay somada no espaco comprimido: a edicao encolhe ate nenhum canal
-// ficar negativo e o brilho para em 4x o original + 4 (as mesmas regras do caminho normal, abaixo)
-float3 Editado(float3 ca, float3 ev)
+// a cor (x exposicao) com a edicao do overlay. Luz linear: somada no espaco comprimido, a edicao encolhe ate nenhum
+// canal ficar negativo (cortar canal por canal mudava o matiz). Logaritmica: a razao de luz multiplicada (piso 1/512;
+// sem edicao o pixel fica igual). Nas duas o brilho para em 4x o original + 4, como no overlay.
+float3 Editado(float3 ca, float3 ev, uint log)
 {
+    if (log)
+    {
+        float3 y = max(ca + max(ca, 1.0 / 512.0) * (exp2(ev) - 1.0), 0.0);
+        const float lo = max(Lum(ca), 0.0) * 4.0 + 4.0, ly = Lum(y);
+        if (ly > lo) y *= lo / ly;
+        return y;
+    }
     const float3 ag = Comprime(ca);
     float tg = 1.0;
     [unroll] for (int i = 0; i < 3; ++i)
@@ -231,9 +239,9 @@ float3 Editado(float3 ca, float3 ev)
     {
         // quadro repetido: o quadro guardado da ancora com a edicao feita nele, pixel a pixel (nada trazido pelo movimento);
         // mesclado: misturado com o processado seguinte (tambem com a edicao dele) na proporcao `peso`
-        float3 og = Editado(guardadaLe.Load(int3(p, 0)).rgb, edicao.Load(int3(p, 0)).rgb);
+        float3 og = Editado(guardadaLe.Load(int3(p, 0)).rgb, edicao.Load(int3(p, 0)).rgb, luzLog);
         if (peso > 0.0)
-            og = lerp(og, Editado(guardadaLe2.Load(int3(p, 0)).rgb, edicao2.Load(int3(p, 0)).rgb), peso);
+            og = lerp(og, Editado(guardadaLe2.Load(int3(p, 0)).rgb, edicao2.Load(int3(p, 0)).rgb, luzLog2), peso);
         og /= e;
         corJogo[p] = float4(srgb ? Srgb(og) : og, c4.a);
         return;
@@ -311,17 +319,7 @@ float3 Editado(float3 ca, float3 ev)
         }
     }
     ed = soma > 1e-4 ? ed / soma : 0;
-    // a edicao inteira encolhe (mesma direcao de cor) ate nenhum canal ficar negativo: cortar canal por canal mudava o
-    // matiz (sem vermelho = ciano, sem verde = magenta). Teto de brilho como no overlay: 4x o original + 4.
-    const float3 a = Comprime(ce);
-    float t = 1.0;
-    [unroll] for (int i = 0; i < 3; ++i)
-        if (ed[i] < 0.0) t = min(t, a[i] / max(-ed[i], 1e-6));
-    float3 y = a + ed * saturate(t);
-    const float lo = max(Lum(ce), 0.0) * 4.0 + 4.0;
-    const float limL = lo / (1.0 + lo), ly = Lum(y);
-    if (ly > limL) y *= limL / ly;
-    const float3 o = max(Expande(y), 0.0) / e;
+    const float3 o = Editado(ce, ed, luzLog) / e;
     corJogo[p] = float4(srgb ? Srgb(o) : o, c4.a);
 }
 )";
@@ -998,17 +996,18 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
         float perto, longe;
         UINT ativos, zera, jExporta;
         float tanY, aspecto;
-        UINT pad2;
+        UINT luzLog;
         UINT movVW, movVH, profVW, profVH;
         UINT mostra, guarda;
         float peso;
-        UINT pad4;
+        UINT luzLog2;
     } k_{UINT(corW), corH, movW, movH, profW, profH, exporta ? 1u : 0u, k >= 0 ? 1u : 0u,
          e.movEscalaX * float(corW) / float(mw), e.movEscalaY * float(corH) / float(mh), e.preExposicao,
          e.escalaExposicao, e.exposicao ? 1u : 0u, Srgb(fmtCor) ? 1u : 0u,
          (e.profInvertidaConhecida ? e.profInvertida : cab->profInvertidaUsada != 0) ? 1u : 0u, infinita ? 1u : 0u, perto,
-         longe, ativos, zera, jExp >= 0 ? UINT(jExp) : 3u, TanMeioFov(e.fovY), float(corW) / float(corH), 0,
-         movValW, movValH, profValW, profValH, iA >= 0 ? 1u : 0u, iG >= 0 ? 1u : 0u, iB >= 0 ? peso : 0.f, 0};
+         longe, ativos, zera, jExp >= 0 ? UINT(jExp) : 3u, TanMeioFov(e.fovY), float(corW) / float(corH),
+         kLe >= 0 ? cab->edicao[kLe].luz : 0u, movValW, movValH, profValW, profValH, iA >= 0 ? 1u : 0u,
+         iG >= 0 ? 1u : 0u, iB >= 0 ? peso : 0.f, kB >= 0 ? cab->edicao[kB].luz : 0u};
 
     const D3D12_RESOURCE_STATES SRV = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     auto estado = [&](int j, UINT i, D3D12_RESOURCE_STATES para) {

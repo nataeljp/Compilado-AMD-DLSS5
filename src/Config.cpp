@@ -85,6 +85,7 @@ void Config::Carrega(const std::wstring& arquivo)
     F("corComposicao", temporal.cor);
     F("protecao", temporal.guarda);
     F("exposicao", temporal.exposicao);
+    B("luzLogaritmica", temporal.luzLog);
     I("passes", rede.passes);
     B("redeCompleta", rede.redeCompleta);
     I("alturaRede", alturaRede);
@@ -137,6 +138,7 @@ std::string Config::Texto() const
     f << "  \"corComposicao\": " << temporal.cor << ",\n";
     f << "  \"protecao\": " << temporal.guarda << ",\n";
     f << "  \"exposicao\": " << temporal.exposicao << ",\n";
+    f << "  \"luzLogaritmica\": " << b(temporal.luzLog) << ",\n";
     f << "  \"passes\": " << rede.passes << ",\n";
     f << "  \"redeCompleta\": " << b(rede.redeCompleta) << ",\n";
     f << "  \"alturaRede\": " << alturaRede << ",\n";

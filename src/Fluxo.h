@@ -18,8 +18,10 @@ class Fluxo
 {
   public:
     void Cria(ID3D12Device* d);
-    // garante os recursos para o tamanho da rede (w x h)
-    void Garante(ID3D12Device* d, UINT w, UINT h);
+    // garante os recursos para o tamanho da rede (w x h): piramide = o fluxo optico (captura de video); sem ela so o do
+    // movimento e da profundidade do jogo (captura de buffer). Libera: devolve tudo (GPU sem trabalho pendente)
+    void Garante(ID3D12Device* d, UINT w, UINT h, bool piramide);
+    void Libera();
     // calcula o movimento de `cor` (linear, w x h, estado SRV) contra o quadro anterior guardado;
     // na primeira chamada (ou depois de Reinicia) devolve false: nao ha anterior
     bool Calcula(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, ID3D12Resource* cor,
@@ -83,6 +85,7 @@ class Fluxo
     Tex movBruto;                   // vetor de ida da busca (meia resolucao ampliada), antes do refinamento
     UINT atual = 0;
     UINT w = 0, h = 0;
+    bool comPiramide = false;
     bool temAnterior = false;
 };
 

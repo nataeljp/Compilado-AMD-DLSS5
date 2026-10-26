@@ -1397,6 +1397,17 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         if (avancado)
         {
             Secao("COMPOSIÇÃO", false);
+            {
+                const char* luzes[] = {"Luz linear", "Luz logarítmica"};
+                int il = cfg.temporal.luzLog ? 1 : 0;
+                if (Segmentos("luz", luzes, 2, &il, 30 * g_e))
+                    cfg.temporal.luzLog = il == 1;
+                Dica("Como a edicao da rede chega ao quadro. Linear: a diferenca de luz e somada. Logaritmica: a razao\n"
+                     "de luz (log2) e multiplicada, entao um realce (olho, labio, quina) cresce na proporcao do proprio\n"
+                     "brilho. Na mesma resolucao e com forca 1 dao o mesmo resultado; diferem quando a rede roda menor\n"
+                     "que a tela (a edicao e ampliada), com outra forca e na captura de buffer (o jogo leva a edicao ao\n"
+                     "quadro seguinte).");
+            }
             const char* comps[] = {"Crua (resposta - proxy)", "Referencia NVIDIA/RenoDX"};
             ImGui::SetNextItemWidth(lc);
             ImGui::Combo("##comp", &cfg.temporal.composicao, comps, 2);

@@ -1,4 +1,5 @@
 #include "Comum.h"
+#include <algorithm>
 #include <cstdarg>
 #include <chrono>
 #include <map>
@@ -243,7 +244,7 @@ D3D12_GPU_DESCRIPTOR_HANDLE Descritores::Gpu_(UINT i) const
 struct TexVivas
 {
     std::mutex mx;
-    std::map<const Tex*, UINT64> m;
+    std::map<const Tex*, std::pair<UINT64, std::wstring>> m; // bytes, nome
 };
 static TexVivas& Vivas()
 {
@@ -256,12 +257,48 @@ UINT64 Tex::BytesVivos()
     std::lock_guard<std::mutex> lk(Vivas().mx);
     UINT64 s = 0;
     for (const auto& v : Vivas().m)
-        s += v.second;
+        s += v.second.first;
+    return s;
+}
+
+std::string Tex::ListaVivas()
+{
+    std::map<std::wstring, std::pair<UINT64, int>> porNome;
+    {
+        std::lock_guard<std::mutex> lk(Vivas().mx);
+        for (const auto& v : Vivas().m)
+        {
+            auto& p = porNome[v.second.second];
+            p.first += v.second.first;
+            ++p.second;
+        }
+    }
+    std::vector<std::pair<UINT64, std::string>> l;
+    for (const auto& [nome, p] : porNome)
+    {
+        std::string n(nome.begin(), nome.end()); // os nomes sao ASCII
+        l.emplace_back(p.first, Fmt("%s%s %.0f MB", n.empty() ? "(sem nome)" : n.c_str(),
+                                    p.second > 1 ? Fmt(" x%d", p.second).c_str() : "", p.first / 1048576.0));
+    }
+    std::sort(l.begin(), l.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    std::string s;
+    for (const auto& [b, t] : l)
+        s += (s.empty() ? "" : "; ") + t;
     return s;
 }
 
 Tex::~Tex()
 {
+    std::lock_guard<std::mutex> lk(Vivas().mx);
+    Vivas().m.erase(this);
+}
+
+void Tex::Solta()
+{
+    r.Reset();
+    w = h = 0;
+    fmt = DXGI_FORMAT_UNKNOWN;
+    estado = D3D12_RESOURCE_STATE_COMMON;
     std::lock_guard<std::mutex> lk(Vivas().mx);
     Vivas().m.erase(this);
 }
@@ -291,7 +328,7 @@ void Tex::Cria(ID3D12Device* d, UINT w_, UINT h_, DXGI_FORMAT f, const wchar_t* 
         r->SetName(nome);
     const UINT64 bytes = d->GetResourceAllocationInfo(0, 1, &rd).SizeInBytes;
     std::lock_guard<std::mutex> lk(Vivas().mx);
-    Vivas().m[this] = bytes;
+    Vivas().m[this] = {bytes, nome ? nome : L""};
 }
 
 void Barreira(ID3D12GraphicsCommandList* c, ID3D12Resource* r, D3D12_RESOURCE_STATES a, D3D12_RESOURCE_STATES b)

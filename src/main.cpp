@@ -186,6 +186,13 @@ struct App
     int temporalSessao = 0;     // DLSS5_TEMPORAL_MODE passado ao runtime ao abrir (so muda ao reabrir o programa)
     // historico da propria rede com as guias (modo 1 e um runtime com LmxxfNrSetHistoryGuides)
     bool HistoricoRede() const { return temporalSessao == 1 && rede.TemGuias(); }
+    // quem usa o movimento: o historico da propria rede, a exibicao "Movimento", a gravacao, o dump e a profundidade
+    // automatica
+    bool PrecisaMovimento() const
+    {
+        return HistoricoRede() || cfg.modo == 4 || gravando > 0 || gravaEm > 0 || !dumpPasta.empty() ||
+               cfg.profundidadeAuto;
+    }
     std::wstring PastaRede() const { return pastaRuntime.empty() ? pasta + L"\\runtime" : pastaRuntime; }
     // A rede da sessao: tamanho, rede grande ou pequena, passes e rede completa valem do Liga ate o proximo Liga; mudar
     // no painel vale ao religar. Durante o jogo nada disso muda: cada tamanho novo de rede prende buffers que o driver
@@ -870,12 +877,12 @@ RWTexture2D<float4> saida : register(u0);
         orig.Cria(gpu.dev.Get(), dw, dh, DXGI_FORMAT_R16G16B16A16_FLOAT, L"original no tamanho da rede");
         fed.Cria(gpu.dev.Get(), dw, dh, DXGI_FORMAT_R16G16B16A16_FLOAT, L"proxy (alimentado)", true, true);
         saida.Cria(gpu.dev.Get(), fw, fh, fmtSaida, L"saida");
-        semNitidez = Tex{}; // recriada no tamanho novo quando a nitidez estiver ligada (a GPU ja esta parada aqui)
-        fedAnt.Cria(gpu.dev.Get(), dw, dh, DXGI_FORMAT_R16G16B16A16_FLOAT, L"alimentado anterior", false);
+        semNitidez.Solta(); // recriada no tamanho novo quando a nitidez estiver ligada (a GPU ja esta parada aqui)
         if (!dumpPasta.empty())
             saidaAnt.Cria(gpu.dev.Get(), fw, fh, fmtSaida, L"saida anterior", false);
-        fluxo.Garante(gpu.dev.Get(), dw, dh);
-        fluxo.Reinicia();
+        // o movimento e alocado no quadro que precisar dele (PrecisaMovimento), ja no tamanho novo
+        fedAnt.Solta();
+        fluxo.Libera();
         temporal.Garante(gpu.dev.Get(), dw, dh);
         temporal.Reinicia();
         zeraHistorico = true;
@@ -1322,9 +1329,25 @@ RWTexture2D<float4> saida : register(u0);
         orig.Para(c, SRV);
         fed.Para(c, SRV);
         Barreira(c, q.tex, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
-        // movimento simulado (fluxo optico contra o quadro anterior): reprojeta a edicao e traz a resposta atrasada
-        bool temMov;
         if (buffer)
+        {
+            // Z invertido: o que o jogo diz ao FSR, senao o medido pelo DoJogo; o jogo reprojeta a edicao com a mesma
+            // conta de distancia
+            invertidaUsada = qb.profInvertidaConhecida ? qb.profInvertida : fluxo.InvertidaMedida();
+            fb.DefineInvertida(invertidaUsada);
+        }
+        // o movimento (fluxo optico na captura de video, o do jogo na de buffer) so serve ao historico da propria rede, a
+        // exibicao "Movimento", a gravacao e a profundidade automatica -- e, na captura de buffer, a medida do Z invertido
+        // quando o jogo nao diz. Sem eles nao e calculado nem alocado (~430 MB em 4K com a rede em 2160).
+        const bool comMov = PrecisaMovimento() || (buffer && !qb.profInvertidaConhecida);
+        if (comMov)
+        {
+            fluxo.Garante(gpu.dev.Get(), fed.w, fed.h, !buffer && !repJogo);
+            if (fedAnt.w != fed.w || fedAnt.h != fed.h)
+                fedAnt.Cria(gpu.dev.Get(), fed.w, fed.h, DXGI_FORMAT_R16G16B16A16_FLOAT, L"alimentado anterior", false);
+        }
+        bool temMov = false;
+        if (comMov && buffer)
         {
             // captura de buffer: o movimento e a profundidade do proprio jogo (exatos), no lugar do fluxo optico
             Fluxo::Camera cam;
@@ -1333,15 +1356,13 @@ RWTexture2D<float4> saida : register(u0);
             cam.perto = qb.perto;
             cam.longe = qb.longe;
             cam.fovY = qb.fovY;
-            cam.invertida = qb.profInvertidaConhecida ? qb.profInvertida : fluxo.InvertidaMedida();
-            invertidaUsada = cam.invertida;
-            fb.DefineInvertida(invertidaUsada); // o jogo reprojeta a edicao com a mesma conta de distancia
+            cam.invertida = invertidaUsada;
             cam.infinita = qb.profInfinita;
             cam.reset = qb.reset;
             fluxo.DoJogo(c, desc, gpu.dev.Get(), *qb.mov, *qb.prof, cam);
             temMov = true;
         }
-        else if (repJogo)
+        else if (comMov && repJogo)
         {
             // reproducao de uma gravacao da captura de buffer: o movimento (pixels da rede) e a distancia radial gravados
             Fluxo::Camera cam;
@@ -1352,7 +1373,7 @@ RWTexture2D<float4> saida : register(u0);
             fluxo.DoJogo(c, desc, gpu.dev.Get(), repMov, repProf, cam);
             temMov = true;
         }
-        else
+        else if (comMov)
             temMov = cfg.movimento && fluxo.Calcula(c, desc, gpu.dev.Get(), fed.r.Get(), fed.fmt);
         if (temMov)
             fluxo.Estatisticas(c, desc, gpu.dev.Get(), fed, fedAnt);
@@ -1400,21 +1421,25 @@ RWTexture2D<float4> saida : register(u0);
         tp.intensidade = cfg.ngx.intensidade;
         // resposta de um quadro anterior a um corte de cena e da cena velha: descartada
         const bool usa = chegou && !velha && cfg.modo != 1 && redeOk && quadroEnvio >= quadroCorte;
+        // a edicao no espaco comprimido (Crua) so para quem a le: a exibicao "saida crua", a gravacao e o dump
+        const bool comCrua = cfg.modo == 5 || gravando > 0 || gravaEm > 0 || !dumpPasta.empty();
+        if (comCrua)
+            temporal.GaranteCrua(gpu.dev.Get());
         Tex* edicao = ultimaEdicao =
-            usa ? temporal.Edicao(c, desc, gpu.dev.Get(), origRede, rede.Entrada(), rede.Resposta(), tp) : nullptr;
+            usa ? temporal.Edicao(c, desc, gpu.dev.Get(), orig, rede.Entrada(), rede.Resposta(), tp, comCrua) : nullptr;
         if (usa)
         {
             if (cfg.modo == 5)
             {
-                // Exibicao "saida crua": o quadro desta resposta (o origRede e trocado no proximo envio, ainda neste
-                // quadro), ao lado da edicao crua dela
-                if (origCrua.w != origRede.w || origCrua.h != origRede.h)
-                    origCrua.Cria(gpu.dev.Get(), origRede.w, origRede.h, origRede.fmt, L"quadro da saida crua", false);
-                const auto antes = origRede.estado;
-                origRede.Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                // Exibicao "saida crua": o quadro desta resposta, ao lado da edicao crua dela (fica nos quadros sem
+                // resposta)
+                if (origCrua.w != orig.w || origCrua.h != orig.h)
+                    origCrua.Cria(gpu.dev.Get(), orig.w, orig.h, orig.fmt, L"quadro da saida crua", false);
+                const auto antes = orig.estado;
+                orig.Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
                 origCrua.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
-                c->CopyResource(origCrua.r.Get(), origRede.r.Get());
-                origRede.Para(c, antes);
+                c->CopyResource(origCrua.r.Get(), orig.r.Get());
+                orig.Para(c, antes);
                 origCrua.Para(c, SRV);
                 origCruaValida = true;
             }
@@ -1454,11 +1479,12 @@ RWTexture2D<float4> saida : register(u0);
             float preLuz, preSombra, preLimiar, preLimiarSombra, preCor;
             UINT pad2, pad3, pad4;
             float satMatiz[6], luzMatiz[6];
-            UINT usaMatiz, temCrua, padA0, padA1;
+            UINT usaMatiz, temCrua, luzLog, padA1;
         } kc{inteiro.w,      inteiro.h,      fed.w, fed.h, edicao ? std::clamp(cfg.forca, 0.f, 2.f) : 0.f, (UINT)cfg.modo, cfg.divisao,
              edicao ? 1u : 0u, hdr ? 1u : 0u, escalaUsada, kExp, kCon, kSat, grada ? 1u : 0u,
              pontePassada == 3 ? 1u : 0u, (hdr && pontePassada == 1) ? 1u : 0u, cfg.preLuz, cfg.preSombra, cfg.preLimiar, cfg.preLimiarSombra, cfg.preCor,
-             0, 0, 0, {}, {}, cfg.matiz.Ativa() ? 1u : 0u, (cfg.modo == 5 && crua) ? 1u : 0u, 0, 0};
+             0, 0, 0, {}, {}, cfg.matiz.Ativa() ? 1u : 0u, (cfg.modo == 5 && crua) ? 1u : 0u,
+             cfg.temporal.luzLog ? 1u : 0u, 0};
         static_assert(sizeof(kc) == 40 * 4, "constantes: o mesmo layout do cbuffer do CSCompoe");
         for (int i = 0; i < 6; ++i)
         {
@@ -1506,9 +1532,10 @@ RWTexture2D<float4> saida : register(u0);
                 float perto, longe;
                 UINT invertida, infinita;
                 float tanY, aspecto;
-                UINT pad0, pad1;
+                UINT luzLog, pad1;
             } ke{saida.w, saida.h, qb.prof->w, qb.prof->h, qb.perto, qb.longe, invertidaUsada ? 1u : 0u,
-                 qb.profInfinita ? 1u : 0u, dlss5ov::TanMeioFov(qb.fovY), float(saida.w) / float(saida.h), 0, 0};
+                 qb.profInfinita ? 1u : 0u, dlss5ov::TanMeioFov(qb.fovY), float(saida.w) / float(saida.h),
+                 cfg.temporal.luzLog ? 1u : 0u, 0};
             pExporta.Roda(c, desc, gpu.dev.Get(),
                           {{qb.cor->r.Get(), qb.cor->fmt}, {saida.r.Get(), saida.fmt}, {qb.prof->r.Get(), qb.prof->fmt}},
                           {{edJogo->r.Get(), edJogo->fmt}}, &ke, (saida.w + 7) / 8, (saida.h + 7) / 8);
@@ -1569,7 +1596,7 @@ RWTexture2D<float4> saida : register(u0);
             temGerado = false;
         if (!dumpPasta.empty() && quadrosTeste > 0 && quadros + 1 >= (UINT64)quadrosTeste)
             ultimoTemMov = temMov; // o ultimo quadro do dump: fedAnt guarda o anterior
-        else
+        else if (fedAnt.r)
         {
             fed.Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
             fedAnt.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
@@ -1580,7 +1607,7 @@ RWTexture2D<float4> saida : register(u0);
         ID3D12CommandList* l1[] = {c};
         gpu.fila->ExecuteCommandLists(1, l1);
         if (edJogo)
-            fb.Publica(qb.n);
+            fb.Publica(qb.n, cfg.temporal.luzLog);
         const UINT64 fim = gpu.Sinaliza();
         if (apresenta)
         {
@@ -1591,7 +1618,16 @@ RWTexture2D<float4> saida : register(u0);
         VigiaMemoria();
         if (buffer)
             fb.Consumido(qb.n);
-        estat = fluxo.LeEstatisticas();
+        estat = temMov ? fluxo.LeEstatisticas() : Fluxo::Estat{};
+        if (!comCrua && temporal.Crua().r)
+            temporal.SoltaCrua();
+        if (!comMov && fedAnt.r)
+        {
+            // o movimento deixou de ser usado (historico desligado, saiu da exibicao "Movimento", fim da gravacao): a
+            // GPU ja terminou este quadro, a VRAM volta
+            fedAnt.Solta();
+            fluxo.Libera();
+        }
         if (estat.valida && estat.semConfianca > 0.88f)
         {
             // corte de cena (o shader ja limpou este quadro): historico e grade da cena velha saem; a resposta em voo,
@@ -1649,7 +1685,6 @@ RWTexture2D<float4> saida : register(u0);
     }
     // ---- rede na fila propria ----
     int atraso = -1;         // -1 ao vivo; 0 imagem e reproducao (testes: o jogo nao espera a edicao, nada e pulado)
-    Tex origRede;            // o quadro que a rede esta vendo, no tamanho da rede
     Tex origCrua;            // Exibicao "saida crua": o quadro da ultima resposta
     bool origCruaValida = false;
     UINT64 quadroEnvio = 0;  // o quadro do ultimo envio
@@ -1664,13 +1699,6 @@ RWTexture2D<float4> saida : register(u0);
         rede.CopiaEntrada(c, fed);
         if (HistoricoRede())
             GuiasDaRede(c, temMov);
-        if (origRede.w != orig.w || origRede.h != orig.h)
-            origRede.Cria(gpu.dev.Get(), orig.w, orig.h, orig.fmt, L"original que a rede viu", false);
-        const auto antes = orig.estado;
-        orig.Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
-        origRede.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
-        c->CopyResource(origRede.r.Get(), orig.r.Get());
-        orig.Para(c, antes);
     }
     // guias do historico da propria rede para o envio deste quadro (Rede::Envia as repassa ao runtime): a rede viu o
     // quadro anterior se ele foi enviado, e o movimento do quadro e o caminho ate ele
@@ -1753,6 +1781,7 @@ RWTexture2D<float4> saida : register(u0);
     // pico). A parte do overlay (texturas dele) e a do resto (rede, runtime HIP, captura) aparecem separadas.
     std::set<uint64_t> tamanhosRede; // tamanhos de rede ja usados neste processo (cada um prende buffers da ponte HIP)
     double mbPresos = 0;
+    double texListadas = -1;       // o total da ultima lista de texturas no registro
     std::string memoriaTexto;      // linha do painel
     std::string emergenciaMemoria; // aviso de VRAM acima do orcamento ("" = dentro)
     std::chrono::steady_clock::time_point marcaMemoria{}, registroMemoria{};
@@ -1775,6 +1804,11 @@ RWTexture2D<float4> saida : register(u0);
             Log("memoria", Fmt("VRAM do processo %.0f MB (texturas do overlay %.0f MB), orcamento %.0f MB, memoria de video "
                                "na RAM %.0f MB, presos pela ponte HIP ~%.0f MB (%zu tamanhos)",
                                uso / mb, tex / mb, orcamento / mb, naRam / mb, mbPresos, tamanhosRede.size()));
+            if (tex != texListadas)
+            {
+                texListadas = tex;
+                Log("memoria", "texturas do overlay: " + Tex::ListaVivas());
+            }
         }
         emergenciaMemoria = orcamento && uso > orcamento
                                 ? Fmt("VRAM acima do orçamento (%.2f de %.2f GB): o Windows move o excedente para a RAM. "

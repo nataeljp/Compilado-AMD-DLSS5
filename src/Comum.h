@@ -81,9 +81,13 @@ struct Tex
     Tex& operator=(const Tex&) = default;
     ~Tex();
     void Cria(ID3D12Device* d, UINT w_, UINT h_, DXGI_FORMAT f, const wchar_t* nome, bool uav = true, bool rt = false);
+    // devolve a VRAM (so com a GPU sem trabalho pendente que use a textura)
+    void Solta();
     void Para(ID3D12GraphicsCommandList* c, D3D12_RESOURCE_STATES s);
     // VRAM das texturas criadas por Cria e ainda vivas (a ultima versao de cada uma)
     static UINT64 BytesVivos();
+    // as mesmas por nome, da maior para a menor ("nome xN M MB; ..."), para o registro
+    static std::string ListaVivas();
 };
 
 void Barreira(ID3D12GraphicsCommandList* c, ID3D12Resource* r, D3D12_RESOURCE_STATES a, D3D12_RESOURCE_STATES b);

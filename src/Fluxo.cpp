@@ -103,14 +103,50 @@ Fluxo::Estat Fluxo::LeEstatisticas()
     return e;
 }
 
-void Fluxo::Garante(ID3D12Device* d, UINT w_, UINT h_)
+void Fluxo::Libera()
 {
-    if (w_ == w && h_ == h)
+    for (auto& q : luma)
+        for (auto& t : q)
+            t.Solta();
+    for (UINT n = 0; n < kMaxNiveis; ++n)
+    {
+        campoIda[n].Solta();
+        tmpIda[n].Solta();
+        campoVolta[n].Solta();
+        tmpVolta[n].Solta();
+    }
+    for (Tex* t : {&rascunho, &modeloIda, &modeloVolta, &mov, &movBruto, &movVolta, &conf, &recon})
+        t->Solta();
+    for (int q = 0; q < 2; ++q)
+    {
+        lumaCheia[q].Solta();
+        gradCheia[q].Solta();
+        z[q].Solta();
+    }
+    w = h = 0;
+    niveis = 0;
+    zValido = temAnterior = false;
+}
+
+void Fluxo::Garante(ID3D12Device* d, UINT w_, UINT h_, bool piramide)
+{
+    if (w_ == w && h_ == h && piramide == comPiramide)
         return;
+    Libera();
     w = w_;
     h = h_;
+    comPiramide = piramide;
+    mov.Cria(d, w, h, DXGI_FORMAT_R16G16_FLOAT, L"movimento");
+    conf.Cria(d, w, h, DXGI_FORMAT_R16_FLOAT, L"confianca do movimento");
+    if (!piramide)
+    {
+        // captura de buffer (e reproducao dela): o movimento e a profundidade do jogo, sem o fluxo optico
+        for (auto& t : z)
+            t.Cria(d, w, h, DXGI_FORMAT_R32_FLOAT, L"distancia da camera (jogo)");
+        recon.Cria(d, w, h, DXGI_FORMAT_R32_UINT, L"profundidade reconstruida do quadro anterior");
+        return;
+    }
     UINT lw = std::max(1u, w / 2), lh = std::max(1u, h / 2);
-    niveis = 0;
     for (UINT n = 0; n < kMaxNiveis; ++n)
     {
         for (int q = 0; q < 2; ++q)
@@ -135,7 +171,6 @@ void Fluxo::Garante(ID3D12Device* d, UINT w_, UINT h_)
     nivelGlobal = 0;
     while (nivelGlobal + 1 < niveis && luma[0][nivelGlobal].w > 320)
         ++nivelGlobal;
-    mov.Cria(d, w, h, DXGI_FORMAT_R16G16_FLOAT, L"movimento");
     movBruto.Cria(d, w, h, DXGI_FORMAT_R16G16_FLOAT, L"movimento da busca");
     for (int q = 0; q < 2; ++q)
     {
@@ -143,12 +178,6 @@ void Fluxo::Garante(ID3D12Device* d, UINT w_, UINT h_)
         gradCheia[q].Cria(d, w, h, DXGI_FORMAT_R16G16_FLOAT, L"fluxo gradiente");
     }
     movVolta.Cria(d, w, h, DXGI_FORMAT_R16G16_FLOAT, L"movimento de volta");
-    conf.Cria(d, w, h, DXGI_FORMAT_R16_FLOAT, L"confianca do movimento");
-    for (auto& t : z)
-        t.Cria(d, w, h, DXGI_FORMAT_R32_FLOAT, L"distancia da camera (jogo)");
-    recon.Cria(d, w, h, DXGI_FORMAT_R32_UINT, L"profundidade reconstruida do quadro anterior");
-    zValido = false;
-    temAnterior = false;
     Log("fluxo", Fmt("fluxo optico %ux%u, %u niveis (nivel 0 = %ux%u), ida e volta", w, h, niveis, luma[0][0].w,
                      luma[0][0].h));
 }
