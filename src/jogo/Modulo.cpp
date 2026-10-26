@@ -423,6 +423,8 @@ DWORD WINAPI PreparaGeracao(void*)
 
 // a cada despacho do FSR: a profundidade, o movimento e a camera deste quadro para a geracao (ela parte do backbuffer
 // final, que ja tem a edicao da rede)
+uint64_t g_quadrosGeracao = 0; // quadros do jogo que passaram pela geracao (diagnostico)
+
 void GeracaoQuadro(ffxContext* ctx, const ffxDispatchDescUpscale* u, ID3D12GraphicsCommandList* lista)
 {
     if (!g_ger.TemSwapchain())
@@ -469,7 +471,8 @@ void GeracaoQuadro(ffxContext* ctx, const ffxDispatchDescUpscale* u, ID3D12Graph
     if (cab)
         cab->geracaoPronta = 1;
     static int estadoDito = 0;
-    g_ger.Quadro(lista, g, pedida >= 2);
+    g_ger.Quadro(lista, g, std::min<uint32_t>(pedida, 4));
+    ++g_quadrosGeracao;
     if (const int est = g_ger.EstadoContexto(); est != estadoDito && est >= 1)
     {
         estadoDito = est;
@@ -481,15 +484,22 @@ void GeracaoQuadro(ffxContext* ctx, const ffxDispatchDescUpscale* u, ID3D12Graph
             Log("geracao: falhou: %s", g_ger.UltimoErro());
     }
     static ULONGLONG marca = 0;
-    static uint64_t antes = 0;
+    static uint64_t antes = 0, quadrosAntes = 0;
     const ULONGLONG agora = GetTickCount64();
     if (!marca)
         marca = agora;
     if (agora - marca >= 5000)
     {
-        Log("geracao: %s, %.0f quadros gerados/s", pedida >= 2 ? "ligada" : "desligada",
-            double(g_ger.Gerados() - antes) * 1000.0 / double(agora - marca));
+        const double s = double(agora - marca) / 1000.0, jogo = double(g_quadrosGeracao - quadrosAntes) / s,
+                     gerados = double(g_ger.Gerados() - antes) / s;
+        double media = 0, desvio = 0, maior = 0;
+        const uint32_t n = g_ger.Ritmo(media, desvio, maior);
+        Log("geracao: %s, jogo %.0f quadros/s + %.0f gerados/s = %.0f apresentados/s | ritmo: %u apresentacoes, a cada "
+            "%.2f ms (desvio %.2f, maior %.2f)",
+            pedida >= 2 ? (pedida >= 4 ? "ligada 4x" : pedida == 3 ? "ligada 3x" : "ligada 2x") : "desligada", jogo, gerados,
+            jogo + gerados, n, media, desvio, maior);
         antes = g_ger.Gerados();
+        quadrosAntes = g_quadrosGeracao;
         marca = agora;
     }
 }

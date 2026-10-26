@@ -6,6 +6,9 @@
 $ErrorActionPreference = 'Stop'
 $sdk = "$PSScriptRoot\fidelityfx_sdk\sdk"
 if (-not (Test-Path "$sdk\CMakeLists.txt")) { "FidelityFX SDK 1.1.4 nao encontrado em $sdk"; exit 1 }
+# geracao multipla (3x/4x): t = k/N nos shaders da interpolacao e ate 3 gerados por quadro no swapchain (idempotente)
+python -I "$PSScriptRoot\ffx_multiquadro.py" $sdk
+if ($LASTEXITCODE -ne 0) { "patch do SDK falhou"; exit 1 }
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
 $cmake = Join-Path $vs 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'

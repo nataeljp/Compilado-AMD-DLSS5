@@ -1,8 +1,9 @@
-﻿// Geracao de quadros da AMD dentro do jogo (captura de buffer): FidelityFX Frame Interpolation + Optical Flow + o
+// Geracao de quadros da AMD dentro do jogo (captura de buffer): FidelityFX Frame Interpolation + Optical Flow + o
 // swapchain de geracao do FidelityFX SDK 1.1.4, compilados do codigo fonte (MIT), ligados como o provedor de referencia
 // da AMD (ffx-api/src/ffx_provider_framegeneration.cpp). O swapchain do jogo e trocado pelo da AMD NA CRIACAO (por isso
-// o jogo abre pelo overlay, com o modulo dentro antes do D3D12); a cada quadro o jogo entrega a profundidade, o movimento
-// e a camera que ja manda ao FSR. A interpolacao parte do backbuffer final (a saida do upscaler nao serve de imagem sem
+// o modulo entra antes do D3D12, instalado na pasta do jogo como dxgi.dll); a cada quadro o jogo entrega a profundidade,
+// o movimento e a camera que ja manda ao FSR. Ate 4x: o SDK vai com externo\ffx_multiquadro.py (t = k/N nos shaders e
+// ate 3 gerados por quadro no swapchain; a AMD so faz 2x). A interpolacao parte do backbuffer final (a saida do upscaler nao serve de imagem sem
 // HUD: e a cena antes do tonemap e dos pos-efeitos, outro espaco de cor) -- os quadros gerados levam a edicao da rede,
 // que ja esta no quadro do jogo.
 #pragma once
@@ -39,14 +40,17 @@ class Geracao
     HRESULT CriaSwapchain(IDXGIFactory* fabrica, ID3D12CommandQueue* fila, DXGI_SWAP_CHAIN_DESC* d, IDXGISwapChain** saida);
     bool TemSwapchain() const;
     // a cada quadro, na lista do jogo (antes do Present): prepara a interpolacao com a profundidade e o movimento deste
-    // quadro e configura o swapchain. ligada = false: o swapchain so apresenta os quadros do jogo
-    bool Quadro(ID3D12GraphicsCommandList* c, const QuadroGeracao& q, bool ligada);
+    // quadro e configura o swapchain. n = quadros apresentados por quadro do jogo (2..4: n - 1 gerados entre ele e o
+    // anterior, em t = 1/n, 2/n...); 0/1 = desligada, o swapchain so apresenta os quadros do jogo. Muda a qualquer quadro
+    bool Quadro(ID3D12GraphicsCommandList* c, const QuadroGeracao& q, uint32_t n);
     const char* UltimoErro() const;
     uint64_t Gerados() const; // quadros gerados ate aqui (cada chamada da AMD gera um)
     // o contexto da AMD (compilado em segundo plano a partir do primeiro quadro): 0 nada, 1 compilando, 2 pronto,
     // 3 falhou; e quanto a ultima compilacao levou
     int EstadoContexto() const;
     double MsCompilacao() const;
+    // o ritmo das apresentacoes do swapchain da AMD desde a ultima leitura: intervalo medio, desvio e maior (ms)
+    uint32_t Ritmo(double& mediaMs, double& desvioMs, double& maxMs) const;
 
   private:
     struct Impl;

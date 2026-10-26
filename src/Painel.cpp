@@ -1376,13 +1376,16 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
 
                 // geracao de quadros da AMD: a DLL na pasta do jogo troca o swapchain na criacao
                 ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kTexto2), "Geração de quadros (AMD)");
-                const char* geracoes[] = {"Desligada", "2x"};
-                int ig = cfg.geracao >= 2 ? 1 : 0;
-                if (Segmentos("geracao", geracoes, 2, &ig, 30 * g_e))
-                    cfg.geracao = ig ? 2 : 0;
+                const char* geracoes[] = {"Desligada", "2x", "3x", "4x"};
+                int ig = cfg.geracao >= 2 ? std::min(cfg.geracao, 4) - 1 : 0;
+                if (Segmentos("geracao", geracoes, 4, &ig, 30 * g_e))
+                    cfg.geracao = ig ? ig + 1 : 0;
                 Dica("A geracao de quadros do FidelityFX da AMD (Frame Interpolation + Optical Flow + o swapchain dela)\n"
                      "dentro do jogo: quadros novos de verdade entre os do jogo, com o movimento e a profundidade que ele\n"
                      "manda ao FSR. Os gerados ja levam a edicao da rede (ela esta no quadro do jogo).\n"
+                     "2x: 1 gerado no meio (o da AMD). 3x e 4x: 2 ou 3 gerados em 1/3, 2/3 ou 1/4, 2/4, 3/4 do caminho\n"
+                     "(a interpolacao da AMD com o instante do quadro no lugar do meio fixo), apresentados com o intervalo\n"
+                     "do jogo dividido por 3 ou 4. Muda a qualquer momento, sem reabrir o jogo.\n"
                      "A DLL tem de entrar no jogo antes do DirectX: ao ligar a geracao com o jogo conectado, o overlay a\n"
                      "copia para a pasta do jogo como dxgi.dll (nada mais muda la) e pede para reabrir o jogo UMA vez. Dai em\n"
                      "diante o jogo ja abre com ela (pela Steam ou como for), o overlay conecta sozinho e a geracao liga,\n"

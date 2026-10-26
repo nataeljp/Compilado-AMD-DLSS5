@@ -2007,8 +2007,9 @@ RWTexture2D<float4> saida : register(u0);
         if (buffer && fb.Conectada() && fb.JogoVivo())
         {
             e.estadoGeracao =
-                e.geracaoPronta          ? (cfg.geracao >= 2 ? "geração ligada (swapchain da AMD em uso)"
-                                                             : "geração desligada (liga aqui, sem reabrir o jogo)")
+                e.geracaoPronta          ? (cfg.geracao >= 2 ? "geração " + std::to_string(std::min(cfg.geracao, 4)) +
+                                                                   "x ligada (swapchain da AMD em uso)"
+                                                             : std::string("geração desligada (liga aqui, sem reabrir o jogo)"))
                 : cfg.geracao < 2        ? ""
                 : instalacao == Instalacao::Outra
                     ? "a pasta do jogo já tem uma dxgi.dll de outro programa (ReShade, OptiScaler?): não substituí; tire-a "

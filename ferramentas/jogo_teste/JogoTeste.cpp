@@ -6,7 +6,8 @@
 // --render R: como o Gears (UE5 + FSR): movimento e profundidade na resolucao de render (R x a da cor), o movimento em
 //   unidade de tela (uv) com a escala = tamanho de render -- o que o FSR recebe de um jogo com escala de resolucao
 // --geracao: apresenta cada quadro (a cor com a edicao do overlay) num swapchain da AMD com geracao de quadros (Geracao.h),
-//   com a profundidade e o movimento exatos da sequencia; --sem-overlay: roda sem esperar o overlay (so a geracao)
+//   com a profundidade e o movimento exatos da sequencia; --multi N: 2..4 (2x a 4x, padrao 2); --sem-overlay: roda sem
+//   esperar o overlay (so a geracao)
 // --como-jogo: faz o que um jogo faz, sem o cliente embutido -- cria o swapchain pela DXGI e chama o FSR pela DLL
 //   assinada da AMD (amd_fidelityfx_dx12.dll do FidelityFX SDK): e o teste da DLSS5Buffer.dll de verdade (aberto
 //   pelo overlay com a geracao, o swapchain vira o da AMD e o gancho do FSR alimenta a geracao)
@@ -83,8 +84,11 @@ int wmain(int argc, wchar_t** argv)
     float render = 1.f;
     bool raw = false, laco = false, geracao = false, semOverlay = false, comoJogo = false;
     std::wstring modulo;
+    uint32_t multi = 2;
     for (int i = 3; i + 1 < argc; ++i)
     {
+        if (!wcscmp(argv[i], L"--multi"))
+            multi = uint32_t(std::clamp(_wtoi(argv[i + 1]), 2, 4));
         if (!wcscmp(argv[i], L"--voltas"))
             voltas = _wtoi(argv[i + 1]);
         if (!wcscmp(argv[i], L"--fps"))
@@ -472,7 +476,7 @@ int wmain(int argc, wchar_t** argv)
                 g.invertida = g.infinita = true;
                 g.hdr = true;
                 g.reset = e.reset;
-                if (!ger.Quadro(cl.Get(), g, true) && v == 0 && i == 0)
+                if (!ger.Quadro(cl.Get(), g, multi) && v == 0 && i == 0)
                     fprintf(stderr, "geracao: %s\n", ger.UltimoErro());
             }
             barreira(cor.r.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);

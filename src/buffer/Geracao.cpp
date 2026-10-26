@@ -1,4 +1,4 @@
-﻿#include "Geracao.h"
+#include "Geracao.h"
 #include <bit> // ffx_util.h usa std::popcount sem incluir
 #include <FidelityFX/host/backends/dx12/ffx_dx12.h>
 #include <FidelityFX/host/ffx_frameinterpolation.h>
@@ -11,6 +11,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cwchar>
+
+// o swapchain da AMD com externo\ffx_multiquadro.py: o ritmo das apresentacoes (le e zera)
+extern "C" void ffxDlss5RitmoDX12(double* mediaMs, double* desvioMs, double* maxMs, uint32_t* n);
 
 namespace dlss5ov {
 
@@ -84,6 +87,7 @@ struct Geracao::Impl
     uint64_t quadro = 0;   // frameID: sobe exatamente 1 por quadro (outro passo reinicia a geracao da AMD)
     FfxFrameInterpolationPrepareDescription prep[2] = {};
     uint64_t gerados = 0;
+    uint64_t chamadas = 0; // apresentacoes com geracao (cada uma gera n - 1)
 
     void Erro(const char* f, int codigo)
     {
@@ -110,7 +114,8 @@ struct Geracao::Impl
 
     // teste: um quadro gerado e o real ao lado (DLSS5_GERACAO_DUMP)
     void Despejo(const FfxFrameGenerationDispatchDescription* d);
-    Microsoft::WRL::ComPtr<ID3D12Resource> despejoLeitura[2];
+    bool CopiaParaLeitura(ID3D12GraphicsCommandList* c, const FfxResource& fonte, int slot);
+    Microsoft::WRL::ComPtr<ID3D12Resource> despejoLeitura[5]; // os gerados (ate 3), o real e o real anterior
     uint64_t despejoQuadro = 0;
     UINT despejoW = 0, despejoH = 0, despejoPitch = 0;
     DXGI_FORMAT despejoFmt = DXGI_FORMAT_UNKNOWN;
@@ -193,7 +198,8 @@ bool Geracao::Impl::Cria()
 }
 
 // chamada pelo swapchain da AMD na apresentacao (lista e quadro dele): fluxo optico do backbuffer e interpolacao, com
-// a profundidade e o movimento preparados no quadro (como Dispatch do provedor da AMD)
+// a profundidade e o movimento preparados no quadro (como Dispatch do provedor da AMD). Com n - 1 gerados, a interpolacao
+// roda uma vez para cada, em t = k/n, e so a ultima guarda o quadro atual como o anterior do proximo par
 FfxErrorCode Geracao::Impl::Gera(const FfxFrameGenerationDispatchDescription* d, void* ctx)
 {
     Impl* p = static_cast<Impl*>(ctx);
@@ -214,7 +220,6 @@ FfxErrorCode Geracao::Impl::Gera(const FfxFrameGenerationDispatchDescription* d,
     f.currentBackBuffer = d->presentColor;
     f.reset = d->reset;
     f.renderSize = pd.renderSize;
-    f.output = d->outputs[0];
     f.opticalFlowVector = p->Rec(R_FLUXO);
     f.opticalFlowSceneChangeDetection = p->Rec(R_CORTE);
     f.opticalFlowBlockSize = 8;
@@ -235,8 +240,16 @@ FfxErrorCode Geracao::Impl::Gera(const FfxFrameGenerationDispatchDescription* d,
     f.minMaxLuminance[0] = d->minMaxLuminance[0];
     f.minMaxLuminance[1] = d->minMaxLuminance[1];
     f.frameID = d->frameID;
-    e |= ffxFrameInterpolationDispatch(&p->fic, &f);
-    ++p->gerados;
+    const uint32_t m = std::clamp<uint32_t>(d->numInterpolatedFrames, 1, 3);
+    for (uint32_t k = 0; k < m; ++k)
+    {
+        f.output = d->outputs[k];
+        f.interpolationT = float(k + 1) / float(m + 1);
+        f.keepPreviousInterpolationSource = k + 1 < m;
+        e |= ffxFrameInterpolationDispatch(&p->fic, &f);
+        ++p->gerados;
+    }
+    ++p->chamadas;
     p->Despejo(d);
     return e;
 }
@@ -259,20 +272,58 @@ D3D12_RESOURCE_STATES D3D(FfxResourceStates s)
 }
 } // namespace
 
-// teste (DLSS5_GERACAO_DUMP=<pasta>): no 60o quadro gerado copia ele e o backbuffer real deste quadro para leitura e
-// grava os dois (RGBA no formato do backbuffer) uns quadros depois, quando a GPU ja terminou
+// teste (DLSS5_GERACAO_DUMP=<pasta>): na 59a apresentacao com geracao copia o backbuffer real (o anterior); na 60a, os
+// gerados (gerado1..3, em t = 1/n...) e o real deste quadro; grava tudo (RGBA no formato do backbuffer) uns quadros
+// depois, quando a GPU ja terminou
+bool Geracao::Impl::CopiaParaLeitura(ID3D12GraphicsCommandList* c, const FfxResource& fonte, int slot)
+{
+    auto* r = reinterpret_cast<ID3D12Resource*>(fonte.resource);
+    const D3D12_RESOURCE_DESC rd = r->GetDesc();
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
+    UINT64 total = 0;
+    dev->GetCopyableFootprints(&rd, 0, 1, 0, &fp, nullptr, nullptr, &total);
+    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_READBACK};
+    D3D12_RESOURCE_DESC bd{};
+    bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bd.Width = total;
+    bd.Height = bd.DepthOrArraySize = bd.MipLevels = 1;
+    bd.SampleDesc.Count = 1;
+    bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    if (FAILED(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                            IID_PPV_ARGS(&despejoLeitura[slot]))))
+        return false;
+    const D3D12_RESOURCE_STATES antes = D3D(fonte.state);
+    D3D12_RESOURCE_BARRIER b{};
+    b.Transition = {r, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, antes, D3D12_RESOURCE_STATE_COPY_SOURCE};
+    if (antes != D3D12_RESOURCE_STATE_COPY_SOURCE)
+        c->ResourceBarrier(1, &b);
+    D3D12_TEXTURE_COPY_LOCATION dst{despejoLeitura[slot].Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+    dst.PlacedFootprint = fp;
+    D3D12_TEXTURE_COPY_LOCATION src{r, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+    c->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+    if (antes != D3D12_RESOURCE_STATE_COPY_SOURCE)
+        c->ResourceBarrier(1, &b);
+    despejoW = UINT(rd.Width);
+    despejoH = rd.Height;
+    despejoPitch = fp.Footprint.RowPitch;
+    despejoFmt = rd.Format;
+    return true;
+}
+
 void Geracao::Impl::Despejo(const FfxFrameGenerationDispatchDescription* d)
 {
     static const char* pasta = std::getenv("DLSS5_GERACAO_DUMP");
     if (!pasta)
         return;
-    if (despejoLeitura[0] && gerados == despejoQuadro + 8)
+    auto* c = reinterpret_cast<ID3D12GraphicsCommandList*>(d->commandList);
+    if (despejoQuadro && chamadas == despejoQuadro + 8)
     {
-        const char* nomes[2] = {"gerado", "real"};
-        for (int k = 0; k < 2; ++k)
+        const char* nomes[5] = {"gerado1", "gerado2", "gerado3", "real", "anterior"};
+        for (int k = 0; k < 5; ++k)
         {
             void* m = nullptr;
-            if (FAILED(despejoLeitura[k]->Map(0, nullptr, &m)))
+            if (!despejoLeitura[k] || FAILED(despejoLeitura[k]->Map(0, nullptr, &m)))
                 continue;
             char arq[512];
             snprintf(arq, sizeof arq, "%s\\%s_%ux%u_pitch%u_fmt%d.raw", pasta, nomes[k], despejoW, despejoH, despejoPitch,
@@ -284,47 +335,19 @@ void Geracao::Impl::Despejo(const FfxFrameGenerationDispatchDescription* d)
             }
             despejoLeitura[k]->Unmap(0, nullptr);
         }
-        despejoLeitura[0] = despejoLeitura[1] = nullptr;
+        for (auto& r : despejoLeitura)
+            r = nullptr;
     }
-    if (gerados != 60 || despejoQuadro)
+    if (chamadas == 59)
+        CopiaParaLeitura(c, d->presentColor, 4);
+    if (chamadas != 60 || despejoQuadro)
         return;
-    despejoQuadro = gerados;
-    auto* c = reinterpret_cast<ID3D12GraphicsCommandList*>(d->commandList);
-    const FfxResource* fontes[2] = {&d->outputs[0], &d->presentColor};
-    for (int k = 0; k < 2; ++k)
-    {
-        auto* r = reinterpret_cast<ID3D12Resource*>(fontes[k]->resource);
-        const D3D12_RESOURCE_DESC rd = r->GetDesc();
-        D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
-        UINT64 total = 0;
-        dev->GetCopyableFootprints(&rd, 0, 1, 0, &fp, nullptr, nullptr, &total);
-        D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_READBACK};
-        D3D12_RESOURCE_DESC bd{};
-        bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        bd.Width = total;
-        bd.Height = bd.DepthOrArraySize = bd.MipLevels = 1;
-        bd.SampleDesc.Count = 1;
-        bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-        if (FAILED(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-                                                IID_PPV_ARGS(&despejoLeitura[k]))))
+    despejoQuadro = chamadas;
+    const uint32_t m = std::clamp<uint32_t>(d->numInterpolatedFrames, 1, 3);
+    for (uint32_t k = 0; k < m; ++k)
+        if (!CopiaParaLeitura(c, d->outputs[k], int(k)))
             return;
-        const D3D12_RESOURCE_STATES antes = D3D(fontes[k]->state);
-        D3D12_RESOURCE_BARRIER b{};
-        b.Transition = {r, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, antes, D3D12_RESOURCE_STATE_COPY_SOURCE};
-        if (antes != D3D12_RESOURCE_STATE_COPY_SOURCE)
-            c->ResourceBarrier(1, &b);
-        D3D12_TEXTURE_COPY_LOCATION dst{despejoLeitura[k].Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
-        dst.PlacedFootprint = fp;
-        D3D12_TEXTURE_COPY_LOCATION src{r, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
-        c->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
-        std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
-        if (antes != D3D12_RESOURCE_STATE_COPY_SOURCE)
-            c->ResourceBarrier(1, &b);
-        despejoW = UINT(rd.Width);
-        despejoH = rd.Height;
-        despejoPitch = fp.Footprint.RowPitch;
-        despejoFmt = rd.Format;
-    }
+    CopiaParaLeitura(c, d->presentColor, 3);
 }
 
 Geracao::Geracao() : p(new Impl) {}
@@ -370,8 +393,9 @@ bool Geracao::TemSwapchain() const
     return p->sc != nullptr;
 }
 
-bool Geracao::Quadro(ID3D12GraphicsCommandList* c, const QuadroGeracao& q, bool ligada)
+bool Geracao::Quadro(ID3D12GraphicsCommandList* c, const QuadroGeracao& q, uint32_t n)
 {
+    const bool ligada = n >= 2;
     if (!p->sc || !c || !q.prof || !q.mov || !q.renderW || !q.renderH)
         return false;
     DXGI_SWAP_CHAIN_DESC1 sd{};
@@ -427,6 +451,7 @@ bool Geracao::Quadro(ID3D12GraphicsCommandList* c, const QuadroGeracao& q, bool 
     cfg.onlyPresentInterpolated = false;
     cfg.interpolationRect = {0, 0, int32_t(p->telaW), int32_t(p->telaH)};
     cfg.frameID = p->quadro;
+    cfg.numInterpolatedFrames = ligada ? std::min<uint32_t>(n, 4) - 1 : 1;
     if ((e = p->shared.fpSwapChainConfigureFrameGeneration(&cfg)) != FFX_OK)
         return p->Erro("configuracao do swapchain", e), false;
     return true;
@@ -450,6 +475,13 @@ int Geracao::EstadoContexto() const
 double Geracao::MsCompilacao() const
 {
     return p->msCompilacao;
+}
+
+uint32_t Geracao::Ritmo(double& mediaMs, double& desvioMs, double& maxMs) const
+{
+    uint32_t n = 0;
+    ffxDlss5RitmoDX12(&mediaMs, &desvioMs, &maxMs, &n);
+    return n;
 }
 
 } // namespace dlss5ov
