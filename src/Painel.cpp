@@ -1373,6 +1373,35 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                 ImGui::PushTextWrapPos(0.f);
                 ImGui::TextColored(cor, "%s", s.empty() ? "Ctrl+Shift+D com o jogo em foco (FSR ou XeSS ligado no jogo)" : s.c_str());
                 ImGui::PopTextWrapPos();
+
+                // geracao de quadros da AMD: o jogo abre pelo overlay (o swapchain e trocado na criacao)
+                ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kTexto2), "Geração de quadros (AMD)");
+                const char* geracoes[] = {"Desligada", "2x"};
+                int ig = cfg.geracao >= 2 ? 1 : 0;
+                if (Segmentos("geracao", geracoes, 2, &ig, 30 * g_e))
+                    cfg.geracao = ig ? 2 : 0;
+                Dica("A geracao de quadros do FidelityFX da AMD (Frame Interpolation + Optical Flow + o swapchain dela)\n"
+                     "dentro do jogo: quadros novos de verdade entre os do jogo, com o movimento e a profundidade que ele\n"
+                     "manda ao FSR. Os gerados ja levam a edicao da rede (ela esta no quadro do jogo).\n"
+                     "O jogo abre UMA vez pelo overlay (botao abaixo): a DLL entra antes do DirectX e o swapchain dele vira o\n"
+                     "da AMD. Dai em diante a geracao liga, desliga e muda so por aqui, sem reabrir. Aberto por fora, o jogo\n"
+                     "nao tem como receber a geracao. Desligue a geracao de quadros do proprio jogo (FSR Frame Generation /\n"
+                     "DLSS FG) e o AFMF do driver.");
+                if (Botao("Abrir jogo pelo overlay..."))
+                    a.abrirJogo = true;
+                if (!e.ultimoJogo.empty())
+                {
+                    ImGui::SameLine();
+                    if (Botao(("Abrir " + e.ultimoJogo).c_str()))
+                        a.abrirUltimo = true;
+                }
+                if (!e.estadoGeracao.empty())
+                {
+                    ImGui::PushTextWrapPos(0.f);
+                    ImGui::TextColored(e.geracaoPronta ? ImGui::ColorConvertU32ToFloat4(kVerde) : ImVec4(1, 0.78f, 0.3f, 1),
+                                       "%s", e.estadoGeracao.c_str());
+                    ImGui::PopTextWrapPos();
+                }
             }
         }
 
@@ -1509,6 +1538,9 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                                        e.completaSessao ? "" : ", sem os blocos 42/43/46");
                     ImGui::PopTextWrapPos();
                 }
+                // so na captura de video: na de buffer a geracao de verdade e a da AMD (MODO DE REDE)
+                if (cfg.fonte != 1)
+                {
                 DeslizadorInt("Quadros gerados", &cfg.ritmo, 1, 4, "x%.0f",
                               "Como o AMD Fluid Motion Frames, mas ate 4x: a rede edita 1 de cada N quadros e os N-1\n"
                               "quadros seguintes sao gerados a partir dos processados -- sempre com a rede aplicada, nunca\n"
@@ -1523,6 +1555,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                      "com o proximo exige que ele ja exista: o novo aparece N quadros depois de feito (como no AFMF e\n"
                      "no FSR Frame Generation, que tambem seguram o quadro novo).");
                 ImGui::EndDisabled();
+                }
             }
 
             Secao("MOVIMENTO");

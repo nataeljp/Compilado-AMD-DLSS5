@@ -58,6 +58,9 @@ struct Config
     // extra), 1 mesclado (mistura do processado anterior com o novo: 50/50, 40/60, 30/70; o novo vem depois deles, N
     // quadros depois de feito)
     int gerado = 0;
+    // geracao de quadros da AMD na captura de buffer (o jogo abre pelo overlay: o swapchain e trocado na criacao):
+    // 0 desligada, 2 = 2x (um quadro gerado por quadro do jogo)
+    int geracao = 0;
     bool movimento = true;  // movimento simulado por fluxo optico (as guias do historico da propria rede)
     int ritmo = 1;          // a rede edita 1 de cada N quadros; os outros sao gerados dos processados (1 = todo quadro)
     int profundidade = 0;   // blocos da rede grande: 0 = 71, 1 = 68, 2 = 63, 3 = 55, 4 = 47 (residuais pulados); mais rapido

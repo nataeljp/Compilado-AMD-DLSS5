@@ -47,6 +47,10 @@ class ClienteBuffer
   public:
     // cria a memoria compartilhada (nome pelo pid deste processo) e os shaders; false = sem D3DCompile ou sem memoria
     bool Inicia(ID3D12Device* d, const char* exe);
+    // compila os shaders do modulo em segundo plano (chamada no carregamento da DLL; Inicia tambem chama). Enquanto
+    // compila, Inicia devolve false e Compilando() e true: tentar de novo no proximo quadro
+    static void PreCompila();
+    static bool Compilando();
     void Encerra();
     // grava os passes na lista `c` (que o jogo vai submeter); devolve o numero do quadro (0 = nada gravado)
     uint64_t Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo& e);

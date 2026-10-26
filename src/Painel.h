@@ -36,6 +36,10 @@ struct EstadoPainel
     bool historicoAtivo = false; // DLSS5_TEMPORAL_MODE=1 nesta sessao (a forca do historico vale)
     std::string memoria;         // uso e orcamento de VRAM do overlay
     std::string avisoMemoria;    // VRAM acima do orcamento (so aviso: a rede continua); "" = dentro
+    // geracao de quadros (captura de buffer): estado do lancamento/swapchain e o ultimo jogo aberto pelo overlay
+    std::string estadoGeracao;
+    bool geracaoPronta = false;  // o jogo conectado esta com o swapchain da AMD
+    std::string ultimoJogo;      // nome do ultimo executavel aberto pelo overlay ("" = nenhum)
 };
 
 struct AcoesPainel
@@ -52,6 +56,8 @@ struct AcoesPainel
     bool redefinir = false;    // padroes do programa
     bool zeraHistorico = false;
     bool ocultaMudou = false;
+    bool abrirJogo = false;   // escolher um executavel e abrir o jogo com o modulo (geracao de quadros)
+    bool abrirUltimo = false; // abrir de novo o ultimo jogo aberto pelo overlay
 };
 
 class Painel

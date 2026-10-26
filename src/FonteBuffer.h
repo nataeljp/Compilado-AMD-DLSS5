@@ -20,7 +20,9 @@ class FonteBuffer
     DWORD Pid() const { return pid; }
     // a cada volta do laco: o jogo so exporta e aplica com o batimento do overlay; espera e repete = os do Cabecalho (sem
     // atraso: o jogo espera a edicao; quadros repetidos 1..4)
-    void Batimento(bool querQuadros, bool aplica, uint32_t espera, uint32_t repete, uint32_t gerado);
+    void Batimento(bool querQuadros, bool aplica, uint32_t espera, uint32_t repete, uint32_t gerado, uint32_t geracao);
+    // o jogo esta com o swapchain da AMD (abriu pelo overlay com a geracao de quadros)
+    bool GeracaoPronta() const { return cab && cab->geracaoPronta != 0; }
     void SemEspera() { if (cab) cab->espera = 0; } // overlay pausado: o jogo nao pode ficar esperando
     void DefineInvertida(bool inv) { if (cab) cab->profInvertidaUsada = inv ? 1u : 0u; }
     bool JogoVivo() const;

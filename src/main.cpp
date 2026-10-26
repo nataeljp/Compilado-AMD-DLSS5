@@ -21,6 +21,7 @@
 #include "Painel.h"
 #include "Rede.h"
 #include "Shaders.h"
+#include <commdlg.h>
 #include <shellapi.h>
 #include <wincodec.h>
 #include <winrt/base.h>
@@ -114,6 +115,13 @@ struct App
     bool buffer = false;        // ligado pela captura de buffer (sem WGC e sem a janela do overlay)
     HWND alvoBuffer = nullptr;
     std::string estadoBuffer;   // linha de estado no painel
+    // geracao de quadros: o jogo aberto pelo overlay (com o modulo dentro antes do D3D12)
+    std::wstring jogoLancado;   // caminho do executavel
+    DWORD pidLancado = 0;       // 0 = nada a vigiar
+    std::chrono::steady_clock::time_point tLancado{};
+    bool janelaLancado = false; // a janela do jogo ja apareceu (ligou a captura de buffer)
+    std::string estadoGeracao;
+    int geracaoTeste = -1;      // --lanca-jogo --fica: a geracao pedida (aplicada depois do config)
     int fonteLigada = 0;        // a fonte com que ligou (trocar no painel religa)
     uint64_t quadroJogo = 0;    // numero do quadro do jogo em processamento (gravacao: alinha com o jogo)
     int gravaEm = 0;            // --grava-em N: comeca a gravar no quadro N (testes)
@@ -815,6 +823,107 @@ RWTexture2D<float4> saida : register(u0);
         }
         ov.Mostra(false);
     }
+    // ---- geracao de quadros: o jogo abre pelo overlay ----
+    std::wstring ArqLancar() const { return PastaPerfis() + L"\\_lancar.ini"; }
+    std::wstring UltimoJogo() const
+    {
+        std::wstring r;
+        if (FILE* f = _wfopen(ArqLancar().c_str(), L"r, ccs=UTF-8"))
+        {
+            wchar_t b[1024];
+            if (fgetws(b, 1024, f))
+                r = b;
+            fclose(f);
+        }
+        while (!r.empty() && (r.back() == L'\n' || r.back() == L'\r'))
+            r.pop_back();
+        return r;
+    }
+    void LancaJogo(const std::wstring& exe)
+    {
+        if (FILE* f = _wfopen(ArqLancar().c_str(), L"w, ccs=UTF-8"))
+        {
+            fputws(exe.c_str(), f);
+            fclose(f);
+        }
+        DWORD pid = 0;
+        // a DLL entra uma vez, antes do DirectX; a geracao (e o resto) se ajusta depois so pelo painel
+        const uint32_t n = cfg.geracao >= 2 ? uint32_t(std::clamp(cfg.geracao, 2, 4)) : 0u;
+        const ResultadoInjecao r = AbreJogo(exe, pasta + L"\\captura\\DLSS5Buffer.dll", n, pid);
+        cfg.fonte = 1; // a captura de buffer liga sozinha quando a janela do jogo aparecer
+        jogoLancado = exe;
+        pidLancado = pid;
+        tLancado = std::chrono::steady_clock::now();
+        janelaLancado = false;
+        estadoGeracao = r.ok ? "jogo aberto com o módulo; esperando a janela dele" + (r.motivo.empty() ? "" : " | " + r.motivo)
+                             : "não abriu com a geração: " + r.motivo;
+        Log("geracao", estadoGeracao);
+    }
+    static HWND JanelaDoProcesso(DWORD pid)
+    {
+        struct Busca
+        {
+            DWORD pid;
+            HWND achou;
+        } b{pid, nullptr};
+        EnumWindows(
+            [](HWND h, LPARAM l) -> BOOL {
+                auto* b = reinterpret_cast<Busca*>(l);
+                DWORD p = 0;
+                GetWindowThreadProcessId(h, &p);
+                RECT r{};
+                if (p == b->pid && IsWindowVisible(h) && !GetWindow(h, GW_OWNER) && GetClientRect(h, &r) &&
+                    r.right - r.left >= 320 && r.bottom - r.top >= 200)
+                {
+                    b->achou = h;
+                    return FALSE;
+                }
+                return TRUE;
+            },
+            reinterpret_cast<LPARAM>(&b));
+        return b.achou;
+    }
+    // o jogo aberto pelo overlay: liga a captura de buffer quando a janela aparece; se o processo sair sem janela logo
+    // depois de abrir (a Steam fecha e reabre o jogo pelo cliente dela), entra no processo novo assim que ele nasce
+    void VigiaLancamento()
+    {
+        if (!pidLancado)
+            return;
+        const auto agora = std::chrono::steady_clock::now();
+        const double seg = std::chrono::duration<double>(agora - tLancado).count();
+        HANDLE p = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pidLancado);
+        const bool vivo = p && WaitForSingleObject(p, 0) == WAIT_TIMEOUT;
+        if (p)
+            CloseHandle(p);
+        if (vivo)
+        {
+            if (!janelaLancado)
+                if (HWND h = JanelaDoProcesso(pidLancado))
+                {
+                    janelaLancado = true;
+                    if (!buffer)
+                        LigaBuffer(h);
+                }
+            return;
+        }
+        const std::wstring nome = jogoLancado.substr(jogoLancado.find_last_of(L"\\/") + 1);
+        if (!janelaLancado && seg < 60.0)
+        {
+            if (DWORD novo = ProcuraProcesso(nome, pidLancado))
+            {
+                const ResultadoInjecao r = EntraNoInicio(novo, pasta + L"\\captura\\DLSS5Buffer.dll",
+                                                         uint32_t(std::clamp(cfg.geracao, 2, 4)));
+                estadoGeracao = r.ok ? "o jogo foi reaberto pela Steam: módulo dentro logo no início; esperando a janela"
+                                     : "o jogo foi reaberto pela Steam e o módulo não entrou: " + r.motivo;
+                Log("geracao", estadoGeracao);
+                pidLancado = novo;
+                tLancado = agora;
+            }
+            return;
+        }
+        pidLancado = 0; // o jogo fechou
+    }
+
     // captura de buffer: coloca a DLSS5Buffer.dll no jogo aberto (sem gravar nada na pasta dele) e espera o modulo
     // aparecer (ele cria a memoria compartilhada no primeiro quadro do FSR/XeSS do jogo)
     void LigaBuffer(HWND h)
@@ -1233,8 +1342,9 @@ RWTexture2D<float4> saida : register(u0);
             // sem atraso: o jogo espera a edicao do quadro exportado antes (cab->espera 2) e mostra o quadro processado
             // repetido em 1..4 quadros (o Ritmo vira os quadros repetidos)
             const bool espera = atraso < 0;
-            fb.Batimento(true, cfg.modo != 1 && redeOk, espera ? 2u : 0u,
-                         espera ? uint32_t(std::clamp(cfg.ritmo, 1, 4)) : 0u, uint32_t(std::clamp(cfg.gerado, 0, 1)));
+            // sem quadros repetidos/mesclados no jogo: a geracao de verdade e a da AMD (o ritmo vale so na captura de video)
+            fb.Batimento(true, cfg.modo != 1 && redeOk, espera ? 2u : 0u, espera ? 1u : 0u, 0u,
+                         uint32_t(cfg.geracao >= 2 ? std::clamp(cfg.geracao, 2, 4) : 0));
             if (!fb.Pega(qb))
             {
                 if (fb.Aberta() && !fb.JogoVivo())
@@ -1873,8 +1983,37 @@ RWTexture2D<float4> saida : register(u0);
         e.perfilAlterado = configArq.empty() && cfg.Texto() != textoSalvo;
         e.perfilExiste = !perfilJogo.empty() && Existe(PerfilArq(perfilJogo));
         e.historicoAtivo = temporalSessao == 1;
+        e.geracaoPronta = buffer && fb.Conectada() && fb.GeracaoPronta();
+        e.estadoGeracao = estadoGeracao;
+        if (buffer && fb.Conectada() && fb.JogoVivo())
+            e.estadoGeracao = e.geracaoPronta
+                                  ? (cfg.geracao >= 2 ? "geração ligada (swapchain da AMD em uso)"
+                                                      : "geração desligada (o jogo abriu pelo overlay: liga aqui, sem reabrir)")
+                                  : (cfg.geracao >= 2 ? "este jogo não abriu pelo overlay: feche e reabra com \"Abrir jogo pelo "
+                                                        "overlay\" (a DLL entra uma vez, antes do DirectX; depois é só ajustar aqui)"
+                                                      : "");
+        {
+            const std::wstring u = UltimoJogo();
+            e.ultimoJogo = u.empty() ? "" : Utf8(u.substr(u.find_last_of(L"\\/") + 1));
+        }
         painel.DefineMouseJogo(buffer && fb.Conectada() && fb.JogoVivo() ? fb.Cab() : nullptr);
         const AcoesPainel a = painel.Quadro(cfg, e);
+        if (a.abrirJogo)
+        {
+            wchar_t arq[MAX_PATH] = {};
+            OPENFILENAMEW of{sizeof of};
+            of.hwndOwner = painel.Janela();
+            of.lpstrFilter = L"Jogo (*.exe)\0*.exe\0";
+            of.lpstrFile = arq;
+            of.nMaxFile = MAX_PATH;
+            of.lpstrTitle = L"Abrir jogo com geração de quadros";
+            of.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+            if (GetOpenFileNameW(&of))
+                LancaJogo(arq);
+        }
+        if (a.abrirUltimo)
+            if (const std::wstring u = UltimoJogo(); !u.empty())
+                LancaJogo(u);
         // perfis (na ordem: salvar antes de carregar, para o "salvar e carregar")
         if (a.perfilSalvar)
             SalvaPerfil();
@@ -2189,6 +2328,44 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
     for (int i = 1; i < argc; ++i)
         if (!wcscmp(argv[i], L"--sem-painel"))
             app.comPainel = false;
+    // teste do lancamento com geracao (o mesmo do botao "Abrir jogo com geracao"): abre e sai
+    //   --lanca-jogo <exe> [--lanca-args "<args>"] [--lanca-dll <DLSS5Buffer.dll>] [--lanca-geracao N]
+    {
+        std::wstring lExe, lArgs, lDll;
+        int lGer = 2;
+        for (int i = 1; i + 1 < argc; ++i)
+        {
+            if (!wcscmp(argv[i], L"--lanca-jogo"))
+                lExe = argv[i + 1];
+            if (!wcscmp(argv[i], L"--lanca-args"))
+                lArgs = argv[i + 1];
+            if (!wcscmp(argv[i], L"--lanca-dll"))
+                lDll = argv[i + 1];
+            if (!wcscmp(argv[i], L"--lanca-geracao"))
+                lGer = _wtoi(argv[i + 1]);
+        }
+        if (!lExe.empty())
+        {
+            if (lDll.empty())
+            {
+                wchar_t eu[MAX_PATH];
+                GetModuleFileNameW(nullptr, eu, MAX_PATH);
+                lDll = std::wstring(eu).substr(0, std::wstring(eu).find_last_of(L"\\/")) + L"\\captura\\DLSS5Buffer.dll";
+            }
+            DWORD pid = 0;
+            const ov::ResultadoInjecao r = ov::AbreJogo(lExe, lDll, uint32_t(lGer), pid, lArgs);
+            Log("geracao", Fmt("lancamento de teste: %s (pid %lu) %s", r.ok ? "ok" : "falhou", (unsigned long)pid, r.motivo.c_str()));
+            bool fica = false; // --fica: o overlay segue aberto e liga a captura de buffer quando a janela aparecer
+            for (int i = 1; i < argc; ++i)
+                fica |= !wcscmp(argv[i], L"--fica");
+            if (!fica)
+                return r.ok ? 0 : 1;
+            app.jogoLancado = lExe;
+            app.pidLancado = pid;
+            app.tLancado = std::chrono::steady_clock::now();
+            app.geracaoTeste = lGer; // vale depois do config (Inicia)
+        }
+    }
     if (!imagemArq.empty() || !app.pastaReproducao.empty())
         app.comPainel = false;
     // imagem e reproducao: testes deterministicos (o jogo nao espera a edicao, nenhum quadro e pulado)
@@ -2205,6 +2382,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         app.Inicia();
         app.abertura = nullptr;
         abertura.Fecha();
+        if (app.geracaoTeste >= 0)
+        {
+            app.cfg.fonte = 1;
+            app.cfg.geracao = app.geracaoTeste;
+        }
     }
     catch (const std::exception& e)
     {
@@ -2392,6 +2574,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 ultimoPainel = clk::now();
                 try
                 {
+                    app.VigiaLancamento(); // o jogo aberto pelo overlay: liga a captura de buffer quando a janela aparece
                     app.Painel_();
                 }
                 catch (const std::exception& e)

@@ -60,7 +60,8 @@ void FonteBuffer::Fecha()
     evPublica = nullptr;
 }
 
-void FonteBuffer::Batimento(bool querQuadros, bool aplica, uint32_t espera, uint32_t repete, uint32_t gerado)
+void FonteBuffer::Batimento(bool querQuadros, bool aplica, uint32_t espera, uint32_t repete, uint32_t gerado,
+                            uint32_t geracao)
 {
     if (!cab)
         return;
@@ -69,6 +70,7 @@ void FonteBuffer::Batimento(bool querQuadros, bool aplica, uint32_t espera, uint
     cab->espera = evPublica ? espera : 0;
     cab->repete = repete;
     cab->gerado = gerado;
+    cab->geracaoQuadros = geracao;
     cab->batimentoOverlay = GetTickCount64();
 }
 

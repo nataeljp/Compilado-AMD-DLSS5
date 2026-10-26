@@ -1,4 +1,4 @@
-﻿// DLSS5Buffer.dll: o modulo que o DLSS5 Overlay coloca no jogo aberto (Modo de Rede = captura de buffer).
+// DLSS5Buffer.dll: o modulo que o DLSS5 Overlay coloca no jogo aberto (Modo de Rede = captura de buffer).
 // Nao roda rede nenhuma: so pega, depois do upscale, o que o jogo entrega ao FSR 3.1+ (cor sem HUD, profundidade,
 // movimento, exposicao, camera) e conversa com o overlay pelo ClienteBuffer (buffer/Protocolo.h). Ganchos:
 //   - ffxCreateContext / ffxDispatch da DLL do upscaler (amd_fidelityfx_upscaler_dx12.dll; FSR 3.1 antigo:
@@ -6,8 +6,12 @@
 //   - ID3D12CommandQueue::ExecuteCommandLists: quando essa lista e submetida, sinaliza a cerca do jogo;
 //   - entrada (com o painel do overlay aberto sobre o jogo): GetRawInputData/GetRawInputBuffer e as mensagens de mouse
 //     da janela do jogo -- o movimento e os cliques vao para o painel e o jogo recebe zero (a mira nao mexe).
+//   - jogo aberto pelo overlay com a geracao de quadros (Protocolo.h Lancamento): CreateDXGIFactory* e, nas fabricas,
+//     CreateSwapChainForHwnd/CreateSwapChain -- o jogo recebe o swapchain da AMD (buffer/Geracao.h), e a cada despacho
+//     do FSR a profundidade, o movimento e a camera vao para a geracao.
 // Registro em DLSS5Buffer.log ao lado da DLL.
 #include "../buffer/ClienteBuffer.h"
+#include "../buffer/Geracao.h"
 #include "ffx_api.h"
 #include "ffx_upscale.h"
 #include <detours.h>
@@ -57,6 +61,25 @@ PfnRawData oRawData = nullptr;
 PfnRawBuffer oRawBuffer = nullptr;
 HHOOK g_ganchoMsg = nullptr;
 volatile LONG g_rawVistos = 0;
+
+// ---- geracao de quadros da AMD (jogo aberto pelo overlay) ----
+// nunca destruida: na saida do processo o Windows ja matou a thread de apresentacao da AMD, e esperar por ela (o que o
+// destrutor faz) deixava o jogo pendurado ao fechar
+dlss5ov::Geracao& g_ger = *new dlss5ov::Geracao;
+bool g_lancado = false;                // o jogo abriu pelo overlay: o swapchain vira o da AMD (a geracao liga e desliga
+                                       // depois so pelo painel, sem reabrir)
+uint32_t g_geracaoLancamento = 0;      // o pedido do lancamento (vale ate o overlay conectar)
+thread_local bool t_criandoSc = false; // o swapchain da AMD cria o de verdade pela mesma fabrica: esse passa direto
+using PfnCriaFab = HRESULT(WINAPI*)(REFIID, void**);
+using PfnCriaFab2 = HRESULT(WINAPI*)(UINT, REFIID, void**);
+PfnCriaFab oCriaFab = nullptr, oCriaFab1 = nullptr;
+PfnCriaFab2 oCriaFab2 = nullptr;
+using PfnCriaSc = HRESULT(STDMETHODCALLTYPE*)(IDXGIFactory*, IUnknown*, DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**);
+using PfnCriaScHwnd = HRESULT(STDMETHODCALLTYPE*)(IDXGIFactory2*, IUnknown*, HWND, const DXGI_SWAP_CHAIN_DESC1*,
+                                                  const DXGI_SWAP_CHAIN_FULLSCREEN_DESC*, IDXGIOutput*, IDXGISwapChain1**);
+PfnCriaSc oCriaSc = nullptr;
+PfnCriaScHwnd oCriaScHwnd = nullptr;
+std::once_flag g_ganchoFabrica;
 
 // o cabecalho deste processo: o do cliente, ou (antes do primeiro FSR, ou num processo de teste que tem o proprio
 // cliente) o mapeamento pelo nome
@@ -282,6 +305,192 @@ void GanchoFila(ID3D12Device* d)
     Log("gancho em ExecuteCommandLists: %s", r == NO_ERROR ? "ok" : "falhou");
 }
 
+// ---- geracao de quadros ----
+HRESULT STDMETHODCALLTYPE CriaScHwnd(IDXGIFactory2* f, IUnknown* d, HWND h, const DXGI_SWAP_CHAIN_DESC1* sd,
+                                     const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* fs, IDXGIOutput* o, IDXGISwapChain1** sc)
+{
+    Microsoft::WRL::ComPtr<ID3D12CommandQueue> fila;
+    if (!t_criandoSc && g_lancado && !g_ger.TemSwapchain() && d && sd && SUCCEEDED(d->QueryInterface(IID_PPV_ARGS(&fila))))
+    {
+        t_criandoSc = true;
+        const HRESULT r = g_ger.CriaSwapchain(f, fila.Get(), h, sd, fs, sc);
+        t_criandoSc = false;
+        if (SUCCEEDED(r))
+        {
+            Log("geracao: o jogo recebeu o swapchain da AMD (%ux%u fmt %d, %u buffers)", sd->Width, sd->Height,
+                (int)sd->Format, sd->BufferCount);
+            return r;
+        }
+        Log("geracao: o swapchain da AMD falhou (%s); o jogo segue sem geracao", g_ger.UltimoErro());
+    }
+    return oCriaScHwnd(f, d, h, sd, fs, o, sc);
+}
+
+HRESULT STDMETHODCALLTYPE CriaSc(IDXGIFactory* f, IUnknown* d, DXGI_SWAP_CHAIN_DESC* sd, IDXGISwapChain** sc)
+{
+    Microsoft::WRL::ComPtr<ID3D12CommandQueue> fila;
+    if (!t_criandoSc && g_lancado && !g_ger.TemSwapchain() && d && sd && SUCCEEDED(d->QueryInterface(IID_PPV_ARGS(&fila))))
+    {
+        t_criandoSc = true;
+        const HRESULT r = g_ger.CriaSwapchain(f, fila.Get(), sd, sc);
+        t_criandoSc = false;
+        if (SUCCEEDED(r))
+        {
+            Log("geracao: o jogo recebeu o swapchain da AMD (%ux%u fmt %d, %u buffers)", sd->BufferDesc.Width,
+                sd->BufferDesc.Height, (int)sd->BufferDesc.Format, sd->BufferCount);
+            return r;
+        }
+        Log("geracao: o swapchain da AMD falhou (%s); o jogo segue sem geracao", g_ger.UltimoErro());
+    }
+    return oCriaSc(f, d, sd, sc);
+}
+
+// as funcoes de criar swapchain sao o mesmo codigo para toda fabrica do dxgi.dll: o gancho vai no endereco
+void GanchoFabrica(IUnknown* fab)
+{
+    std::call_once(g_ganchoFabrica, [&] {
+        oCriaSc = reinterpret_cast<PfnCriaSc>((*reinterpret_cast<void***>(fab))[10]);
+        Microsoft::WRL::ComPtr<IDXGIFactory2> f2;
+        if (SUCCEEDED(fab->QueryInterface(IID_PPV_ARGS(&f2))))
+            oCriaScHwnd = reinterpret_cast<PfnCriaScHwnd>((*reinterpret_cast<void***>(f2.Get()))[15]);
+        DetourTransactionBegin();
+        DetourUpdateThread(GetCurrentThread());
+        DetourAttach(reinterpret_cast<PVOID*>(&oCriaSc), reinterpret_cast<PVOID>(&CriaSc));
+        if (oCriaScHwnd)
+            DetourAttach(reinterpret_cast<PVOID*>(&oCriaScHwnd), reinterpret_cast<PVOID>(&CriaScHwnd));
+        const LONG r = DetourTransactionCommit();
+        Log("geracao: ganchos na criacao do swapchain: %s", r == NO_ERROR ? "ok" : "falharam");
+    });
+}
+
+HRESULT WINAPI CriaFab(REFIID r, void** f)
+{
+    const HRESULT h = oCriaFab(r, f);
+    if (SUCCEEDED(h) && f && *f)
+        GanchoFabrica(static_cast<IUnknown*>(*f));
+    return h;
+}
+HRESULT WINAPI CriaFab1(REFIID r, void** f)
+{
+    const HRESULT h = oCriaFab1(r, f);
+    if (SUCCEEDED(h) && f && *f)
+        GanchoFabrica(static_cast<IUnknown*>(*f));
+    return h;
+}
+HRESULT WINAPI CriaFab2(UINT fl, REFIID r, void** f)
+{
+    const HRESULT h = oCriaFab2(fl, r, f);
+    if (SUCCEEDED(h) && f && *f)
+        GanchoFabrica(static_cast<IUnknown*>(*f));
+    return h;
+}
+
+// o jogo nasceu suspenso: engancha a criacao das fabricas DXGI antes de ele criar qualquer uma e avisa o overlay, que
+// entao solta o jogo
+DWORD WINAPI PreparaGeracao(void*)
+{
+    if (HMODULE dxgi = LoadLibraryW(L"dxgi.dll"))
+    {
+        oCriaFab = reinterpret_cast<PfnCriaFab>(GetProcAddress(dxgi, "CreateDXGIFactory"));
+        oCriaFab1 = reinterpret_cast<PfnCriaFab>(GetProcAddress(dxgi, "CreateDXGIFactory1"));
+        oCriaFab2 = reinterpret_cast<PfnCriaFab2>(GetProcAddress(dxgi, "CreateDXGIFactory2"));
+        DetourTransactionBegin();
+        DetourUpdateThread(GetCurrentThread());
+        if (oCriaFab)
+            DetourAttach(reinterpret_cast<PVOID*>(&oCriaFab), reinterpret_cast<PVOID>(&CriaFab));
+        if (oCriaFab1)
+            DetourAttach(reinterpret_cast<PVOID*>(&oCriaFab1), reinterpret_cast<PVOID>(&CriaFab1));
+        if (oCriaFab2)
+            DetourAttach(reinterpret_cast<PVOID*>(&oCriaFab2), reinterpret_cast<PVOID>(&CriaFab2));
+        const LONG r = DetourTransactionCommit();
+        Log("jogo aberto pelo overlay (geracao %s no lancamento): ganchos nas fabricas DXGI %s",
+            g_geracaoLancamento >= 2 ? "ligada" : "desligada", r == NO_ERROR ? "ok" : "falharam");
+    }
+    else
+        Log("geracao: dxgi.dll nao carregou");
+    wchar_t nome[96];
+    dlss5ov::NomeEventoPronto(nome, 96, GetCurrentProcessId());
+    if (HANDLE ev = OpenEventW(EVENT_MODIFY_STATE, FALSE, nome))
+    {
+        SetEvent(ev);
+        CloseHandle(ev);
+    }
+    return 0;
+}
+
+// a cada despacho do FSR: a profundidade, o movimento e a camera deste quadro para a geracao (ela parte do backbuffer
+// final, que ja tem a edicao da rede)
+void GeracaoQuadro(ffxContext* ctx, const ffxDispatchDescUpscale* u, ID3D12GraphicsCommandList* lista)
+{
+    if (!g_ger.TemSwapchain())
+        return;
+    uint32_t flags = 0, mrw = 0, mrh = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_mx);
+        if (ctx)
+        {
+            if (auto it = g_flags.find(*ctx); it != g_flags.end())
+                flags = it->second;
+            if (auto im = g_maxRender.find(*ctx); im != g_maxRender.end())
+                mrw = im->second.first, mrh = im->second.second;
+        }
+    }
+    const bool conhecidas = (flags & 0x80000000u) != 0;
+    dlss5ov::QuadroGeracao g;
+    g.prof = static_cast<ID3D12Resource*>(u->depth.resource);
+    g.profEstado = Estado(u->depth.state);
+    g.mov = static_cast<ID3D12Resource*>(u->motionVectors.resource);
+    g.movEstado = Estado(u->motionVectors.state);
+    g.renderW = u->renderSize.width;
+    g.renderH = u->renderSize.height;
+    g.maxRenderW = mrw;
+    g.maxRenderH = mrh;
+    g.movNaTela = (flags & FFX_UPSCALE_ENABLE_DISPLAY_RESOLUTION_MOTION_VECTORS) != 0;
+    g.movComJitter = (flags & FFX_UPSCALE_ENABLE_MOTION_VECTORS_JITTER_CANCELLATION) != 0;
+    g.jitterX = u->jitterOffset.x;
+    g.jitterY = u->jitterOffset.y;
+    g.movEscX = u->motionVectorScale.x;
+    g.movEscY = u->motionVectorScale.y;
+    g.perto = u->cameraNear;
+    g.longe = u->cameraFar;
+    g.fovY = u->cameraFovAngleVertical;
+    g.msQuadro = u->frameTimeDelta > 0.f ? u->frameTimeDelta : 16.6f;
+    // sem as flags (o modulo chegou depois do contexto): o padrao do UE5, Z invertido e infinito
+    g.invertida = conhecidas ? (flags & FFX_UPSCALE_ENABLE_DEPTH_INVERTED) != 0 : true;
+    g.infinita = conhecidas ? (flags & FFX_UPSCALE_ENABLE_DEPTH_INFINITE) != 0
+                            : (u->cameraFar <= 0.f || u->cameraFar > 1e6f || u->cameraFar < u->cameraNear);
+    g.reset = u->reset;
+    // o pedido do overlay conectado; sem ele (ainda nao ligou a captura, ou fechou), o do lancamento
+    dlss5ov::Cabecalho* cab = g_clienteOk ? g_cli.Cab() : nullptr;
+    const uint32_t pedida = cab && g_cli.OverlayVivo() ? cab->geracaoQuadros : g_geracaoLancamento;
+    if (cab)
+        cab->geracaoPronta = 1;
+    static int estadoDito = 0;
+    g_ger.Quadro(lista, g, pedida >= 2);
+    if (const int est = g_ger.EstadoContexto(); est != estadoDito && est >= 1)
+    {
+        estadoDito = est;
+        if (est == 1)
+            Log("geracao: compilando os shaders da AMD em segundo plano (o jogo segue sem geracao ate terminar)");
+        else if (est == 2)
+            Log("geracao: pronta (shaders da AMD compilados em %.1f s)", g_ger.MsCompilacao() / 1000.0);
+        else
+            Log("geracao: falhou: %s", g_ger.UltimoErro());
+    }
+    static ULONGLONG marca = 0;
+    static uint64_t antes = 0;
+    const ULONGLONG agora = GetTickCount64();
+    if (!marca)
+        marca = agora;
+    if (agora - marca >= 5000)
+    {
+        Log("geracao: %s, %.0f quadros gerados/s", pedida >= 2 ? "ligada" : "desligada",
+            double(g_ger.Gerados() - antes) * 1000.0 / double(agora - marca));
+        antes = g_ger.Gerados();
+        marca = agora;
+    }
+}
+
 ffxReturnCode_t CriaContexto(ffxContext* ctx, ffxCreateContextDescHeader* desc, const ffxAllocationCallbacks* mem)
 {
     const ffxReturnCode_t r = oCriaContexto(ctx, desc, mem);
@@ -311,6 +520,7 @@ ffxReturnCode_t Despacha(ffxContext* ctx, const ffxDispatchDescHeader* desc)
     auto* prof = static_cast<ID3D12Resource*>(u->depth.resource);
     if (!lista || !cor || !mov || !prof)
         return r;
+    GeracaoQuadro(ctx, u, lista);
     if (g_clienteOk)
         g_cli.EsperaEdicao(g_mx); // sem atraso: a edicao do quadro anterior, sem segurar o mutex (o Execute usa)
     std::lock_guard<std::mutex> lk(g_mx);
@@ -324,6 +534,16 @@ ffxReturnCode_t Despacha(ffxContext* ctx, const ffxDispatchDescHeader* desc)
         GetModuleFileNameA(nullptr, exe, MAX_PATH);
         const char* nome = strrchr(exe, '\\') ? strrchr(exe, '\\') + 1 : exe;
         g_clienteOk = g_cli.Inicia(g_dev, nome);
+        if (!g_clienteOk && dlss5ov::ClienteBuffer::Compilando())
+        {
+            g_dev->Release(); // GetDevice acima: refaz no proximo quadro
+            g_dev = nullptr;
+            static bool dito = false;
+            if (!dito)
+                Log("cliente: os shaders do modulo ainda compilam em segundo plano; o jogo segue e o cliente liga quando terminar");
+            dito = true;
+            return r;
+        }
         g_clienteFalhou = !g_clienteOk;
         Log(g_clienteOk ? "cliente pronto (%s)" : "cliente falhou: %s", g_clienteOk ? nome : g_cli.UltimoErro());
         if (!g_clienteOk)
@@ -448,6 +668,8 @@ ffxReturnCode_t Despacha(ffxContext* ctx, const ffxDispatchDescHeader* desc)
 // procura a DLL do upscaler do jogo (pode carregar depois: o jogo so carrega o FSR quando ele e escolhido no menu)
 DWORD WINAPI Instala(void*)
 {
+    // os shaders do modulo compilam enquanto o jogo carrega (no primeiro quadro do FSR parariam o jogo por 14-25 s)
+    dlss5ov::ClienteBuffer::PreCompila();
     // entrada primeiro: o painel do overlay pode abrir antes de o jogo usar o FSR
     GanchosEntrada();
     // FSR SDK 2 (FSR 3.1.4+/4): o jogo chama o carregador, que repassa ao upscaler -- e o upgrade de FSR do driver troca o
@@ -497,6 +719,27 @@ BOOL APIENTRY DllMain(HMODULE m, DWORD motivo, LPVOID)
         char exe[MAX_PATH] = {};
         GetModuleFileNameA(nullptr, exe, MAX_PATH);
         Log("DLSS5Buffer.dll carregada em %s (pid %lu)", exe, GetCurrentProcessId());
+        // aberto pelo overlay (o jogo esta suspenso esperando o evento pronto): o pedido de geracao de quadros
+        wchar_t nome[96];
+        dlss5ov::NomeLancamento(nome, 96, GetCurrentProcessId());
+        bool lancado = false;
+        if (HANDLE mp = OpenFileMappingW(FILE_MAP_READ, FALSE, nome))
+        {
+            if (const auto* l = static_cast<const dlss5ov::Lancamento*>(MapViewOfFile(mp, FILE_MAP_READ, 0, 0,
+                                                                                         sizeof(dlss5ov::Lancamento))))
+            {
+                lancado = g_lancado = true;
+                if (l->versao == dlss5ov::kVersao)
+                    g_geracaoLancamento = l->geracao;
+                else
+                    Log("lancamento de outra versao do overlay (%u, esta %u): sem geracao", l->versao, dlss5ov::kVersao);
+                UnmapViewOfFile(l);
+            }
+            CloseHandle(mp);
+        }
+        if (lancado)
+            if (HANDLE t = CreateThread(nullptr, 0, PreparaGeracao, nullptr, 0, nullptr))
+                CloseHandle(t);
         if (HANDLE t = CreateThread(nullptr, 0, Instala, nullptr, 0, nullptr))
             CloseHandle(t);
     }

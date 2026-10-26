@@ -30,15 +30,26 @@ namespace dlss5ov {
 // desconhecido ou absurdo (os shaders comparam o Z, como antes)
 inline float TanMeioFov(float fovY) { return fovY > 0.01f && fovY < 3.1f ? std::tan(0.5f * fovY) : 0.f; }
 
-constexpr uint32_t kVersao = 6; // 2: movimento RG32F acumulado ate a exportacao anterior; 3: espera (sem atraso);
+constexpr uint32_t kVersao = 7; // 2: movimento RG32F acumulado ate a exportacao anterior; 3: espera (sem atraso);
                                 // 4: quadros repetidos; 5: modo dos quadros gerados (repetido / mesclado);
-                                // 6: a luz de cada edicao (linear / logaritmica)
+                                // 6: a luz de cada edicao (linear / logaritmica); 7: geracao de quadros da AMD
 constexpr uint32_t kSlotsEntrada = 2;
 constexpr uint32_t kSlotsEdicao = 3;
 
 inline void NomeMapa(wchar_t* b, size_t n, uint32_t pid) { swprintf(b, n, L"Local\\DLSS5Ov.Buffer.%u", pid); }
 // evento (auto-reset, criado pelo jogo): o overlay dispara depois de cada Publica
 inline void NomeEventoPublica(wchar_t* b, size_t n, uint32_t pid) { swprintf(b, n, L"Local\\DLSS5Ov.Publica.%u", pid); }
+
+// Jogo aberto pelo overlay ja com o modulo (geracao de quadros: o swapchain do jogo e trocado pelo da AMD na criacao).
+// O overlay cria o lancamento antes de carregar a DLL; o modulo le no carregamento, engancha a criacao do swapchain e
+// dispara o evento pronto -- so entao o overlay solta o jogo (que nasceu suspenso).
+struct Lancamento
+{
+    uint32_t versao;  // kVersao
+    uint32_t geracao; // quadros apresentados por quadro do jogo pedidos no lancamento (0/1 = sem geracao, 2..4)
+};
+inline void NomeLancamento(wchar_t* b, size_t n, uint32_t pid) { swprintf(b, n, L"Local\\DLSS5Ov.Lancamento.%u", pid); }
+inline void NomeEventoPronto(wchar_t* b, size_t n, uint32_t pid) { swprintf(b, n, L"Local\\DLSS5Ov.Pronto.%u", pid); }
 // qual: L"cor", L"mov", L"prof", L"exp", L"edicao", L"cercaJogo", L"cercaOverlay"
 inline void NomeRecurso(wchar_t* b, size_t n, uint32_t pid, uint32_t geracao, const wchar_t* qual, uint32_t slot)
 {
@@ -94,6 +105,9 @@ struct Cabecalho
     volatile uint32_t gerado;           // com repete >= 2: 0 = quadro repetido; 1 = mesclado: entre o processado anterior
                                         // e o novo, os N-1 quadros gerados misturam os dois (50/50, 40/60, 30/70) e o novo
                                         // vem depois deles (o novo aparece N quadros depois, nao 1)
+    volatile uint32_t geracaoQuadros;   // overlay -> jogo: geracao de quadros da AMD (0/1 = desligada, 2..4 quadros
+                                        // apresentados por quadro do jogo)
+    volatile uint32_t geracaoPronta;    // jogo -> overlay: o swapchain da AMD esta em uso (o jogo abriu pelo overlay)
     volatile uint64_t consumido;        // ultimo quadro de entrada que o overlay ja copiou (o slot pode ser reescrito)
     volatile uint64_t lido[kSlotsEdicao]; // ultimo quadro do jogo que gravou leitura do slot de edicao k
     volatile uint64_t quadroJogo;         // ultimo quadro gravado pelo jogo

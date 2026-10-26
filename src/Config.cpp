@@ -107,6 +107,7 @@ void Config::Carrega(const std::wstring& arquivo)
     }
     I("modo", modo);
     I("quadroGerado", gerado);
+    I("geracaoQuadros", geracao);
     B("movimento", movimento);
     I("ritmo", ritmo);
     B("reusoVit", reusoVit);
@@ -160,6 +161,7 @@ std::string Config::Texto() const
     }
     f << "  \"modo\": " << modo << ",\n";
     f << "  \"quadroGerado\": " << gerado << ",\n";
+    f << "  \"geracaoQuadros\": " << geracao << ",\n";
     f << "  \"movimento\": " << b(movimento) << ",\n";
     f << "  \"ritmo\": " << ritmo << ",\n";
     f << "  \"reusoVit\": " << b(reusoVit) << ",\n";

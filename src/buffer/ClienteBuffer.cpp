@@ -1,7 +1,10 @@
 #include "ClienteBuffer.h"
 #include <d3dcompiler.h>
 #include <algorithm>
+#include <atomic>
 #include <cstring>
+#include <mutex>
+#include <thread>
 
 #pragma comment(lib, "d3dcompiler.lib")
 
@@ -375,10 +378,47 @@ bool Compila(const char* entrada, ID3DBlob** b, std::string& erro)
     erro = std::string("shader ") + entrada + ": " + (e ? (const char*)e->GetBufferPointer() : "?");
     return false;
 }
+
+// os shaders do modulo, compilados em segundo plano desde o carregamento da DLL: no primeiro quadro do FSR (na thread
+// de renderizacao do jogo) a compilacao levava 14-25 s com o jogo parado
+const char* const kEntradas[5] = {"CSAcum", "CSProf", "CSCor", "CSLimpaRecon", "CSRecon"};
+Microsoft::WRL::ComPtr<ID3DBlob> g_blobs[5];
+std::string g_erroCompila;
+std::atomic<int> g_compila{0}; // 0 nada, 1 compilando, 2 pronto, 3 falhou
+std::once_flag g_compilaUma;
 } // namespace
+
+void ClienteBuffer::PreCompila()
+{
+    std::call_once(g_compilaUma, [] {
+        g_compila = 1;
+        std::thread([] {
+            bool ok = true;
+            for (int i = 0; i < 5 && ok; ++i)
+                ok = Compila(kEntradas[i], &g_blobs[i], g_erroCompila);
+            g_compila = ok ? 2 : 3;
+        }).detach();
+    });
+}
+
+bool ClienteBuffer::Compilando()
+{
+    return g_compila <= 1;
+}
 
 bool ClienteBuffer::Inicia(ID3D12Device* d, const char* exe)
 {
+    PreCompila();
+    if (g_compila == 1)
+    {
+        erro = "compilando os shaders do modulo";
+        return false; // o chamador tenta de novo no proximo quadro (Compilando())
+    }
+    if (g_compila == 3)
+    {
+        erro = g_erroCompila;
+        return false;
+    }
     dev = d;
     wchar_t nome[96];
     NomeMapa(nome, 96, GetCurrentProcessId());
@@ -427,13 +467,10 @@ bool ClienteBuffer::Inicia(ID3D12Device* d, const char* exe)
         erro = "root signature";
         return false;
     }
-    const char* ent[5] = {"CSAcum", "CSProf", "CSCor", "CSLimpaRecon", "CSRecon"};
     Com<ID3D12PipelineState>* pso[5] = {&psoMov, &psoProf, &psoCor, &psoLimpaRecon, &psoRecon};
     for (int i = 0; i < 5; ++i)
     {
-        Com<ID3DBlob> b;
-        if (!Compila(ent[i], &b, erro))
-            return false;
+        ID3DBlob* b = g_blobs[i].Get();
         D3D12_COMPUTE_PIPELINE_STATE_DESC pd{};
         pd.pRootSignature = raiz.Get();
         pd.CS = {b->GetBufferPointer(), b->GetBufferSize()};
