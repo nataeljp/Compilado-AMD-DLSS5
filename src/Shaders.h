@@ -227,51 +227,9 @@ SamplerState s : register(s0);
 }
 )";
 
-// Grade afim (Bilateral Guided Upsampling, Chen et al. 2016; HDRNet, Gharbi et al. 2017): por celula de AFIM_CELULA px
-// da rede e faixa de brilho, a transformacao de cor y = A x + b (A 3x3, b 3) no espaco comprimido x / (1 + luma) que leva
-// o quadro de t0 a resposta da rede. Aplicada a cor de OUTRO quadro, ela recalcula a edicao a partir do conteudo dele: a
-// edicao nao e transportada pixel a pixel (o que, com o atraso e o acumulo, deixava a do quadro velho como uma mascara
-// semitransparente andando com o objeto). Textura da grade: coluna c.x * AFIM_FAIXAS + faixa, linhas c.y * 4 + 0..2 =
-// [A|b] de cada canal de saida, c.y * 4 + 3 = confianca (0 = sem dados ali: identidade). O ajuste e no Temporal (kAfim);
-// a aplicacao, na resolucao cheia, no CSCompoe: a transformacao e suave e o detalhe vem do proprio quadro nativo.
-inline const char* AfimAplica = R"(
-static const int AFIM_CELULA = 16;
-static const int AFIM_FAIXAS = 8;
-// o guia de brilho das faixas (o mesmo da grade bilateral do Temporal): luma comprimida, perceptual
-float GuiaBrilho(float3 o) { float l = max(Lum(max(o, 0.0)), 0.0); return pow(l / (1.0 + l), 1.0 / 2.2); }
-// x: a cor (comprimida) a transformar; pos: pixels da rede no quadro t0 da grade; z01: o guia de brilho (Guia) de x
-float3 AplicaAfim(Texture2D<float4> coef, uint celW, uint celH, float3 x, float2 pos, float z01)
-{
-    const float2 g = pos / AFIM_CELULA - 0.5;
-    const int2 g0 = int2(floor(g));
-    const float2 f = g - g0;
-    const float zb = clamp(z01 * AFIM_FAIXAS - 0.5, 0.0, AFIM_FAIXAS - 1.0);
-    const int z0 = (int)floor(zb);
-    const float fz = zb - z0;
-    float3 acc = 0;
-    float ws = 0;
-    [unroll] for (int j = 0; j < 2; ++j)
-        [unroll] for (int i = 0; i < 2; ++i)
-            [unroll] for (int k = 0; k < 2; ++k)
-            {
-                const int2 c = clamp(g0 + int2(i, j), int2(0, 0), int2(celW - 1, celH - 1));
-                const int col = c.x * AFIM_FAIXAS + min(z0 + k, AFIM_FAIXAS - 1), lin = c.y * 4;
-                const float wt = (i ? f.x : 1.0 - f.x) * (j ? f.y : 1.0 - f.y) * (k ? fz : 1.0 - fz) *
-                                 coef.Load(int3(col, lin + 3, 0)).x;
-                if (wt <= 0.0) continue;
-                const float4 r0 = coef.Load(int3(col, lin, 0)), r1 = coef.Load(int3(col, lin + 1, 0)),
-                             r2 = coef.Load(int3(col, lin + 2, 0));
-                acc += wt * float3(dot(r0.xyz, x) + r0.w, dot(r1.xyz, x) + r1.w, dot(r2.xyz, x) + r2.w);
-                ws += wt;
-            }
-    // faixa de brilho que nao existia por perto em t0: a edicao some aos poucos (identidade = sem edicao)
-    return ws > 1e-4 ? lerp(x, acc / ws, saturate(ws * 4.0)) : x;
-}
-)";
-
 // quadro inteiro + forca * edicao (ampliada por Catmull-Rom) -> gradacao do modelo -> tela
 // modo: 0 rede, 1 original, 2 comparacao (esquerda original | direita rede), 3 so a edicao (x4), 4 movimento,
-// 5 saida crua da ultima resposta (o quadro que a rede viu + a edicao dela, sem acumulo, movimento nem grade)
+// 5 saida crua da ultima resposta (o quadro que a rede viu + a edicao dela)
 inline const char* Compoe = R"(
 cbuffer C : register(b0) { uint fw; uint fh; uint dw; uint dh; float forca; uint modo; float divisao; uint usaEdicao;
                            uint hdr; float escala; float kExp; float kCon; float kSat; uint grada; uint filmica; uint sanduiche;
@@ -279,16 +237,13 @@ cbuffer C : register(b0) { uint fw; uint fh; uint dw; uint dh; float forca; uint
                            uint pad3; uint pad4;
                            float satR; float satY; float satG; float satC; float satB; float satM;
                            float luzR; float luzY; float luzG; float luzC; float luzB; float luzM;
-                           uint usaMatiz; uint temCrua; uint usaAfim; uint temDeslG; uint agw; uint agh; uint padA0;
-                           uint padA1; };
+                           uint usaMatiz; uint temCrua; uint padA0; uint padA1; };
 Texture2D<float4> inteiro : register(t0);
 Texture2D<float4> fed : register(t1);
 Texture2D<float4> edicao : register(t2);
 Texture2D<float4> mov : register(t3);
 Texture2D<float4> origT0 : register(t4); // modo 5: o quadro que a rede viu (t0), no tamanho da rede
 Texture2D<float4> cruaT0 : register(t5); // modo 5: a edicao da resposta no espaco de t0 (comprimido x / (1 + luma))
-Texture2D<float4> afim : register(t6);   // grade afim da ultima resposta (usaAfim)
-Texture2D<float4> deslG : register(t7);  // deslocamento ate o t0 da grade, pixels da rede (temDeslG)
 RWTexture2D<float4> saida : register(u0);
 SamplerState s : register(s0);
 
@@ -393,22 +348,6 @@ float3 CorPorMatiz(float3 c)
     const float3 base = PreAjuste(o, TelaDe(o, hdr != 0 && sanduiche == 0, filmica != 0), preLuz, preSombra, preLimiar,
                                   preLimiarSombra, preCor);
     float3 r = base + forca * e;
-    if (usaAfim)
-    {
-        // grade afim na resolucao cheia: a transformacao de cor que a rede fez em volta deste ponto (no t0 da grade, onde
-        // ele estava) aplicada a cor nativa DESTE quadro. A edicao principal sai do conteudo de agora -- nem transportada
-        // do quadro velho (o fantasma) nem ampliada da rede pequena (o borrado); `e` traz so o residuo por pixel.
-        const float2 uvR = (float2(p) + 0.5) / float2(fw, fh);
-        const float2 dg = temDeslG ? deslG.SampleLevel(s, uvR, 0).xy : float2(0, 0);
-        const float3 b0 = max(base, 0.0), xb = b0 / (1.0 + Lum(b0));
-        float3 ya = max(AplicaAfim(afim, agw, agh, xb, uvR * float2(dw, dh) + dg, GuiaBrilho(b0)), 0.0);
-        // o teto da volta a luz linear (o mesmo do Temporal): o brilho editado chega no maximo a 4x o original + 4
-        const float lo = Lum(b0) * 4.0 + 4.0, lim = lo / (1.0 + lo), ly = Lum(ya);
-        if (ly > lim) ya *= lim / ly;
-        const float3 ea = ya / max(1.0 - Lum(ya), 1e-3) - b0;
-        r += forca * ea;
-        e += ea; // "So a edicao" mostra a edicao inteira
-    }
     if (usaMatiz) r = sanduiche ? SoftKnee(CorPorMatiz(SoftKneeInv(r))) : CorPorMatiz(r);
     bool orig = modo == 1 || (modo == 2 && (float)p.x < divisao * fw);
     float3 c = orig ? Tela(o, false, folga) : Tela(r, grada != 0, folga);

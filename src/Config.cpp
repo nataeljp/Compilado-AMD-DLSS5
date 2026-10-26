@@ -105,13 +105,9 @@ void Config::Carrega(const std::wstring& arquivo)
         F((std::string("matiz") + kNomesMatiz[i] + "Luz").c_str(), matiz.luz[i]);
     }
     I("modo", modo);
-    I("semAtraso", semAtraso);
-    semAtraso = std::clamp(semAtraso, 0, 3);
     I("quadroGerado", gerado);
     B("movimento", movimento);
-    B("usaConfianca", usaConfianca);
     I("ritmo", ritmo);
-    I("ritmoMax", ritmoMax);
     B("reusoVit", reusoVit);
     I("temporalRede", temporalRede);
     I("profundidade", profundidade);
@@ -120,12 +116,6 @@ void Config::Carrega(const std::wstring& arquivo)
     F("realceTemporal", realceTemporal);
     F("forcaHistoricoRede", forcaHistorico);
     F("recorteHistoricoRede", recorteHistorico);
-    I("estabilidade", temporal.maxQuadros);
-    F("mediaMovimento", temporal.pxEstab);
-    F("rejeicao", temporal.rejeicao);
-    B("bordaPelosVizinhos", temporal.vizinhos);
-    B("gradeAfim", temporal.afim);
-    F("detalhePorPixel", temporal.detalhe);
     F("divisao", divisao);
     I("fpsMax", fpsMax);
     B("ocultaDeGravacoes", ocultaDeGravacoes);
@@ -167,12 +157,9 @@ std::string Config::Texto() const
         f << "  \"matiz" << kNomesMatiz[i] << "Luz\": " << matiz.luz[i] << ",\n";
     }
     f << "  \"modo\": " << modo << ",\n";
-    f << "  \"semAtraso\": " << semAtraso << ",\n";
     f << "  \"quadroGerado\": " << gerado << ",\n";
     f << "  \"movimento\": " << b(movimento) << ",\n";
-    f << "  \"usaConfianca\": " << b(usaConfianca) << ",\n";
     f << "  \"ritmo\": " << ritmo << ",\n";
-    f << "  \"ritmoMax\": " << ritmoMax << ",\n";
     f << "  \"reusoVit\": " << b(reusoVit) << ",\n";
     f << "  \"temporalRede\": " << temporalRede << ",\n";
     f << "  \"profundidade\": " << profundidade << ",\n";
@@ -181,12 +168,6 @@ std::string Config::Texto() const
     f << "  \"realceTemporal\": " << realceTemporal << ",\n";
     f << "  \"forcaHistoricoRede\": " << forcaHistorico << ",\n";
     f << "  \"recorteHistoricoRede\": " << recorteHistorico << ",\n";
-    f << "  \"estabilidade\": " << temporal.maxQuadros << ",\n";
-    f << "  \"mediaMovimento\": " << temporal.pxEstab << ",\n";
-    f << "  \"rejeicao\": " << temporal.rejeicao << ",\n";
-    f << "  \"bordaPelosVizinhos\": " << b(temporal.vizinhos) << ",\n";
-    f << "  \"gradeAfim\": " << b(temporal.afim) << ",\n";
-    f << "  \"detalhePorPixel\": " << temporal.detalhe << ",\n";
     f << "  \"divisao\": " << divisao << ",\n";
     f << "  \"fpsMax\": " << fpsMax << ",\n";
     f << "  \"ocultaDeGravacoes\": " << b(ocultaDeGravacoes) << "\n";

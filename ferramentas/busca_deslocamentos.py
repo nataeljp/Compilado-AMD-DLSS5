@@ -10,7 +10,7 @@ RAIZ = Path(__file__).resolve().parents[1]
 ENT = RAIZ / 'referencia_nvidia/single-frame-inputs__1920x1080.png'
 NV = np.asarray(Image.open(RAIZ / 'referencia_nvidia/single-frame-outputs__1920x1080_nvidia.png').convert('RGB')).astype(float)
 CFG = RAIZ / 'comparacao/busca.config.json'
-CFG.write_text('{ "alturaRede": 1080, "reusoVit": false, "modelo": 0, "tomLocal": 1, "protecao": 16, "estabilidade": 1 }')
+CFG.write_text('{ "alturaRede": 1080, "reusoVit": false, "modelo": 0, "tomLocal": 1, "protecao": 16 }')
 ESTAGIOS = [(3, 4), (7, 8), (13, 14), (21, 22), (29, 30), (40, 41), (48, 49), (56, 57), (62, 63), (66, 69)]
 PARES = [(0, 3), (3, 1), (1, 2), (2, 0)]
 

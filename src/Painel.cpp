@@ -1374,20 +1374,6 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                 ImGui::TextColored(cor, "%s", s.empty() ? "Ctrl+Shift+D com o jogo em foco (FSR ou XeSS ligado no jogo)" : s.c_str());
                 ImGui::PopTextWrapPos();
             }
-            // atraso da edicao: o rastro em movimento vinha de a edicao da rede chegar quadros depois e ser trazida
-            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kTexto2), "Atraso da edição");
-            {
-                const char* atrasos[] = {"Normal", "Sem atraso (NVIDIA)"};
-                int ia = cfg.semAtraso > 0 ? 1 : 0;
-                if (Segmentos("atraso", atrasos, 2, &ia, 30 * g_e))
-                    cfg.semAtraso = ia ? 3 : 0;
-                Dica("Sem atraso (padrao) e como a NVIDIA roda o DLSS 5: a rede em todo quadro, dentro do tempo do quadro,\n"
-                     "e a edicao do proprio quadro -- nada trazido de quadros velhos (o rastro em movimento vinha disso).\n"
-                     "Captura de video: o quadro vai para a tela depois da rede (o overlay atrasa o tempo dela).\n"
-                     "Captura de buffer: o jogo espera a edicao do quadro anterior (1 quadro, pelo movimento exato).\n"
-                     "Custa FPS, como na NVIDIA. A estabilidade no tempo vem do 'Historico da propria rede' (Avancado).\n"
-                     "Normal: o quadro sai na hora e a resposta da rede, que chega depois, e trazida pelo movimento.");
-            }
         }
 
         Secao("EXIBIÇÃO");
@@ -1397,9 +1383,8 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             ImGui::SetNextItemWidth(lc);
             ImGui::Combo("##modo", &cfg.modo, modos, 6);
             Dica("Ctrl+Shift+N troca o modo.\n"
-                 "Saida crua: a ultima resposta como a rede a deu, no quadro que ela viu -- sem acumulo, movimento nem\n"
-                 "grade. Se um defeito aparece aqui, e da rede; se so aparece em 'Rede', e do movimento/acumulo. Em\n"
-                 "movimento ela fica para tras do jogo (e a resposta atrasada, sem reposicionar).");
+                 "Saida crua: a ultima resposta como a rede a deu, no quadro que ela viu, sem a composicao nem a\n"
+                 "gradacao. Se um defeito aparece aqui, e da rede.");
             if (cfg.modo == 2)
                 Deslizador("Divisão", &cfg.divisao, 0.f, 1.f, "%.2f", nullptr, 0.5f);
         }
@@ -1513,64 +1498,27 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                                        e.completaSessao ? "" : ", sem os blocos 42/43/46");
                     ImGui::PopTextWrapPos();
                 }
-                if (cfg.semAtraso > 0)
-                {
-                    DeslizadorInt("Quadros gerados", &cfg.ritmo, 1, 4, "x%.0f",
-                                  "Sem atraso (como o AMD Fluid Motion Frames, mas ate 4x): a rede edita 1 de cada N quadros\n"
-                                  "e os N-1 quadros seguintes sao gerados a partir dos processados -- sempre com a rede\n"
-                                  "aplicada, nunca um quadro novo com a edicao velha (o rastro). 1 = todo quadro processado.", 1.f);
-                    ImGui::BeginDisabled(cfg.ritmo < 2);
-                    const char* gerados[] = {"Quadro repetido", "Quadro mesclado"};
-                    Segmentos("gerado", gerados, 2, &cfg.gerado, 30 * g_e);
-                    Dica("Quadro repetido: o processado se repete nos quadros gerados (sem atraso extra: na captura de\n"
-                         "buffer ele aparece 1 quadro depois de feito).\n"
-                         "Quadro mesclado: entre o processado anterior e o novo, os gerados misturam os dois (50/50; em 3x\n"
-                         "50/50 e 40/60; em 4x 50/50, 40/60 e 30/70 do anterior/novo) e o novo vem depois deles. Misturar\n"
-                         "com o proximo exige que ele ja exista: o novo aparece N quadros depois de feito (como no AFMF e\n"
-                         "no FSR Frame Generation, que tambem seguram o quadro novo).");
-                    ImGui::EndDisabled();
-                }
-                else
-                    DeslizadorInt("Ritmo", &cfg.ritmo, 1, 4, "%d",
-                                  "A rede roda numa fila propria: todo quadro vai para a tela na hora, sem esperar a rede, e a\n"
-                                  "resposta entra quando fica pronta, trazida pelo movimento ate o quadro atual.\n"
-                                  "1: a rede recomeca assim que termina. N: no maximo uma vez a cada N quadros (libera a GPU).", 1.f);
+                DeslizadorInt("Quadros gerados", &cfg.ritmo, 1, 4, "x%.0f",
+                              "Como o AMD Fluid Motion Frames, mas ate 4x: a rede edita 1 de cada N quadros e os N-1\n"
+                              "quadros seguintes sao gerados a partir dos processados -- sempre com a rede aplicada, nunca\n"
+                              "um quadro novo com a edicao velha (o rastro). 1 = todo quadro processado.", 1.f);
+                ImGui::BeginDisabled(cfg.ritmo < 2);
+                const char* gerados[] = {"Quadro repetido", "Quadro mesclado"};
+                Segmentos("gerado", gerados, 2, &cfg.gerado, 30 * g_e);
+                Dica("Quadro repetido: o processado se repete nos quadros gerados (sem atraso extra: na captura de\n"
+                     "buffer ele aparece 1 quadro depois de feito).\n"
+                     "Quadro mesclado: entre o processado anterior e o novo, os gerados misturam os dois (50/50; em 3x\n"
+                     "50/50 e 40/60; em 4x 50/50, 40/60 e 30/70 do anterior/novo) e o novo vem depois deles. Misturar\n"
+                     "com o proximo exige que ele ja exista: o novo aparece N quadros depois de feito (como no AFMF e\n"
+                     "no FSR Frame Generation, que tambem seguram o quadro novo).");
+                ImGui::EndDisabled();
             }
 
-            Secao("MOVIMENTO E ESTABILIDADE");
-            if (Marca("Grade afim (edição sem fantasma)", &cfg.temporal.afim,
-                      "Em cada resposta, a transformacao de cor que a rede fez (por celula de 16 px e faixa de brilho,\n"
-                      "y = A x + b) e aplicada a cor do quadro ATUAL: a edicao principal e recalculada do conteudo de agora,\n"
-                      "nao transportada pixel a pixel do quadro velho -- sem a mascara semitransparente que andava com o\n"
-                      "objeto. O que a grade nao explica (detalhe fino) segue pelo caminho de antes, na forca abaixo.\n"
-                      "Desligado: tudo pelo caminho por pixel, como antes."))
-                mc = true;
-            ImGui::BeginDisabled(!cfg.temporal.afim);
-            Deslizador("Detalhe por pixel", &cfg.temporal.detalhe, 0.f, 1.f, "%.3f",
-                       "Com a grade afim: quanto do residuo (o detalhe que a grade nao explica) entra, transportado e\n"
-                       "acumulado como antes. 0 = nada transportado (sem fantasma nenhum, menos detalhe da rede);\n"
-                       "1 = todo o detalhe (o fantasma volta so na parte do residuo).", 0.25f);
-            ImGui::EndDisabled();
+            Secao("MOVIMENTO");
             if (Marca("Movimento simulado (fluxo óptico)", &cfg.movimento,
-                      "Vetores de movimento estimados entre os quadros capturados, sem buffer do jogo."))
+                      "Vetores de movimento estimados entre os quadros capturados, sem buffer do jogo: as guias do\n"
+                      "historico da propria rede."))
                 mc = true;
-            ImGui::BeginDisabled(!cfg.movimento);
-            DeslizadorInt("Estabilidade", &cfg.temporal.maxQuadros, 1, 16, "%d",
-                          "Quantos quadros a edicao da rede acumula (menos cintilacao; 1 = sem acumulo).", 8.f);
-            Deslizador("Média em movimento", &cfg.temporal.pxEstab, 0.f, 32.f, "%.1f px",
-                       "Captura de buffer: a media temporal cai pela metade a cada tantos pixels de movimento por quadro.\n"
-                       "Menor = menos rastro em movimento (a edicao acompanha a cena), um pouco mais de cintilacao so em\n"
-                       "movimento; parado vale a Estabilidade inteira. 0 = media fixa. Padrao 8.", 8.f);
-            Deslizador("Rejeição", &cfg.temporal.rejeicao, 2.f, 40.f, "%.1f",
-                       "Quao rapido uma mudanca de cor derruba o acumulo (mais alto = menos fantasma).", 12.f);
-            Marca("Borda em movimento pelos vizinhos", &cfg.temporal.vizinhos,
-                  "Captura de video: onde a edicao trazida pelo movimento nao confere (a borda de um objeto andando e o\n"
-                  "fundo que ele descobre), ela vem dos vizinhos de cor parecida em volta, nao da grade grossa da rede\n"
-                  "(que com a rede em tamanho baixo vira uma mascara transparente andando junto com o objeto).\n"
-                  "Desligado: so a grade, como antes.");
-            Marca("Descartar onde o movimento não confere", &cfg.usaConfianca,
-                  "Fluxo de ida e volta: onde nao confere e a cor tambem diverge, o acumulo do pixel e descartado.");
-            ImGui::EndDisabled();
             ImGui::BeginDisabled(e.historicoAtivo);
             Marca("Reuso adaptativo do ViT (ao reabrir)", &cfg.reusoVit,
                   "Do runtime do lmxxf: quando o quadro muda pouco, os blocos ViT reaproveitam o ultimo calculo.\n"

@@ -54,19 +54,12 @@ struct Config
     int modo = 0;           // 0 rede, 1 original, 2 comparacao, 3 so a edicao, 4 movimento
     int fonte = 0;          // Modo de Rede: 0 captura de video (WGC), 1 captura de buffer (cor sem HUD, profundidade e
                             // movimento do upscaler do proprio jogo, pela DLSS5Buffer.dll colocada no jogo aberto)
-    // atraso da edicao: 0 normal (a rede responde depois e a resposta e trazida pelo movimento ate o quadro atual);
-    // 1-3 sem atraso, como a NVIDIA: a rede responde no proprio quadro e a edicao dele entra inteira, sem acumulo de
-    // quadros velhos (captura de video: a tela espera a rede). Captura de buffer: 1 = o jogo nao espera (a edicao chega
-    // 2-3 quadros depois), 2 = o jogo espera a cada 2 quadros (1-2), 3 = espera em todo quadro (sempre 1)
-    int semAtraso = 3;
-    // quadros gerados (sem atraso, com Ritmo 2..4, como o AMD Fluid Motion Frames): 0 repetido (o quadro processado se
-    // repete; sem atraso extra), 1 mesclado (mistura do processado anterior com o novo: 50/50, 40/60, 30/70; o novo vem
-    // depois deles, N quadros depois de feito)
+    // quadros gerados (Ritmo 2..4, como o AMD Fluid Motion Frames): 0 repetido (o quadro processado se repete; sem atraso
+    // extra), 1 mesclado (mistura do processado anterior com o novo: 50/50, 40/60, 30/70; o novo vem depois deles, N
+    // quadros depois de feito)
     int gerado = 0;
-    bool movimento = true;  // movimento simulado por fluxo optico
-    bool usaConfianca = true; // descarta o historico onde o fluxo de ida e volta nao bate (oclusao)
-    int ritmo = 1;          // a rede roda a cada N quadros (1 = todo quadro; a rede nunca deve sumir em movimento)
-    int ritmoMax = 4;       // no automatico: no maximo tantos quadros sem rodar a rede
+    bool movimento = true;  // movimento simulado por fluxo optico (as guias do historico da propria rede)
+    int ritmo = 1;          // a rede edita 1 de cada N quadros; os outros sao gerados dos processados (1 = todo quadro)
     int profundidade = 0;   // blocos da rede grande: 0 = 71, 1 = 68, 2 = 63, 3 = 55, 4 = 47 (residuais pulados); mais rapido
     bool profundidadeAuto = false; // a profundidade segue a velocidade (medido: corta no maximo ~4,7 ms e estraga a imagem)
     int profundidadeMax = 3;      // no automatico, o nivel mais raso permitido

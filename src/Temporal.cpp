@@ -1,28 +1,17 @@
 #include "Temporal.h"
 #include "Shaders.h"
 #include <algorithm>
-#include <cstdlib>
 
 namespace ov {
 
 namespace {
-// captura de buffer: movimento (px da rede por quadro) em que a media temporal cai pela metade; 0 desliga.
-// O do config ("mediaMovimento"); DLSS5_ESTAB_PX sobrepoe (medidas)
-float PxEstabilidade(float doConfig)
-{
-    static const char* e = std::getenv("DLSS5_ESTAB_PX");
-    return e ? float(std::atof(e)) : doConfig;
-}
-
-// edicao da resposta no espaco do quadro que a rede viu (t0): composicao de referencia - original
+// edicao da resposta: composicao de referencia - original, no espaco comprimido x / (1 + luma) (como o TAA dos jogos)
 const char* kEdicao = R"(
-// espaco comprimido (x / (1 + luma), como o TAA dos jogos): o realce em HDR nao domina o acumulo nem o reposicionamento
 float3 Comprime(float3 x) { return x / (1.0 + max(Lum(x), 0.0)); }
-float3 Expande(float3 c) { return c / max(1.0 - Lum(c), 1e-3); }
 cbuffer C : register(b0) { uint w; uint h; uint comp; float sInt; float sCor; float sGuarda; float exposicao; uint pad; };
 Texture2D<float4> fed : register(t0);  // proxy que a rede viu
 Texture2D<float4> resp : register(t1); // resposta da rede (no espaco do proxy)
-Texture2D<float4> orig : register(t2); // o quadro de t0 no tamanho da rede (linear, branco de papel = 1)
+Texture2D<float4> orig : register(t2); // o quadro no tamanho da rede (linear, branco de papel = 1)
 RWTexture2D<float4> edicao : register(u0);
 
 [numthreads(8, 8, 1)] void CSEdicao(uint2 p : SV_DispatchThreadID)
@@ -32,661 +21,38 @@ RWTexture2D<float4> edicao : register(u0);
     float3 P = fed.Load(int3(p, 0)).rgb / exposicao;
     float3 M = resp.Load(int3(p, 0)).rgb / exposicao;
     float3 e = comp == 1 ? ComporReferencia(O, P, M, sInt, sCor, sGuarda) - O : M - P;
-    edicao[p] = float4(Comprime(O + e) - Comprime(O), 1.0); // o acumulo e no espaco comprimido
+    edicao[p] = float4(Comprime(O + e) - Comprime(O), 1.0);
 }
 )";
 
-// deslocamento acumulado do quadro atual ate t0 (o quadro que a rede viu): D_t(p) = v_t(p) + D_{t-1}(p + v_t(p)).
-// z = menor confianca do fluxo no caminho, w = 1 enquanto o caminho fica dentro da imagem
-const char* kAcumula = R"(
-cbuffer C : register(b0) { uint w; uint h; uint zera; uint temMov; };
-Texture2D<float4> mov : register(t0);  // pixels ate o quadro anterior
-Texture2D<float> conf : register(t1);
-Texture2D<float4> ant : register(t2);  // deslocamento acumulado ate o quadro anterior
-RWTexture2D<float4> novo : register(u0);
-SamplerState s : register(s0);
-
-[numthreads(8, 8, 1)] void CSAcumula(uint2 p : SV_DispatchThreadID)
-{
-    if (p.x >= w || p.y >= h) return;
-    float2 v = temMov ? mov.Load(int3(p, 0)).xy : float2(0, 0);
-    float c = temMov ? conf.Load(int3(p, 0)) : 1.0;
-    float2 uv = (float2(p) + 0.5 + v) / float2(w, h);
-    bool dentro = all(uv > 0.0) && all(uv < 1.0);
-    float4 a = zera ? float4(0, 0, 1, 1) : (dentro ? ant.SampleLevel(s, uv, 0) : float4(0, 0, 0, 0));
-    novo[p] = float4(v + a.xy, min(c, a.z), dentro ? a.w : 0.0);
-}
-)";
-
-// grade bilateral da edicao de t0 (HDRnet): por bloco de CELULA px e faixa de brilho, a edicao media que a rede deu e a
-// cor media de quem a recebeu. Onde a edicao de t0 nao pode ser reposicionada (conteudo animado, oclusao, borda nova),
-// ela sai da grade: a mesma regiao, com o mesmo brilho E cor parecida, recebe o que a rede fez ali (um branco nunca
-// herda a edicao de um neon do mesmo brilho). Com a profundidade do jogo (captura de buffer), cada celula guarda tambem
-// a distancia media (log2) de quem recebeu: objeto e fundo do mesmo brilho viram camadas separadas.
-const char* kGrade = R"(
-cbuffer C : register(b0) { uint w; uint h; uint gw; uint gh; uint temZ; uint pad0; uint pad1; uint pad2; };
-Texture2D<float4> orig : register(t0); // o quadro de t0 (linear)
-Texture2D<float4> ed : register(t1);   // a edicao de t0 (espaco comprimido)
-Texture2D<float> zT0 : register(t2);   // distancia da camera em t0 (so com temZ)
-RWTexture2D<float4> grade : register(u0);
-RWTexture2D<float4> gradeCor : register(u1);
-#define CELULA 16
-#define FAIXAS 8
-float Guia(float3 o) { float l = max(Lum(max(o, 0.0)), 0.0); return pow(l / (1.0 + l), 1.0 / 2.2); }
-float3 CorP(float3 o) { o = max(o, 0.0); return pow(o / (1.0 + Lum(o)), 1.0 / 2.2); }
-[numthreads(8, 8, 1)] void CSGrade(uint2 g : SV_DispatchThreadID)
-{
-    if (g.x >= gw || g.y >= gh) return;
-    float4 acc[FAIXAS];
-    float3 accC[FAIXAS];
-    float accZ[FAIXAS];
-    [unroll] for (int b = 0; b < FAIXAS; ++b) acc[b] = 0, accC[b] = 0, accZ[b] = 0;
-    for (int y = 0; y < CELULA; ++y)
-        for (int x = 0; x < CELULA; ++x)
-        {
-            int2 p = int2(g) * CELULA + int2(x, y);
-            if (p.x >= (int)w || p.y >= (int)h) continue;
-            float3 o = orig.Load(int3(p, 0)).rgb;
-            float3 cp = CorP(o);
-            float z = clamp(Guia(o) * FAIXAS - 0.5, 0.0, FAIXAS - 1.0);
-            int z0 = (int)floor(z);
-            float f = z - z0;
-            float3 e = ed.Load(int3(p, 0)).rgb;
-            const float lz = temZ ? log2(max(zT0.Load(int3(p, 0)), 1e-6)) : 0.0;
-            [unroll] for (int b = 0; b < FAIXAS; ++b)
-            {
-                float wb = b == z0 ? 1.0 - f : (b == z0 + 1 ? f : 0.0);
-                acc[b] += float4(e * wb, wb);
-                accC[b] += cp * wb;
-                accZ[b] += lz * wb;
-            }
-        }
-    [unroll] for (int b = 0; b < FAIXAS; ++b)
-    {
-        grade[int2(g.x * FAIXAS + b, g.y)] = float4(acc[b].rgb / max(acc[b].a, 1e-6), acc[b].a / (CELULA * CELULA));
-        gradeCor[int2(g.x * FAIXAS + b, g.y)] = float4(accC[b] / max(acc[b].a, 1e-6), accZ[b] / max(acc[b].a, 1e-6));
-    }
-}
-)";
-
-// CSAfimEstat: as somas de minimos quadrados de cada celula e faixa (o pixel entra nas duas faixas vizinhas, em tenda).
-// CSAfimResolve: soma as 3x3 celulas vizinhas (pesos 1-2-1: a transformacao varia suave entre celulas) e resolve, por
-// canal de saida k, [Sxx + lI, Sx; Sx', n] [a_k; b_k] = [Sxy_k + l e_k; Sy_k] (o l puxa A para a identidade onde ha pouca
-// variacao de cor: ali sobra o deslocamento medio). CSResiduo: o que a grade nao explica em t0 (o detalhe por pixel),
-// a parte que continua sendo transportada e acumulada como antes.
-const char* kAfim = R"(
-cbuffer C : register(b0) { uint w; uint h; uint gw; uint gh; float rigidez; uint pad0; uint pad1; uint pad2; };
-Texture2D<float4> origT0 : register(t0);  // o quadro de t0 (linear)
-Texture2D<float4> ed : register(t1);      // a edicao de t0 (comprimida: Comprime(O + e) - Comprime(O))
-Texture2D<float4> est : register(t2);     // as somas (CSAfimResolve)
-Texture2D<float4> afim : register(t3);    // a grade resolvida (CSResiduo)
-RWTexture2D<float4> estOut : register(u0);    // 6 texels por celula e faixa
-RWTexture2D<float4> afimOut : register(u1);
-RWTexture2D<float4> residuoOut : register(u2);
-float3 Comprime(float3 x) { return x / (1.0 + max(Lum(x), 0.0)); }
-
-[numthreads(8, 8, 1)] void CSAfimEstat(uint2 id : SV_DispatchThreadID)
-{
-    if (id.x >= gw * AFIM_FAIXAS || id.y >= gh) return;
-    const uint cx = id.x / AFIM_FAIXAS, b = id.x % AFIM_FAIXAS;
-    float n = 0;
-    float3 sx = 0, sy = 0;
-    float3x3 sxx = 0, sxy = 0;
-    for (uint j = 0; j < (uint)AFIM_CELULA; ++j)
-        for (uint i = 0; i < (uint)AFIM_CELULA; ++i)
-        {
-            const uint2 p = uint2(cx * AFIM_CELULA + i, id.y * AFIM_CELULA + j);
-            if (p.x >= w || p.y >= h) continue;
-            const float3 o = max(origT0.Load(int3(p, 0)).rgb, 0.0);
-            const float zb = clamp(GuiaBrilho(o) * AFIM_FAIXAS - 0.5, 0.0, AFIM_FAIXAS - 1.0);
-            const float wb = saturate(1.0 - abs(zb - float(b)));
-            if (wb <= 0.0) continue;
-            const float3 x = Comprime(o), y = x + ed.Load(int3(p, 0)).rgb;
-            n += wb;
-            sx += wb * x;
-            sy += wb * y;
-            sxx += wb * float3x3(x.x * x, x.y * x, x.z * x); // [i][j] = x_i x_j
-            sxy += wb * float3x3(x.x * y, x.y * y, x.z * y); // [i][j] = x_i y_j
-        }
-    const uint l = id.y * 6;
-    estOut[uint2(id.x, l + 0)] = float4(n, sx);
-    estOut[uint2(id.x, l + 1)] = float4(sxx[0][0], sxx[0][1], sxx[0][2], sxx[1][1]);
-    estOut[uint2(id.x, l + 2)] = float4(sxx[1][2], sxx[2][2], sy.x, sy.y);
-    estOut[uint2(id.x, l + 3)] = float4(sy.z, sxy[0][0], sxy[0][1], sxy[0][2]);
-    estOut[uint2(id.x, l + 4)] = float4(sxy[1][0], sxy[1][1], sxy[1][2], sxy[2][0]);
-    estOut[uint2(id.x, l + 5)] = float4(sxy[2][1], sxy[2][2], 0, 0);
-}
-
-[numthreads(8, 8, 1)] void CSAfimResolve(uint2 id : SV_DispatchThreadID)
-{
-    if (id.x >= gw * AFIM_FAIXAS || id.y >= gh) return;
-    const int cx = int(id.x / AFIM_FAIXAS), b = int(id.x % AFIM_FAIXAS);
-    float4 s[6] = {float4(0, 0, 0, 0), float4(0, 0, 0, 0), float4(0, 0, 0, 0), float4(0, 0, 0, 0), float4(0, 0, 0, 0),
-                   float4(0, 0, 0, 0)};
-    [unroll] for (int dy = -1; dy <= 1; ++dy)
-        [unroll] for (int dx = -1; dx <= 1; ++dx)
-        {
-            const int2 c = clamp(int2(cx + dx, int(id.y) + dy), int2(0, 0), int2(gw - 1, gh - 1));
-            const float pv = float((2 - abs(dx)) * (2 - abs(dy))) / 16.0;
-            [unroll] for (int k = 0; k < 6; ++k)
-                s[k] += pv * est.Load(int3(c.x * AFIM_FAIXAS + b, c.y * 6 + k, 0));
-        }
-    const float n = s[0].x;
-    const uint2 o = uint2(id.x, id.y * 4);
-    if (n < 1e-3)
-    {
-        afimOut[o] = float4(1, 0, 0, 0);
-        afimOut[o + uint2(0, 1)] = float4(0, 1, 0, 0);
-        afimOut[o + uint2(0, 2)] = float4(0, 0, 1, 0);
-        afimOut[o + uint2(0, 3)] = float4(0, 0, 0, 0);
-        return;
-    }
-    const float3 sx = s[0].yzw, sy = float3(s[2].z, s[2].w, s[3].x);
-    const float3x3 sxx = float3x3(s[1].x, s[1].y, s[1].z, s[1].y, s[1].w, s[2].x, s[1].z, s[2].x, s[2].y);
-    const float3x3 sxy = float3x3(s[3].y, s[3].z, s[3].w, s[4].x, s[4].y, s[4].z, s[4].w, s[5].x, s[5].y);
-    const float lam = rigidez * n + 1e-6;
-    // M = [Sxx + lI, Sx; Sx', n] (simetrica, definida positiva com l > 0 e n > 0): Cholesky uma vez, tres solucoes
-    float4x4 M = float4x4(sxx[0][0] + lam, sxx[0][1], sxx[0][2], sx.x,
-                          sxx[1][0], sxx[1][1] + lam, sxx[1][2], sx.y,
-                          sxx[2][0], sxx[2][1], sxx[2][2] + lam, sx.z,
-                          sx.x, sx.y, sx.z, n);
-    float4x4 L = 0;
-    [unroll] for (int r = 0; r < 4; ++r)
-        [unroll] for (int c = 0; c <= r; ++c)
-        {
-            float v = M[r][c];
-            [unroll] for (int q = 0; q < c; ++q)
-                v -= L[r][q] * L[c][q];
-            L[r][c] = r == c ? sqrt(max(v, 1e-12)) : v / L[c][c];
-        }
-    [unroll] for (int k = 0; k < 3; ++k)
-    {
-        float4 rhs = float4(sxy[0][k], sxy[1][k], sxy[2][k], sy[k]);
-        rhs[k] += lam;
-        float4 z = 0;
-        [unroll] for (int r = 0; r < 4; ++r)
-        {
-            float v = rhs[r];
-            [unroll] for (int q = 0; q < r; ++q)
-                v -= L[r][q] * z[q];
-            z[r] = v / L[r][r];
-        }
-        float4 a = 0;
-        [unroll] for (int r = 3; r >= 0; --r)
-        {
-            float v = z[r];
-            [unroll] for (int q = r + 1; q < 4; ++q)
-                v -= L[q][r] * a[q];
-            a[r] = v / L[r][r];
-        }
-        afimOut[o + uint2(0, k)] = all(isfinite(a)) ? a : float4(k == 0, k == 1, k == 2, 0);
-    }
-    // confianca: ~16 pixels inteiros na vizinhanca ja bastam
-    afimOut[o + uint2(0, 3)] = float4(saturate(n / 16.0), 0, 0, 0);
-}
-
-[numthreads(8, 8, 1)] void CSResiduo(uint2 p : SV_DispatchThreadID)
-{
-    if (p.x >= w || p.y >= h) return;
-    const float3 o = max(origT0.Load(int3(p, 0)).rgb, 0.0);
-    const float3 x = Comprime(o);
-    residuoOut[p] = float4(x + ed.Load(int3(p, 0)).rgb - AplicaAfim(afim, gw, gh, x, float2(p) + 0.5, GuiaBrilho(o)), 1.0);
-}
-)";
-
-const char* kHlsl = R"(
-cbuffer C : register(b0) { uint w; uint h; uint temResp; uint temHist; float maxN; float rejeicao; float folga; uint temMov;
-                           uint temDesl; uint temConf; uint temEstat; uint temGrade; uint gw; uint gh; uint temDeslG; uint exata;
-                           float pxEstab; uint vizinhos; uint usaAfim; float detalhe; };
-// exata: movimento e confianca do proprio jogo (captura de buffer). A confianca vem da profundidade reprojetada e e
-// exata: vale inteira no historico, no caminho da resposta atrasada e na grade (que separa camadas pela distancia).
-// espaco comprimido (x / (1 + luma), como o TAA dos jogos): o realce em HDR nao domina o acumulo nem o reposicionamento
+// de volta a luz linear, com teto: somada a um realce mais claro, a luma comprimida passaria de 1 e c / (1 - luma)
+// explodiria. O brilho editado chega no maximo a 4x o original + 4 (a rede reilumina, nao cria sol).
+const char* kLinear = R"(
 float3 Comprime(float3 x) { return x / (1.0 + max(Lum(x), 0.0)); }
 float3 Expande(float3 c) { return c / max(1.0 - Lum(c), 1e-3); }
+cbuffer C : register(b0) { uint w; uint h; uint pad0; uint pad1; };
+Texture2D<float4> crua : register(t0);
+Texture2D<float4> orig : register(t1);
+RWTexture2D<float4> edLin : register(u0);
 
-Texture2D<float4> fed : register(t0);     // proxy deste quadro
-Texture2D<float4> edT0 : register(t1);    // edicao da resposta, no espaco de t0 (o quadro que a rede viu)
-Texture2D<float4> mov : register(t2);     // movimento simulado (pixels ate o quadro anterior)
-Texture2D<float4> histAnt : register(t3); // edicao acumulada anterior (a = quadros)
-Texture2D<float4> fedAnt : register(t4);  // proxy do quadro anterior
-Texture2D<float4> desl : register(t5);    // deslocamento acumulado ate t0 (xy), confianca (z), dentro (w)
-Texture2D<float> conf : register(t6);     // confianca do fluxo (1 = ida e volta batem)
-Texture2D<float4> fedT0 : register(t7);   // proxy de t0
-Texture2D<float4> orig : register(t8);    // este quadro no tamanho da rede (linear)
-Texture2D<float4> grade : register(t9);   // grade bilateral da edicao da ultima resposta (no espaco de t0 dela)
-Texture2D<float4> deslG : register(t10);  // deslocamento acumulado ate o t0 da grade
-Texture2D<float4> gradeCor : register(t11); // cor media (perceptual comprimida) de quem recebeu cada celula da grade
-ByteAddressBuffer estatFluxo : register(t12); // somas do quadro (Fluxo::Estatisticas): [0] (1-conf)*1024, [3] pixels
-Texture2D<float> zAgora : register(t13);  // distancia da camera deste quadro (so com exata)
-Texture2D<float> zGrade : register(t14);  // distancia da camera no t0 da grade (o quadro da ultima resposta)
-
-RWTexture2D<float4> histNovo : register(u0);
-RWTexture2D<float4> edLin : register(u1); // a edicao estabilizada em luz linear (o que a composicao soma)
-SamplerState s : register(s0);
-
-// Fundo recem-descoberto (o historico foi descartado pela profundidade): a edicao vem da ultima resposta da rede, em
-// resolucao cheia, so de pixels da MESMA superficie (distancia da camera igual) -- anel que cresce ate 128 px, primeiro
-// raio com amostras e o seguinte, peso 1/r. A grade (celulas de 16 px) misturava a vizinhanca do objeto que saiu dali:
-// era o fantasma. achou = 0: nada da mesma superficie por perto (fica a grade).
-static const float CEU = 1e6;
-float MesmaZ(float za, float zb)
+[numthreads(8, 8, 1)] void CSLinear(uint2 p : SV_DispatchThreadID)
 {
-    if (za >= CEU * 0.5 && zb >= CEU * 0.5) return 1.0;
-    return 1.0 - smoothstep(0.04, 0.15, abs(za - zb) / max(min(za, zb), 1e-6));
-}
-// cor perceptual no espaco comprimido: a mesma diferenca relativa pesa igual no escuro e no realce HDR
-float3 CorP(float3 o) { o = max(o, 0.0); return pow(o / (1.0 + Lum(o)), 1.0 / 2.2); }
-// diferenca de cor (nao so de brilho): um pixel branco nao passa por um neon do mesmo brilho
-float DifCor(float3 a, float3 b) { float3 d = abs(CorP(a) - CorP(b)); return max(d.x, max(d.y, d.z)); }
-// peso de um vizinho pela cor: a mesma distancia da camera nao basta (o letreiro claro e o carro escuro estao na mesma
-// distancia; sem a cor, a edicao do letreiro era pintada no carro)
-float PesoCor(float3 a, float3 b) { const float s = DifCor(a, b) / 0.1; return exp(-s * s); }
-
-// Fundo recem-descoberto: os VIZINHOS deste quadro na mesma superficie cujo historico e valido (a faixa e estreita perto
-// da borda; com o objeto andando centenas de pixels, procurar em volta da posicao antiga caia dentro da area que ele
-// cobria e nao achava fundo). O valor e o historico reprojetado de cada vizinho, peso 1/r, so de cor parecida.
-float3 PreencheVizinhos(int2 p, float zc, out float achou)
-{
-    float3 acc = 0;
-    float ws = 0;
-    achou = 0;
-    const int2 lim = int2(w, h) - 1;
-    const float2 tam = float2(w, h);
-    const float3 fp = fed.Load(int3(p, 0)).rgb;
-    [loop] for (float r = 3.0; r <= 384.0 && achou < 2.0; r *= 2.0)
-    {
-        float s1 = 0;
-        [unroll] for (int k = 0; k < 16; ++k)
-        {
-            float2 dir;
-            sincos(k * 0.3926991 + r * 0.29, dir.y, dir.x);
-            const int2 t = clamp(int2(float2(p) + 0.5 + dir * r), 0, lim);
-            const float ct = conf.Load(int3(t, 0));
-            if (ct < 0.5) continue;
-            const float wv = MesmaZ(zAgora.Load(int3(t, 0)), zc) * ct * PesoCor(fed.Load(int3(t, 0)).rgb, fp) / r;
-            if (wv <= 0.0) continue;
-            const float2 uvT = (float2(t) + 0.5 + mov.Load(int3(t, 0)).xy) / tam;
-            acc += histAnt.SampleLevel(s, uvT, 0).rgb * wv;
-            s1 += wv;
-        }
-        ws += s1;
-        if (s1 > 0.3 / r || achou > 0.0)
-            achou += 1.0;
-    }
-    return ws > 1e-6 ? acc / ws : 0;
-}
-
-// Captura de video (sem profundidade): onde a reprojecao nao confere -- borda de objeto em movimento, o fundo que ele
-// descobre ou cobre --, a edicao vem dos vizinhos deste quadro cuja reprojecao confere e cuja cor parece a do pixel,
-// aneis de raio dobrado ate 32 px da rede, peso 1/r. Antes vinha so da grade (celulas de 16 px da rede, deslocadas pelo
-// fluxo ate o t0 dela): com a rede em 540p cada celula cobre dezenas de pixels da tela, e a estimativa grossa em volta
-// do objeto andava com ele como uma mascara transparente. daResposta: a resposta que chegou (deslocamento ate t0);
-// senao o historico do quadro anterior (movimento de 1 quadro). achou = 0: nenhum vizinho valido (fica a grade).
-float3 PreencheCor(int2 p, bool daResposta, out float achou)
-{
-    float3 acc = 0;
-    float ws = 0;
-    achou = 0;
-    const int2 lim = int2(w, h) - 1;
-    const float2 tam = float2(w, h);
-    const float3 fp = fed.Load(int3(p, 0)).rgb;
-    [loop] for (float r = 2.0; r <= 32.0 && achou < 2.0; r *= 2.0)
-    {
-        float s1 = 0;
-        [unroll] for (int k = 0; k < 12; ++k)
-        {
-            float2 dir;
-            sincos(k * 0.5235988 + r * 0.37, dir.y, dir.x);
-            const int2 t = clamp(int2(float2(p) + 0.5 + dir * r), 0, lim);
-            const float3 ft = fed.Load(int3(t, 0)).rgb;
-            const float pc = PesoCor(ft, fp);
-            if (pc < 0.05) continue;
-            float2 q;
-            float3 ref;
-            if (daResposta)
-            {
-                const float4 dt = temDesl ? desl.Load(int3(t, 0)) : float4(0, 0, 1, 1);
-                if (dt.w < 0.5) continue;
-                q = (float2(t) + 0.5 + dt.xy) / tam;
-                if (any(q <= 0.0) || any(q >= 1.0)) continue;
-                ref = fedT0.SampleLevel(s, q, 0).rgb;
-            }
-            else
-            {
-                q = (float2(t) + 0.5 + mov.Load(int3(t, 0)).xy) / tam;
-                if (any(q <= 0.0) || any(q >= 1.0)) continue;
-                ref = fedAnt.SampleLevel(s, q, 0).rgb;
-            }
-            // a reprojecao do vizinho confere: a cor dele bate com a do quadro de onde a edicao vem
-            const float cf = saturate(1.0 - DifCor(ft, ref) * rejeicao);
-            if (cf < 0.5) continue;
-            const float wv = cf * pc / r;
-            acc += (daResposta ? edT0.SampleLevel(s, q, 0).rgb : histAnt.SampleLevel(s, q, 0).rgb) * wv;
-            s1 += wv;
-        }
-        ws += s1;
-        if (s1 > 0.3 / r || achou > 0.0)
-            achou += 1.0;
-    }
-    return ws > 1e-6 ? acc / ws : 0;
-}
-
-float3 PreencheMesma(int2 p, float2 q, float zc, out float achou)
-{
-    float3 acc = 0;
-    float ws = 0;
-    achou = 0;
-    const int2 lim = int2(w, h) - 1;
-    const float3 fp = fed.Load(int3(p, 0)).rgb;
-    [loop] for (float r = 2.0; r <= 128.0 && achou < 2.0; r *= 2.0)
-    {
-        float s1 = 0;
-        [unroll] for (int k = 0; k < 12; ++k)
-        {
-            float2 dir;
-            sincos(k * 0.5235988 + r * 0.37, dir.y, dir.x);
-            const int2 t = clamp(int2(q + dir * r), 0, lim);
-            // a cor de t0 so existe no quadro em que a resposta chega (o proxy dela ainda esta na entrada da rede)
-            const float wv = MesmaZ(zGrade.Load(int3(t, 0)), zc) * (temResp ? PesoCor(fedT0.Load(int3(t, 0)).rgb, fp) : 1.0) / r;
-            acc += edT0.Load(int3(t, 0)).rgb * wv;
-            s1 += wv;
-        }
-        ws += s1;
-        if (s1 > 0.3 / r || achou > 0.0)
-            achou += 1.0;
-    }
-    return ws > 1e-5 ? acc / ws : 0;
-}
-
-)" // o MSVC limita cada literal a ~16 KB: o shader segue no proximo pedaco
-R"(
-float3 CatmullRomT(Texture2D<float4> t, float2 uv, float2 tam)
-{
-    float2 pos = uv * tam;
-    float2 c1 = floor(pos - 0.5) + 0.5;
-    float2 f = pos - c1;
-    float2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
-    float2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
-    float2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
-    float2 w3 = f * f * (-0.5 + 0.5 * f);
-    float2 w12 = w1 + w2;
-    float2 o12 = w2 / w12;
-    float2 t0 = (c1 - 1.0) / tam, t3 = (c1 + 2.0) / tam, t12 = (c1 + o12) / tam;
-    float3 r = 0;
-    r += t.SampleLevel(s, float2(t0.x, t0.y), 0).rgb * w0.x * w0.y;
-    r += t.SampleLevel(s, float2(t12.x, t0.y), 0).rgb * w12.x * w0.y;
-    r += t.SampleLevel(s, float2(t3.x, t0.y), 0).rgb * w3.x * w0.y;
-    r += t.SampleLevel(s, float2(t0.x, t12.y), 0).rgb * w0.x * w12.y;
-    r += t.SampleLevel(s, float2(t12.x, t12.y), 0).rgb * w12.x * w12.y;
-    r += t.SampleLevel(s, float2(t3.x, t12.y), 0).rgb * w3.x * w12.y;
-    r += t.SampleLevel(s, float2(t0.x, t3.y), 0).rgb * w0.x * w3.y;
-    r += t.SampleLevel(s, float2(t12.x, t3.y), 0).rgb * w12.x * w3.y;
-    r += t.SampleLevel(s, float2(t3.x, t3.y), 0).rgb * w3.x * w3.y;
-    return r;
-}
-
-#define CELULA 16
-#define FAIXAS 8
-float Guia(float3 o) { float l = max(Lum(max(o, 0.0)), 0.0); return pow(l / (1.0 + l), 1.0 / 2.2); }
-// a edicao que a grade preve para um pixel de brilho z na posicao pos (pixels, espaco de t0 da grade); 0 sem dados.
-// lz: log2 da distancia do pixel (exata): so celulas da mesma camada (+-0,35 oitava) contam
-float PesoZ(float zc, float lz) { if (!exata) return 1.0; float d = (zc - lz) / 0.35; return exp(-d * d); }
-float3 FatiaDentro(float2 pos, float z01, float3 cp, float lz);
-// exata: o ponto ja estava FORA do quadro da resposta (camera girando rapido: conteudo entrando pela borda). A grade so
-// tem a borda; prender nela esticava as celulas de 16 px em faixas por centenas de pixels. Some em ~3 celulas.
-float3 Fatia(float2 pos, float z01, float3 cp, float lz)
-{
-    float some = 1.0;
-    if (exata)
-    {
-        const float2 f = max(max(-pos, pos - float2(w, h)), 0.0);
-        some = exp(-dot(f, f) / (48.0 * 48.0));
-        if (some < 1e-3) return 0;
-    }
-    return FatiaDentro(pos, z01, cp, lz) * some;
-}
-float3 FatiaDentro(float2 pos, float z01, float3 cp, float lz)
-{
-    float2 g = pos / CELULA - 0.5;
-    int2 g0 = int2(floor(g));
-    float2 f = g - g0;
-    float zb = clamp(z01 * FAIXAS - 0.5, 0.0, FAIXAS - 1.0);
-    int z0 = (int)floor(zb);
-    float fz = zb - z0;
-    float3 acc = 0;
-    float ws = 0;
-    [unroll] for (int j = 0; j < 2; ++j)
-        [unroll] for (int i = 0; i < 2; ++i)
-            [unroll] for (int k = 0; k < 2; ++k)
-            {
-                int2 c = clamp(g0 + int2(i, j), int2(0, 0), int2(gw - 1, gh - 1));
-                int b = min(z0 + k, FAIXAS - 1);
-                float4 t = grade.Load(int3(c.x * FAIXAS + b, c.y, 0));
-                float4 gc4 = gradeCor.Load(int3(c.x * FAIXAS + b, c.y, 0));
-                float3 dc = abs(gc4.rgb - cp);
-                float sc = max(dc.x, max(dc.y, dc.z)) / 0.1;
-                float wt = (i ? f.x : 1.0 - f.x) * (j ? f.y : 1.0 - f.y) * (k ? fz : 1.0 - fz) * t.a * exp(-sc * sc) *
-                           PesoZ(gc4.a, lz);
-                acc += t.rgb * wt;
-                ws += wt;
-            }
-    // confianca: pelo menos ~2% dos pixels da vizinhanca com esse brilho; menos que isso, a edicao vai a zero
-    float conf1 = saturate(ws / 0.02);
-    if (conf1 > 0.999)
-        return acc / ws;
-    // sem cor parecida a 16 px (conteudo animado mudou de cor, borda): vizinhanca de ~80 px, tolerancia de cor maior
-    float3 acc2 = 0;
-    float ws2 = 0;
-    int2 gc = int2(floor(pos / CELULA));
-    for (int dy = -2; dy <= 2; ++dy)
-        for (int dx = -2; dx <= 2; ++dx)
-            [unroll] for (int k = 0; k < 2; ++k)
-            {
-                int2 c = clamp(gc + int2(dx, dy), int2(0, 0), int2(gw - 1, gh - 1));
-                int b = min(z0 + k, FAIXAS - 1);
-                float4 t = grade.Load(int3(c.x * FAIXAS + b, c.y, 0));
-                float4 gc4 = gradeCor.Load(int3(c.x * FAIXAS + b, c.y, 0));
-                float3 dc = abs(gc4.rgb - cp);
-                float sc = max(dc.x, max(dc.y, dc.z)) / 0.2;
-                float wt = exp(-0.25 * (dx * dx + dy * dy)) * (k ? fz : 1.0 - fz) * t.a * exp(-sc * sc) * PesoZ(gc4.a, lz);
-                acc2 += t.rgb * wt;
-                ws2 += wt;
-            }
-    float3 e2 = acc2 / max(ws2, 1e-6) * saturate(ws2 / 0.05);
-    return lerp(e2, acc / max(ws, 1e-6), conf1);
-}
-
-[numthreads(8, 8, 1)] void CSTemporal(uint2 pu : SV_DispatchThreadID)
-{
-    if (pu.x >= w || pu.y >= h) return;
-    int2 p = int2(pu);
-    float2 tam = float2(w, h);
-    float2 v = temMov ? mov.Load(int3(p, 0)).xy : float2(0, 0);
-    float2 uvAnt = (float2(p) + 0.5 + v) / tam;
-    bool dentro = all(uvAnt > 0.0) && all(uvAnt < 1.0);
-    // corte de cena (troca de camera, menu, tela de carregamento): a confianca ida-e-volta desaba na tela inteira
-    // (medido no Cyberpunk: 0,01 no corte; >= 0,29 no giro de camera mais rapido). Como no TAA, o historico e a grade
-    // (da cena anterior) saem; a resposta atrasada, que e da cena anterior, tambem. Fica o original ate a rede responder.
-    bool corte = false;
-    if (temEstat)
-    {
-        uint np = estatFluxo.Load(12);
-        corte = np > 0 && float(estatFluxo.Load(0)) / 1024.0 / float(np) > 0.88;
-    }
-    float3 hr = 0;
-    float n = 0;
-    float foto = 1;
-    if (temHist && temMov && dentro && !corte)
-    {
-        hr = CatmullRomT(histAnt, uvAnt, tam);
-        n = histAnt.SampleLevel(s, uvAnt, 0).a;
-        float d = DifCor(fed.Load(int3(p, 0)).rgb, fedAnt.SampleLevel(s, uvAnt, 0).rgb);
-        foto = saturate(1.0 - d * rejeicao);
-        n *= foto;
-        // ida e volta so pesa onde a cor tambem diverge: onde a cor do quadro anterior reprojetado bate, o historico
-        // vale (em area lisa o vetor e arbitrario, nao confere, e zerar ali so trazia cintilacao: 0,129 -> 0,102 medido)
-        // exata: a confianca vem da profundidade (quase binaria); corte seco -- multiplicar por 0,03 ainda deixava ~20% do
-        // historico velho (a edicao do objeto que estava ali) no fundo recem-descoberto: era o fantasma
-        if (temConf) n *= exata ? smoothstep(0.3, 0.7, conf.Load(int3(p, 0))) : lerp(conf.Load(int3(p, 0)), 1.0, foto);
-    }
-    float3 eg = 0;
-    bool usaEg = temGrade; // eg vale: a grade, ou (captura de video) o preenchimento pelos vizinhos
-    if (temGrade && !corte)
-    {
-        float4 dg = temDeslG ? deslG.Load(int3(p, 0)) : float4(0, 0, 1, 1);
-        float3 o = orig.Load(int3(p, 0)).rgb;
-        // exata: o caminho ate o t0 da grade saiu da imagem (dg.w = 0; dg.xy fica so com o ultimo movimento, a grade era
-        // lida no lugar errado) ou o pixel acabou de entrar pela borda (dentro = 0): nenhuma informacao da rede ali. Fica
-        // o original ate a proxima resposta -- os vizinhos em aneis de raio dobrado viravam faixas verticais na borda.
-        if (exata && (dg.w < 0.5 || !dentro))
-        {
-            // a edicao da borda do quadro anterior (historico) some em ~48 px: sem degrau entre o editado e o original
-            const float2 qa = float2(p) + 0.5 + v;
-            const float2 f = max(max(-qa, qa - tam), 0.0);
-            eg = temHist ? CatmullRomT(histAnt, clamp(qa, 0.5, tam - 0.5) / tam, tam) * exp(-dot(f, f) / (48.0 * 48.0)) : 0;
-        }
-        else
-            eg = Fatia(float2(p) + 0.5 + dg.xy, Guia(o), CorP(o), exata ? log2(max(zAgora.Load(int3(p, 0)), 1e-6)) : 0.0);
-        if (exata && dentro && temConf && conf.Load(int3(p, 0)) < 0.5)
-        {
-            // fundo recem-descoberto (ou borda nova da tela): a ultima resposta, so da mesma superficie
-            float achou;
-            const float zp = zAgora.Load(int3(p, 0));
-            float3 em = temHist ? PreencheVizinhos(p, zp, achou) : 0;
-            if (achou <= 0.0)
-                em = PreencheMesma(p, float2(p) + 0.5 + dg.xy, zp, achou);
-            if (achou > 0.0)
-                eg = em;
-            if (exata & 2u) // DLSS5_DEBUG_FAIXA: marca de vermelho onde o preenchimento atua (verde: nao achou vizinho)
-                eg = achou > 0.0 ? float3(0.25, -0.1, -0.1) : float3(-0.1, 0.25, -0.1);
-        }
-    }
-    if (temResp)
-    {
-        // a resposta chega com atraso: a edicao de t0 vem pelo deslocamento acumulado ate aqui. Onde o caminho sai da
-        // imagem, ou o quadro de t0 naquele ponto nao bate com o atual (oclusao, luz, conteudo animado), a edicao
-        // reposicionada nao entra: vale a da grade (o que a rede fez ali com esse brilho), nunca um fantasma.
-        // Sem atraso (D = 0) a reposicionada e exata e entra inteira, como antes.
-        float4 dd = temDesl ? desl.Load(int3(p, 0)) : float4(0, 0, 1, 1);
-        float2 q0 = float2(p) + 0.5 + dd.xy;
-        float2 uv0 = q0 / tam;
-        float peso = 0;
-        float3 e = 0;
-        if (dd.w > 0.5 && all(uv0 > 0.0) && all(uv0 < 1.0) && !(corte && temDesl))
-        {
-            e = edT0.SampleLevel(s, uv0, 0).rgb;
-            int2 c0 = int2(floor(q0));
-            float3 mn = e, mx = e;
-            [unroll] for (int j = -1; j <= 1; ++j)
-                [unroll] for (int i = -1; i <= 1; ++i)
-                {
-                    float3 q = edT0.Load(int3(clamp(c0 + int2(i, j), int2(0, 0), int2(w - 1, h - 1)), 0)).rgb;
-                    mn = min(mn, q);
-                    mx = max(mx, q);
-                }
-            hr = clamp(hr, mn - folga, mx + folga);
-            float d = DifCor(fed.Load(int3(p, 0)).rgb, fedT0.SampleLevel(s, uv0, 0).rgb);
-            peso = saturate(1.0 - d * rejeicao);
-            if (exata && temDesl) peso *= dd.z; // o caminho ate t0 passou por outra superficie (oclusao)
-        }
-        if (!exata && vizinhos && peso < 0.9 && !corte)
-        {
-            // captura de video: onde nao bate, os vizinhos de cor parecida cuja reposicao confere (antes da grade)
-            float achou;
-            const float3 ev = PreencheCor(p, true, achou);
-            if (achou > 0.0)
-                eg = ev, usaEg = true;
-        }
-        if (usaEg && !(exata && n > 0.5))
-        {
-            // a resposta entra inteira: reposicionada onde o quadro de t0 bate com o atual, pela grade onde nao bate
-            e = lerp(eg, e, peso);
-            // exata: o que veio da grade ou dos vizinhos e estimativa e conta pouco no historico -- a proxima resposta
-            // de verdade substitui quase tudo (contando 1, metade da estimativa ficava e o erro dela virava rastro)
-            peso = exata ? max(peso, 0.15) : 1.0;
-        }
-        // exata com historico valido: onde a resposta (de 1-2 quadros atras) nao viu esta superficie (o objeto estava na
-        // frente), o historico do proprio fundo fica; misturar a grade ali trazia um pouco do objeto (fantasma)
-        // exata: a media temporal encurta com o movimento do pixel (pxEstab px/quadro = metade dos quadros). A edicao da
-        // rede depende do angulo de vista (reflexo, luz, armadura) e da animacao: em movimento, 8 quadros de media eram
-        // a edicao atrasada sobre a cena (o rastro); parado, a media longa segura a cintilacao da rede.
-        const float teto = (exata && pxEstab > 0.0) ? max(1.0, maxN / (1.0 + length(v) / pxEstab)) : maxN;
-        float nn = min(n + peso, teto);
-        // media ponderada (historico n, amostra peso); sem historico a amostra entra inteira
-        hr = lerp(hr, e, exata ? peso / max(nn, max(peso, 1e-4)) : peso / max(nn, 1.0));
-        n = nn;
-    }
-    else
-    {
-        // o historico so vale onde a cor do quadro anterior reprojetado bate; onde nao bate cede a previsao da grade.
-        // (a confianca ida-e-volta nao salva historico de cor diferente: num corte ela dava alta por acaso e a edicao da
-        // cena anterior ficava pintada na nova)
-        float k = foto;
-        if (exata && temConf) k *= smoothstep(0.3, 0.7, conf.Load(int3(p, 0))); // fundo recem-descoberto: o preenchimento
-        if (!exata && vizinhos && temHist && temMov && k < 0.9 && !corte)
-        {
-            // captura de video: o historico dos vizinhos de cor parecida que confere, antes da grade
-            float achou;
-            const float3 ev = PreencheCor(p, false, achou);
-            if (achou > 0.0)
-                eg = ev, usaEg = true;
-        }
-        hr = usaEg ? lerp(eg, hr, k) : hr * k;
-        n = max(n, 1.0);
-    }
-    histNovo[pu] = float4(hr, n);
-    // de volta a luz linear. A edicao veio de outro pixel/quadro (reprojecao, resposta atrasada, grade): somada a um
-    // realce mais claro, a luma comprimida passaria de 1 e c / (1 - luma) explodiria (~1000x, pontos brancos). Limite:
-    // o brilho editado chega no maximo a 4x o original + 4 (a rede reilumina, nao cria sol); sem efeito no caso exato.
+    if (p.x >= w || p.y >= h) return;
     float3 O = orig.Load(int3(p, 0)).rgb;
-    float3 c = Comprime(O) + hr;
-    // grade afim: a parte principal da edicao e aplicada no CSCompoe (resolucao cheia, a cor deste quadro); aqui so o
-    // residuo, o detalhe por pixel que a grade nao explica, na forca `detalhe`
-    if (usaAfim)
-        c = Comprime(O) + hr * detalhe;
+    float3 c = Comprime(O) + crua.Load(int3(p, 0)).rgb;
     float lo = max(Lum(O), 0.0) * 4.0 + 4.0;
     float lim = lo / (1.0 + lo);
     float lc = Lum(c);
     if (lc > lim) c *= lim / lc;
-    edLin[pu] = float4(Expande(c) - O, n);
+    edLin[p] = float4(Expande(c) - O, 1.0);
 }
 )";
 
-struct K
-{
-    UINT w, h, temResp, temHist;
-    float maxN, rejeicao, folga;
-    UINT temMov, temDesl, temConf, temEstat, temGrade, gw, gh, temDeslG, pad;
-    float pxEstab;
-    UINT vizinhos, usaAfim;
-    float detalhe;
-};
-struct KAfim
-{
-    UINT w, h, gw, gh;
-    float rigidez;
-    UINT pad0, pad1, pad2;
-};
-// a grade afim: celulas de 16 px da rede, 8 faixas de brilho (o mesmo que AFIM_CELULA / AFIM_FAIXAS no HLSL)
-const UINT kAfimCelula = 16, kAfimFaixas = 8;
-// rigidez da grade: o quanto A e puxada para a identidade (fracao da soma dos pesos). A variacao de cor dentro de uma
-// faixa de brilho e da ordem de 0,05 no espaco comprimido (variancia ~2,5e-3): 0,002 deixa A sair da identidade so onde a
-// celula tem cor variada o bastante para medir; onde nao tem, fica o deslocamento medio (b).
-const float kAfimRigidez = 0.002f;
-struct KGrade
-{
-    UINT w, h, gw, gh, temZ, pad0, pad1, pad2;
-};
-const UINT kCelula = 16, kFaixas = 8;
 struct KEdicao
 {
     UINT w, h, comp;
     float sInt, sCor, sGuarda, exposicao;
     UINT pad;
-};
-struct KAcumula
-{
-    UINT w, h, zera, temMov;
 };
 const D3D12_RESOURCE_STATES SRV =
     D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
@@ -694,49 +60,24 @@ const D3D12_RESOURCE_STATES SRV =
 
 void Temporal::Cria(ID3D12Device* d)
 {
-    passe.Cria(d, (std::string(hlsl::Comum) + kHlsl).c_str(), "CSTemporal", 15, 2, 20, "temporal");
-    const std::string afimHlsl = std::string(hlsl::Comum) + hlsl::AfimAplica + kAfim;
-    passeAfimEstat.Cria(d, afimHlsl.c_str(), "CSAfimEstat", 4, 3, 8, "grade afim (somas)");
-    passeAfimResolve.Cria(d, afimHlsl.c_str(), "CSAfimResolve", 4, 3, 8, "grade afim (resolve)");
-    passeResiduo.Cria(d, afimHlsl.c_str(), "CSResiduo", 4, 3, 8, "residuo da grade afim");
-    passeGrade.Cria(d, (std::string(hlsl::Comum) + kGrade).c_str(), "CSGrade", 3, 2, 8, "grade");
     passeEdicao.Cria(d, (std::string(hlsl::Comum) + kEdicao).c_str(), "CSEdicao", 3, 1, 8, "edicao");
-    passeAcumula.Cria(d, (std::string(hlsl::Comum) + kAcumula).c_str(), "CSAcumula", 3, 1, 4, "acumula");
+    passeLinear.Cria(d, (std::string(hlsl::Comum) + kLinear).c_str(), "CSLinear", 2, 1, 4, "edicao linear");
 }
 
 void Temporal::Garante(ID3D12Device* d, UINT w, UINT h)
 {
-    if (hist[0].w == w && hist[0].h == h)
+    if (crua.w == w && crua.h == h)
         return;
-    for (auto& t : hist)
-        t.Cria(d, w, h, DXGI_FORMAT_R16G16B16A16_FLOAT, L"historico da edicao");
-    for (auto& t : desl)
-        t.Cria(d, w, h, DXGI_FORMAT_R16G16B16A16_FLOAT, L"deslocamento acumulado");
     crua.Cria(d, w, h, DXGI_FORMAT_R16G16B16A16_FLOAT, L"edicao crua");
-    linear.Cria(d, w, h, DXGI_FORMAT_R16G16B16A16_FLOAT, L"edicao estabilizada (linear)");
-    for (auto& t : deslG)
-        t.Cria(d, w, h, DXGI_FORMAT_R16G16B16A16_FLOAT, L"deslocamento ate a grade");
-    gw = (w + kCelula - 1) / kCelula;
-    gh = (h + kCelula - 1) / kCelula;
-    grade.Cria(d, gw * kFaixas, gh, DXGI_FORMAT_R16G16B16A16_FLOAT, L"grade bilateral da edicao");
-    gradeCor.Cria(d, gw * kFaixas, gh, DXGI_FORMAT_R16G16B16A16_FLOAT, L"cor da grade bilateral");
-    zGrade.Cria(d, w, h, DXGI_FORMAT_R32_FLOAT, L"distancia no t0 da grade", false);
-    zGradeValida = false;
-    agw = (w + kAfimCelula - 1) / kAfimCelula;
-    agh = (h + kAfimCelula - 1) / kAfimCelula;
-    afimEst.Cria(d, agw * kAfimFaixas, agh * 6, DXGI_FORMAT_R32G32B32A32_FLOAT, L"somas da grade afim");
-    afim.Cria(d, agw * kAfimFaixas, agh * 4, DXGI_FORMAT_R32G32B32A32_FLOAT, L"grade afim");
-    residuo.Cria(d, w, h, DXGI_FORMAT_R16G16B16A16_FLOAT, L"residuo da grade afim");
-    afimValida = false;
-    gradeValida = false;
+    linear.Cria(d, w, h, DXGI_FORMAT_R16G16B16A16_FLOAT, L"edicao (linear)");
     valido = false;
 }
 
-void Temporal::Edicao(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, Tex& origT0, Tex& fedT0,
-                      Tex& resp, const ParamsTemporal& p)
+Tex* Temporal::Edicao(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, Tex& orig, Tex& fed, Tex& resp,
+                      const ParamsTemporal& p)
 {
-    origT0.Para(c, SRV);
-    fedT0.Para(c, SRV);
+    orig.Para(c, SRV);
+    fed.Para(c, SRV);
     resp.Para(c, SRV);
     crua.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     KEdicao k{crua.w,
@@ -747,191 +88,14 @@ void Temporal::Edicao(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Dev
               std::clamp(p.guarda, 1.f, 16.f),
               std::max(p.exposicao, 1e-3f),
               0};
-    passeEdicao.Roda(c, desc, d, {{fedT0.r.Get(), fedT0.fmt}, {resp.r.Get(), resp.fmt}, {origT0.r.Get(), origT0.fmt}},
+    passeEdicao.Roda(c, desc, d, {{fed.r.Get(), fed.fmt}, {resp.r.Get(), resp.fmt}, {orig.r.Get(), orig.fmt}},
                      {{crua.r.Get(), crua.fmt}}, &k, (crua.w + 7) / 8, (crua.h + 7) / 8);
     crua.Para(c, SRV);
-    afimValida = false;
-    if (!p.afim)
-        return;
-    // grade afim desta resposta: as somas, a solucao e o residuo (o que segue pelo caminho por pixel)
-    using Par = std::pair<ID3D12Resource*, DXGI_FORMAT>;
-    const Par o{origT0.r.Get(), origT0.fmt}, e{crua.r.Get(), crua.fmt};
-    const KAfim ka{crua.w, crua.h, agw, agh, kAfimRigidez, 0, 0, 0};
-    const UINT gx = (agw * kAfimFaixas + 7) / 8, gy = (agh + 7) / 8;
-    afimEst.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    afim.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    residuo.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    passeAfimEstat.Roda(c, desc, d, {o, e, e, e}, {{afimEst.r.Get(), afimEst.fmt}, {afim.r.Get(), afim.fmt},
-                                                  {residuo.r.Get(), residuo.fmt}},
-                        &ka, gx, gy);
-    afimEst.Para(c, SRV);
-    passeAfimResolve.Roda(c, desc, d, {o, e, {afimEst.r.Get(), afimEst.fmt}, e},
-                          {{residuo.r.Get(), residuo.fmt}, {afim.r.Get(), afim.fmt}, {residuo.r.Get(), residuo.fmt}},
-                          &ka, gx, gy);
-    afim.Para(c, SRV);
-    afimEst.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    passeResiduo.Roda(c, desc, d, {o, e, e, {afim.r.Get(), afim.fmt}},
-                      {{afimEst.r.Get(), afimEst.fmt}, {afimEst.r.Get(), afimEst.fmt}, {residuo.r.Get(), residuo.fmt}},
-                      &ka, (crua.w + 7) / 8, (crua.h + 7) / 8);
-    residuo.Para(c, SRV);
-    afimValida = true;
-}
-
-Tex* Temporal::AcumulaEm(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, Tex (&par)[2], UINT& qual,
-                         Tex* mov, Tex* confianca, bool zera)
-{
-    Tex& ant = par[qual];
-    Tex& novo = par[qual ^ 1];
-    ant.Para(c, SRV);
-    novo.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    KAcumula k{novo.w, novo.h, zera ? 1u : 0u, mov ? 1u : 0u};
-    using Par = std::pair<ID3D12Resource*, DXGI_FORMAT>;
-    passeAcumula.Roda(c, desc, d,
-                      {mov ? Par{mov->r.Get(), mov->fmt} : Par{ant.r.Get(), ant.fmt},
-                       (mov && confianca) ? Par{confianca->r.Get(), confianca->fmt} : Par{ant.r.Get(), ant.fmt},
-                       {ant.r.Get(), ant.fmt}},
-                      {{novo.r.Get(), novo.fmt}}, &k, (novo.w + 7) / 8, (novo.h + 7) / 8);
-    novo.Para(c, SRV);
-    qual ^= 1;
-    return &novo;
-}
-
-Tex* Temporal::Acumula(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, Tex* mov, Tex* confianca,
-                       bool zera)
-{
-    return AcumulaEm(c, desc, d, desl, deslAtual, mov, confianca, zera);
-}
-
-Tex* Temporal::AcumulaGrade(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, Tex* mov, Tex* confianca)
-{
-    deslGAgora = gradeValida ? AcumulaEm(c, desc, d, deslG, deslGAtual, mov, confianca, zeraG) : nullptr;
-    zeraG = false;
-    return deslGAgora;
-}
-
-void Temporal::Grade(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, Tex& origT0, Tex* deslocamento,
-                     Tex* zT0)
-{
-    // com a grade afim, a grade bilateral (o preenchimento onde a edicao nao pode ser trazida) e a do residuo
-    Tex& ed = EdT0();
-    origT0.Para(c, SRV);
-    ed.Para(c, SRV);
-    if (zT0)
-        zT0->Para(c, SRV);
-    grade.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    gradeCor.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    KGrade k{ed.w, ed.h, gw, gh, zT0 ? 1u : 0u, 0, 0, 0};
-    passeGrade.Roda(c, desc, d,
-                    {{origT0.r.Get(), origT0.fmt}, {ed.r.Get(), ed.fmt},
-                     zT0 ? std::pair<ID3D12Resource*, DXGI_FORMAT>{zT0->r.Get(), zT0->fmt}
-                         : std::pair<ID3D12Resource*, DXGI_FORMAT>{ed.r.Get(), ed.fmt}},
-                    {{grade.r.Get(), grade.fmt}, {gradeCor.r.Get(), gradeCor.fmt}}, &k, (gw + 7) / 8, (gh + 7) / 8);
-    grade.Para(c, SRV);
-    gradeCor.Para(c, SRV);
-    gradeValida = true;
-    zGradeValida = false;
-    if (zT0 && zT0->w == zGrade.w && zT0->h == zGrade.h)
-    {
-        // a distancia do t0 desta grade (a de quem chamou e reescrita no envio seguinte)
-        const auto antes = zT0->estado;
-        zT0->Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
-        zGrade.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
-        c->CopyResource(zGrade.r.Get(), zT0->r.Get());
-        zGrade.Para(c, SRV);
-        zT0->Para(c, antes);
-        zGradeValida = true;
-    }
-    if (deslocamento)
-    {
-        // o t0 da grade e o da resposta: o deslocamento ate ela, daqui em diante, parte do da resposta
-        Tex& g = deslG[deslGAtual];
-        deslocamento->Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
-        g.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
-        c->CopyResource(g.r.Get(), deslocamento->r.Get());
-        g.Para(c, SRV);
-        deslocamento->Para(c, SRV);
-        deslGAgora = &g;
-        zeraG = false;
-    }
-    else
-    {
-        deslGAgora = nullptr; // t0 e este quadro
-        zeraG = true;
-    }
-}
-
-Tex* Temporal::Roda(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, Tex& orig, Tex& fed, Tex& fedAnt,
-                    bool chegou, Tex* fedT0, Tex* deslocamento, Tex* mov, Tex* confianca, ID3D12Resource* estatFluxo,
-                    const ParamsTemporal& p, Tex* zAgora)
-{
-    if (!chegou && !valido)
-        return nullptr; // sem rede e sem historico: nada a mostrar
-    Tex& ant = hist[atual];
-    Tex& novo = hist[atual ^ 1];
-    ant.Para(c, SRV);
-    fedAnt.Para(c, SRV);
-    novo.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    // a grade afim desligada no painel depois da ultima resposta: volta ao caminho inteiro por pixel na hora
-    const bool comAfim = p.afim && afimValida;
-    afimEmUso = comAfim;
-    Tex& ed = comAfim ? residuo : crua;
-    ed.Para(c, SRV);
-    orig.Para(c, SRV);
-    if (comAfim)
-        afim.Para(c, SRV);
     linear.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    if (fedT0)
-        fedT0->Para(c, SRV);
-    if (gradeValida)
-        grade.Para(c, SRV), gradeCor.Para(c, SRV);
-    if (deslGAgora)
-        deslGAgora->Para(c, SRV);
-    if (zAgora)
-        zAgora->Para(c, SRV);
-    if (zGradeValida)
-        zGrade.Para(c, SRV);
-    K k{fed.w,
-        fed.h,
-        chegou ? 1u : 0u,
-        valido ? 1u : 0u,
-        float(std::max(1, p.maxQuadros)),
-        p.rejeicao,
-        p.folga,
-        mov ? 1u : 0u,
-        deslocamento ? 1u : 0u,
-        confianca ? 1u : 0u,
-        (mov && estatFluxo) ? 1u : 0u,
-        gradeValida ? 1u : 0u,
-        gw,
-        gh,
-        deslGAgora ? 1u : 0u,
-        ((zAgora && zGradeValida) ? 1u : 0u) | (getenv("DLSS5_DEBUG_FAIXA") ? 2u : 0u),
-        PxEstabilidade(p.pxEstab),
-        p.vizinhos ? 1u : 0u,
-        comAfim ? 1u : 0u,
-        std::clamp(p.detalhe, 0.f, 1.f)};
-    using Par = std::pair<ID3D12Resource*, DXGI_FORMAT>;
-    const Par vazio{fed.r.Get(), fed.fmt};
-    passe.Roda(c, desc, d,
-               {vazio,
-                {ed.r.Get(), ed.fmt},
-                mov ? Par{mov->r.Get(), mov->fmt} : vazio,
-                {ant.r.Get(), ant.fmt},
-                {fedAnt.r.Get(), fedAnt.fmt},
-                deslocamento ? Par{deslocamento->r.Get(), deslocamento->fmt} : vazio,
-                confianca ? Par{confianca->r.Get(), confianca->fmt} : vazio,
-                fedT0 ? Par{fedT0->r.Get(), fedT0->fmt} : vazio,
-                {orig.r.Get(), orig.fmt},
-                gradeValida ? Par{grade.r.Get(), grade.fmt} : vazio,
-                deslGAgora ? Par{deslGAgora->r.Get(), deslGAgora->fmt} : vazio,
-                gradeValida ? Par{gradeCor.r.Get(), gradeCor.fmt} : vazio,
-                {estatFluxo, DXGI_FORMAT_UNKNOWN},
-                zAgora ? Par{zAgora->r.Get(), zAgora->fmt} : vazio,
-                zGradeValida ? Par{zGrade.r.Get(), zGrade.fmt} : vazio},
-               {{novo.r.Get(), novo.fmt}, {linear.r.Get(), linear.fmt}}, &k, (fed.w + 7) / 8, (fed.h + 7) / 8);
-    novo.Para(c, SRV);
+    const UINT kl[4] = {linear.w, linear.h, 0, 0};
+    passeLinear.Roda(c, desc, d, {{crua.r.Get(), crua.fmt}, {orig.r.Get(), orig.fmt}}, {{linear.r.Get(), linear.fmt}},
+                     kl, (linear.w + 7) / 8, (linear.h + 7) / 8);
     linear.Para(c, SRV);
-    atual ^= 1;
     valido = true;
     return &linear;
 }

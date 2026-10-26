@@ -38,12 +38,8 @@ Set-Content -Path "$pasta\config.json" -Encoding ascii -Value @'
   "brancoNits": 0,
   "modo": 0,
   "movimento": true,
-  "usaConfianca": true,
   "ritmo": 1,
-  "ritmoMax": 4,
   "reusoVit": true,
-  "estabilidade": 8,
-  "rejeicao": 12,
   "divisao": 0.5,
   "fpsMax": 60,
   "ocultaDeGravacoes": false

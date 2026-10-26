@@ -66,8 +66,9 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
     (colocar código no jogo pode dar banimento). Jogo com anti-cheat instalado mas aberto sem ele: conecta, com aviso —
     use só offline.
   - OptiScaler instalado na pasta do jogo assume o upscaler: tire o `dxgi.dll` dele para a captura de buffer.
-  - A rede responde 1–2 quadros depois; o jogo soma a edição pelo movimento acumulado de todos os quadros desde o
-    quadro que a rede viu (nenhum quadro pula sem o movimento dele ser contado: era o "liga/desliga"), e só para a
+  - O jogo espera a edição do quadro anterior (1 quadro, como a NVIDIA roda o DLSS 5: a rede dentro do tempo do quadro)
+    e a soma pelo movimento acumulado desde o quadro que a rede viu (nenhum quadro pula sem o movimento dele ser
+    contado: era o "liga/desliga"), e só para a
     mesma superfície (profundidade). Onde um objeto acabou de sair, a edição vem dos vizinhos do fundo no quadro atual.
     Validado com movimento extremo (câmera até 335 px/quadro, objeto até 317 px/quadro): nenhum quadro sem edição fora
     de corte de cena e nenhuma textura do objeto no fundo descoberto (`ferramentas\fantasma_textura.py`: 0,00; uma
@@ -88,12 +89,9 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
     dele virava estimativa atrasada (o rastro em personagem e objetos). Contra o quadro anterior (e no jogo, com a
     edição de 1–3 quadros atrás) só conta o que o movimento da câmera não explica. Medido com a câmera girando e
     andando (`--giro --anda`): confiança no objeto perto 0,46 → 0,997; a faixa recém-descoberta segue 100% detectada.
-  - No jogo, a DLL aplica a edição de 1–3 quadros atrás com a mesma oclusão reconstruída (cada ponto deste quadro marca
+  - No jogo, a DLL aplica a edição do quadro anterior com a mesma oclusão reconstruída (cada ponto deste quadro marca
     a distância dele onde estava no quadro da edição); antes ela só comparava a distância gravada na edição e deixava
     passar a edição do personagem no chão perto dele.
-  - A média temporal da edição encurta com o movimento do pixel (metade a 8 px/quadro: `mediaMovimento`, que
-    `DLSS5_ESTAB_PX` sobrepõe): a edição da rede depende do ângulo de vista e da animação, e 8 quadros de média em
-    movimento eram a edição atrasada sobre a cena; parado, a média longa segura a cintilação.
   - Medido na gravação do Gears reproduzida fora do jogo (`--reproduz` de uma gravação do modo buffer usa o movimento e a
     distância gravados: o modo buffer inteiro, determinístico) contra a edição ideal (a resposta da rede reprojetada):
     resíduo no overlay 0,041 → 0,018 (0,040 → 0,027 perto de bordas de profundidade); na etapa do jogo, simulada com
@@ -139,20 +137,16 @@ Requisitos: placa AMD RDNA 4 (RX 9070 / 9060) e driver AMD com `amdhip64_7.dll` 
    segura o acúmulo em movimento: **refinamento de Lucas-Kanade** em resolução cheia (o núcleo do DIS/KLT) e um
    **candidato de movimento global** (afim robusto, como na estabilização de vídeo), que desfaz o casamento errado em
    textura repetitiva. Medido contra movimento exato: cintilação da edição −63% (0,196 → 0,073; ideal 0,063).
-3. **Rede DLSS 5** (runtime HIP do lmxxf) no tamanho escolhido (720p a 2160p), numa **fila própria da GPU**: o quadro
-   capturado vai para a tela na hora, sem esperar a rede (sem atraso de entrada, no ritmo do jogo); a resposta entra
-   quando fica pronta, trazida pelo movimento acumulado desde o quadro que a rede viu.
+3. **Rede DLSS 5** (runtime HIP do lmxxf) no tamanho escolhido (720p a 2160p), como a NVIDIA roda o DLSS 5: a rede vê
+   o quadro e responde nele mesmo, e o quadro vai para a tela depois dela (custa FPS, como na NVIDIA). O modo que
+   mostrava o quadro na hora e trazia a resposta atrasada pelo movimento foi removido: era o fantasma.
    O que a rede vê (as 16 entradas da primeira camada, `hip/prefix_fast.hip` do lmxxf): 3 canais de ruído, a cor (RGB),
    um segundo RGB que é a entrada de histórico (sem o histórico ligado ela recebe a cor de novo), 5 controles da NVIDIA,
    1 constante e 1 zerada. Não há entrada de luz, profundidade ou normal: na captura de buffer, o movimento e a
    profundidade do jogo chegam à rede só pelo histórico (`temporalRede`).
-4. **Composição**: com a **grade afim** (padrão), a parte principal da edição é a transformação de cor que a rede fez
-   (por célula e faixa de brilho, ajustada a cada resposta) aplicada à cor nativa do quadro atual; só o resíduo segue o
-   caminho abaixo. A *edição* da rede (resposta − entrada) é acumulada no tempo num espaço comprimido (x / (1 + luma),
-   como o TAA dos jogos, para o realce HDR não virar pontos), reprojetada pelo movimento simulado (menos cintilação) e
-   somada ao quadro nativo, que mantém o próprio detalhe. Onde a edição não pode ser trazida (conteúdo animado, oclusão,
-   borda nova da tela) ela sai de uma grade bilateral da última resposta (bloco × brilho). Composição de cor
-   *Clássica* ou no *estilo RenoDX* (luz e cor controladas separadamente).
+4. **Composição**: a *edição* da rede deste quadro (composição de referência NVIDIA/RenoDX − original) é somada ao
+   quadro nativo, que mantém o próprio detalhe, com teto de brilho (4× o original + 4: a rede reilumina, não cria sol).
+   A estabilidade no tempo é a do histórico da própria rede (`temporalRede`), como na NVIDIA.
 5. **Overlay** DirectComposition, transparente a cliques e sem foco: o jogo continua recebendo mouse e teclado.
 
 ## Parâmetros (config.json / painel)
@@ -170,7 +164,6 @@ Os parâmetros do DLSS 5 seguem os nomes que a NVIDIA expõe no NGX (os mesmos d
 | `gradacao` | true/false | aplica a gradação do Model B/C (exposição, contraste, saturação do kernel da NVIDIA) |
 | `composicao` | 0/1 | 0 crua (resposta − proxy), 1 referência NVIDIA/RenoDX (razão de luz em dois ramos, piso 1/512, proteção, cor) |
 | `corComposicao`, `protecao` | 0..1, 1..16 | mistura de cor e proteção bilateral de luz da composição (padrão 1 e 16 = desligada) |
-| `semAtraso` | 0/3 | 3 (padrão) = como a NVIDIA: a rede em todo quadro e a edição do próprio quadro (vídeo: a tela espera a rede; buffer: o jogo espera a edição do quadro anterior); custa FPS. 0 = a resposta chega depois e é trazida pelo movimento |
 | `matizVermelhoSat` … `matizMagentaSat`, `matizVermelhoLuz` … `matizMagentaLuz` | −1..1 | cor por matiz depois da rede, em seis faixas (Vermelho, Amarelo, Verde, Ciano, Azul, Magenta): saturação (−1 = cinza, +1 = o dobro) e brilho (−1 = apaga, +1 = o dobro; pesa pela saturação do pixel, cinza e branco não mudam). Faixas vizinhas se misturam em triângulo. Padrão 0 = desligado |
 | `ponte` | −1..4 | quadro → proxy da rede: −1 automática (SDR direta, HDR SoftKnee), 0 direta, 1 SoftKnee, 2 ACES (RRT+ODT, RenoDX), 3 curva do jogo, 4 luz de cena direta (só na captura de buffer: só o ombro do codificador da NVIDIA comprime os realces; na captura de vídeo vira a automática) |
 | `brancoNits` | 0..400 | branco de papel do HDR (0 = o branco SDR do Windows) |
@@ -178,19 +171,15 @@ Os parâmetros do DLSS 5 seguem os nomes que a NVIDIA expõe no NGX (os mesmos d
 | `redeCompleta` | true/false | os 71 blocos (camadas) da rede; false pula 42/43/46 (~1 ms); vale ao religar |
 | `passes` | 1..3 | quantas vezes a rede inteira roda por quadro (1 = normal); vale ao religar |
 | `profundidade` | 0..4 | blocos da rede grande: 0 = 71, 1 = 68 (sem 42/43/46), 2 = 63 (sem 40–47), 3 = 55 (e sem 23–30), 4 = 47 (e sem o ViT 31–38; só com `reusoVit` desligado). Só blocos residuais saem; muda na hora; só no `config.json`. Não se aplica à rede pequena, que é outro modelo |
-| `movimento`, `usaConfianca` | true/false | movimento simulado por fluxo óptico; descartar o acúmulo onde ida e volta não conferem |
-| `estabilidade`, `rejeicao` | 1..16, 2..40 | quadros que a edição acumula; quão rápido mudança de cor derruba o acúmulo |
-| `gradeAfim`, `detalhePorPixel` | true/false, 0..1 | grade afim (Bilateral Guided Upsampling / HDRNet): em cada resposta, por célula de 16 px da rede e faixa de brilho, a transformação de cor y = A·x + b que a rede fez (mínimos quadrados, puxada para a identidade onde há pouca variação de cor), aplicada na resolução cheia à cor do quadro **atual** — a edição principal é recalculada do conteúdo de agora, não transportada pixel a pixel (sem a máscara semitransparente em movimento) nem ampliada da rede pequena. O resíduo (o detalhe que a grade não explica) segue pelo caminho por pixel na força `detalhePorPixel` (padrão 0,25). Padrão: ligada |
-| `bordaPelosVizinhos` | true/false | captura de vídeo: onde a edição trazida pelo movimento não confere (borda de objeto andando), ela vem dos vizinhos de cor parecida cuja reprojeção confere, em vez só da grade bilateral (células de 16 px da rede); padrão true |
-| `mediaMovimento` | 0..32 px | captura de buffer: a média cai pela metade a cada tantos px/quadro de movimento (padrão 8; 0 = fixa) |
-| `ritmo` | 1..4 | sem atraso: **quadros repetidos** — a rede edita 1 de cada N quadros e esse quadro editado se repete nos N−1 seguintes (nunca um quadro novo com edição velha); na captura de buffer o quadro processado aparece 1 quadro depois. Normal: a rede roda no máximo uma vez a cada N quadros |
+| `movimento` | true/false | movimento simulado por fluxo óptico (as guias do histórico da própria rede na captura de vídeo) |
+| `ritmo`, `quadroGerado` | 1..4, 0/1 | **quadros gerados** — a rede edita 1 de cada N quadros e os N−1 seguintes são gerados dos processados (nunca um quadro novo com edição velha): 0 repetido (na captura de buffer o processado aparece 1 quadro depois), 1 mesclado (50/50, 40/60, 30/70 do anterior/novo; o novo aparece N quadros depois) |
 | `reusoVit` | true/false | reuso adaptativo do ViT do runtime lmxxf (vale ao reabrir) |
 | `temporalRede` | 0..3 | histórico da própria rede (`DLSS5_TEMPORAL_MODE` do runtime; vale ao reabrir, força 1 passe e desliga o `reusoVit`). 1 = a entrada de histórico da rede recebe a resposta anterior trazida pelo movimento (captura de buffer: movimento e profundidade do jogo; captura de vídeo: fluxo óptico) e a cabeça de histórico do bloco 70 decide a mistura; precisa do runtime deste branch (`LmxxfNrSetHistoryGuides`) e do `post70-history-head.f16` que o `monta_runtime.ps1` extrai. 2 e 3 = suavização de baixa frequência / realce na saída do runtime |
 | `forcaHistoricoRede` | 0..1 | com `temporalRede` 1: escala do peso que a própria rede dá à resposta anterior (força × 0,74 × a decisão da cabeça de histórico); 1 = o da rede |
 | `recorteHistoricoRede` | 0..4 | com `temporalRede` 1: a resposta anterior só entra dentro de média ± este número de desvios da saída crua deste quadro no 3×3 (YCoCg), o recorte por variância do TAA, feito no runtime antes da mistura (`LmxxfNrSetHistoryClip`). Sem ele, o que a rede pinta em volta de um objeto em movimento ficava no fundo que passa atrás dele e andava com esse fundo, uma cópia por quadro da rede (o rastro em degraus). 0 = sem recorte; padrão 1 |
 | `forca` | 0..2 | força da edição final (1 = a da rede) |
 | `nitidezCas` | 0..1 | nitidez depois da composição pelo algoritmo do CAS (AMD FidelityFX, MIT), só no lado da rede; em HDR em c / (1 + c) por canal. Na captura de buffer vai junto com a edição que volta ao jogo. 0 = desligada (padrão), 1 = o máximo do CAS |
-| `modo`, `fpsMax`, `ocultaDeGravacoes` | | modo de exibição (0 rede, 1 original, 2 comparação, 3 só a edição, 4 movimento, 5 saída crua da última resposta, sem acúmulo, movimento nem grade), teto de FPS, esconder de prints/OBS |
+| `modo`, `fpsMax`, `ocultaDeGravacoes` | | modo de exibição (0 rede, 1 original, 2 comparação, 3 só a edição, 4 movimento, 5 saída crua da última resposta), teto de FPS, esconder de prints/OBS |
 
 No painel os ajustes finos têm três casas decimais: Shift + arrastar anda 1/10 do normal, e a roda do mouse sobre o
 deslizador soma 0,01 (0,001 com Shift). Clique no número para digitar o valor (Enter aplica, Esc cancela; funciona com
@@ -225,8 +214,7 @@ empacota.ps1 -Versao X                # zip para a aba Releases
   histórico extraídos do `nvngx_dlssnr` 310.8 e, com `-DllPequena`, a rede pequena da 310.9.16. Nada é escrito por cima
   de hardlink: os pesos vão por hardlink e o resto é copiado.
 Ferramentas de medida: `ferramentas\compara_ref.py` mede o overlay contra a saída real da NVIDIA. Gravações do jogo
-(Ctrl+Shift+G) podem ser reproduzidas com `--reproduz <pasta> [--atraso N]` (N = a resposta da rede entra N quadros
-depois, para medir o modo assíncrono); `compara_atraso.py` e `cintilacao.py` medem o custo do atraso e a cintilação.
+(Ctrl+Shift+G) podem ser reproduzidas com `--reproduz <pasta>`; `cintilacao.py` mede a cintilação.
 `gera_sintetico.py` gera uma sequência com movimento exato conhecido e `avalia_sintetico.py` mede erro e cintilação
 contra a referência sem ruído. Captura de buffer: `gera_sintetico_buffer.py` (`--pessoa`, `--laco`) e
 `obj\JogoTeste.exe` (um jogo D3D12 que chama o FSR 3.1 com a sequência; `--render 0.59` imita o UE5 com escala de
