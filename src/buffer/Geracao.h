@@ -72,12 +72,14 @@ class Geracao
     void SemHudEstado(uint32_t& passe, uint32_t& passes, double& igual, double& troca, int& fase) const;
     const char* UltimoErro() const;
     uint64_t Gerados() const; // quadros gerados ate aqui (cada chamada da AMD gera um)
+    uint64_t Encontros() const; // vezes em que o preparo (render) e a geracao (Present) quiseram o backend da AMD juntos
     // o contexto da AMD (compilado em segundo plano a partir do primeiro quadro): 0 nada, 1 compilando, 2 pronto,
     // 3 falhou; e quanto a ultima compilacao levou
     int EstadoContexto() const;
     double MsCompilacao() const;
-    // o ritmo das apresentacoes do swapchain da AMD desde a ultima leitura: intervalo medio, desvio e maior (ms)
-    uint32_t Ritmo(double& mediaMs, double& desvioMs, double& maxMs) const;
+    // o ritmo das apresentacoes do swapchain da AMD desde a ultima leitura: intervalo medio, desvio, maior e o que so 1%
+    // das apresentacoes passa (p99: 1000 / p99Ms = o "1% low") em ms
+    uint32_t Ritmo(double& mediaMs, double& desvioMs, double& maxMs, double& p99Ms) const;
     // a taxa do monitor, medida FORA da thread de render (consultar o monitor disputa trava com o DirectX: engasgo e ate
     // bloqueio). Sem ela, sem limite
     void DefineTaxa(uint32_t hz, uint32_t hzMax);

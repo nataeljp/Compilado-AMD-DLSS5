@@ -87,7 +87,15 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
     `_pad1`; os vetores até o quadro atual valem mv·(1−t) e até o anterior mv·t), a interpolação roda uma vez por gerado
     (só a última guarda o quadro atual como anterior) e o swapchain apresenta até 3 gerados por quadro do jogo, em ordem,
     com o intervalo do jogo dividido por N. Com t = 0,5 as contas são as da AMD: o 2x não muda. O módulo escreve no log o
-    ritmo real das apresentações (intervalo médio, desvio e maior).
+    ritmo real das apresentações (intervalo médio, desvio, maior e o **1% low**: o intervalo que só 1% das apresentações
+    passa, por um histograma de 0,1 ms no presenter da AMD) e o painel mostra, com a geração ligada, os quadros do jogo,
+    os da tela (reais + gerados) e o 1% low dos últimos 5 s. Medido no sample da AMD a 3x: 116 q/s na tela, 1% low ~100.
+  - **Preparo e geração em threads diferentes**: o preparo da AMD roda na thread de render (despacho do FSR) e o fluxo
+    óptico + a interpolação no Present — no TLOU2, outra thread. Os dois usam o mesmo backend da AMD (fila de trabalhos e
+    recursos dinâmicos do contexto da interpolação, que não são seguros entre threads) e agora passam um de cada vez por
+    uma trava; com o contexto sendo refeito (tela ou render máximo novos) a geração do Present não roda, e antes de
+    destruir o contexto a geração é desligada no swapchain (a configuração espera o Present em curso). O log conta as
+    vezes em que um esperou o outro ("preparo e geração se encontraram N vezes").
   - **Cada Present com o próprio quadro**: o preparo (profundidade e movimento dilatados) é gravado no despacho do FSR e a
     AMD gera no Present. Um motor com a thread de render à frente grava o quadro seguinte antes do Present do atual — casar
     pelo último preparado juntava a imagem de um quadro com o movimento do seguinte (gerado no lugar errado: fantasma e o
@@ -141,6 +149,11 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
     FSR, com os passes do módulo — e quem enviou), com o DRED; as listas que o runtime recusa ao fechar também.
     Reproduzido no jogo de teste `--invalida Q` (envia uma lista sem fechar): o mesmo `0x887a0001`, e o log aponta a
     lista e quem a enviou.
+  - **A geração FSR 3 do próprio jogo**: com a do jogo ligada e o painel pedindo 2x–4x, a dele é desligada e a nossa
+    liga — só quando a nossa pode gerar (o swapchain da AMD é o nosso: a DLL entrou antes do DirectX; e o contexto está
+    pronto). Injetado com o jogo já aberto a nossa não gera, e desligar a do jogo o deixava sem nenhuma; agora a do jogo
+    segue (medido: sample da AMD com a geração dele, injeção tardia, 75 s ligada). O pedido do painel só muda a decisão
+    depois de 1 s igual (no TLOU2 alternava 0x/4x várias vezes por segundo com o overlay religando).
   - O jogo espera a edição do quadro anterior (1 quadro, como a NVIDIA roda o DLSS 5: a rede dentro do tempo do quadro)
     e a soma pelo movimento acumulado desde o quadro que a rede viu (nenhum quadro pula sem o movimento dele ser
     contado: era o "liga/desliga"), e só para a

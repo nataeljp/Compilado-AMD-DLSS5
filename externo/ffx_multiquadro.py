@@ -317,7 +317,69 @@ extern "C" void ffxDlss5RitmoDX12(double* mediaMs, double* desvioMs, double* max
 }
 
 DWORD WINAPI presenterThread(LPVOID param)
-{''')
+{''', depois='g_dlss5RitmoHist')
+# 1% low: histograma dos intervalos e o p99 lido junto com o ritmo
+tr(c, '''static uint32_t g_dlss5RitmoN = 0;
+
+static void dlss5RitmoAcumula(double ms)
+{
+    AcquireSRWLockExclusive(&g_dlss5RitmoTrava);
+    g_dlss5RitmoSoma += ms;
+    g_dlss5RitmoSoma2 += ms * ms;
+    g_dlss5RitmoMax = FFX_MAXIMUM(g_dlss5RitmoMax, ms);
+    g_dlss5RitmoN++;
+    ReleaseSRWLockExclusive(&g_dlss5RitmoTrava);
+}
+
+extern "C" void ffxDlss5RitmoDX12(double* mediaMs, double* desvioMs, double* maxMs, uint32_t* n)
+{
+    AcquireSRWLockExclusive(&g_dlss5RitmoTrava);
+    const double media = g_dlss5RitmoN ? g_dlss5RitmoSoma / g_dlss5RitmoN : 0.0;
+    *mediaMs  = media;
+    *desvioMs = g_dlss5RitmoN ? std::sqrt(FFX_MAXIMUM(0.0, g_dlss5RitmoSoma2 / g_dlss5RitmoN - media * media)) : 0.0;
+    *maxMs    = g_dlss5RitmoMax;
+    *n        = g_dlss5RitmoN;
+    g_dlss5RitmoSoma = g_dlss5RitmoSoma2 = g_dlss5RitmoMax = 0.0;
+    g_dlss5RitmoN = 0;
+    ReleaseSRWLockExclusive(&g_dlss5RitmoTrava);
+}''', '''static uint32_t g_dlss5RitmoN = 0;
+// histograma dos intervalos em passos de 0,1 ms ate 200 ms (o ultimo junta os maiores): o 1% mais lento (1% low)
+static uint32_t g_dlss5RitmoHist[2001] = {};
+
+static void dlss5RitmoAcumula(double ms)
+{
+    AcquireSRWLockExclusive(&g_dlss5RitmoTrava);
+    g_dlss5RitmoSoma += ms;
+    g_dlss5RitmoSoma2 += ms * ms;
+    g_dlss5RitmoMax = FFX_MAXIMUM(g_dlss5RitmoMax, ms);
+    g_dlss5RitmoN++;
+    g_dlss5RitmoHist[ms <= 0.0 ? 0 : ms >= 200.0 ? 2000 : uint32_t(ms * 10.0)]++;
+    ReleaseSRWLockExclusive(&g_dlss5RitmoTrava);
+}
+
+// p99Ms: o intervalo que so 1% das apresentacoes passa (1000 / p99Ms = o "1% low" em quadros por segundo)
+extern "C" void ffxDlss5RitmoDX12(double* mediaMs, double* desvioMs, double* maxMs, uint32_t* n, double* p99Ms)
+{
+    AcquireSRWLockExclusive(&g_dlss5RitmoTrava);
+    const double media = g_dlss5RitmoN ? g_dlss5RitmoSoma / g_dlss5RitmoN : 0.0;
+    *mediaMs  = media;
+    *desvioMs = g_dlss5RitmoN ? std::sqrt(FFX_MAXIMUM(0.0, g_dlss5RitmoSoma2 / g_dlss5RitmoN - media * media)) : 0.0;
+    *maxMs    = g_dlss5RitmoMax;
+    *n        = g_dlss5RitmoN;
+    *p99Ms    = 0.0;
+    const uint32_t lentos = (g_dlss5RitmoN + 99) / 100;
+    uint32_t soma = 0;
+    for (int i = 2000; i >= 0 && g_dlss5RitmoN; --i)
+        if ((soma += g_dlss5RitmoHist[i]) >= lentos)
+        {
+            *p99Ms = FFX_MINIMUM(g_dlss5RitmoMax, (i + 1) * 0.1);
+            break;
+        }
+    g_dlss5RitmoSoma = g_dlss5RitmoSoma2 = g_dlss5RitmoMax = 0.0;
+    g_dlss5RitmoN = 0;
+    memset(g_dlss5RitmoHist, 0, sizeof g_dlss5RitmoHist);
+    ReleaseSRWLockExclusive(&g_dlss5RitmoTrava);
+}''')
 tr(c, '''                            int64_t currentPresentQPC;
                             QueryPerformanceCounter(reinterpret_cast<LARGE_INTEGER*>(&currentPresentQPC));
                             presenter->previousPresentQpc = currentPresentQPC;''', '''                            int64_t currentPresentQPC;

@@ -16,7 +16,7 @@
 #include <cwchar>
 
 // o swapchain da AMD com externo\ffx_multiquadro.py: o ritmo das apresentacoes (le e zera) e o aviso de destruicao
-extern "C" void ffxDlss5RitmoDX12(double* mediaMs, double* desvioMs, double* maxMs, uint32_t* n);
+extern "C" void ffxDlss5RitmoDX12(double* mediaMs, double* desvioMs, double* maxMs, uint32_t* n, double* p99Ms);
 extern "C" FfxErrorCode ffxDlss5AoDestruirDX12(FfxSwapchain gameSwapChain, void (*aviso)(void*), void* ctx);
 #pragma comment(lib, "d3dcompiler.lib")
 
@@ -128,6 +128,15 @@ struct Geracao::Impl
     uint64_t ordemEnvio = 0;
     bool comEnvio = false; // o gancho de ExecuteCommandLists informa os envios
     std::mutex filaMx; // so a fila (nunca segurado em chamada da AMD: o Present dela segura as travas dela e chama Gera)
+    // O backend da AMD (fi) e um so para o fluxo optico e a interpolacao, e nao e seguro entre threads: a fila de trabalhos
+    // e o anel de descritores dele sao compartilhados. O Prepare roda na thread de render do jogo (Quadro) e o fluxo e a
+    // interpolacao no Present (Gera): no TLOU2 sao threads diferentes, e os dois juntos gravavam trabalho de um na lista
+    // do outro e sobrescreviam descritores em uso (falha de pagina na GPU: DEVICE_HUNG). Ordem: mx -> fiMx; o Present da
+    // AMD (com as travas dela) -> fiMx; nada chama a AMD segurando fiMx
+    std::mutex fiMx;
+    std::atomic<DWORD> threadPreparo{0};
+    bool threadsDitas = false; // o rastro diz uma vez as threads do preparo e da geracao
+    std::atomic<uint64_t> encontros{0}; // vezes em que um esperou o outro em fiMx (sem a trava, os dois juntos no backend)
     std::deque<Preparado> fila;
     uint64_t aFrenteSoma = 0, aFrenteN = 0, aFrenteMax = 0, semPreparo = 0;
     // diagnostico (Rastro): as primeiras apresentacoes com geracao
@@ -237,7 +246,17 @@ void Geracao::Impl::Destroi()
     if (!contexto)
         return;
     if (ffxSc)
+    {
+        // a geracao desligada antes: a configuracao espera o Present em curso (Gera gravado, a lista ainda nao enviada) e
+        // a AMD para de chamar Gera; so entao a espera das apresentacoes cobre tudo o que usa estes recursos
+        FfxFrameGenerationConfig cfg{};
+        cfg.swapChain = ffxSc;
+        cfg.frameGenerationEnabled = false;
+        cfg.numInterpolatedFrames = 1;
+        shared.fpSwapChainConfigureFrameGeneration(&cfg);
         ffxWaitForPresents(ffxSc); // nada da AMD em voo usando os recursos
+    }
+    std::lock_guard<std::mutex> lf(fiMx);
     for (int i = 0; i < R_N; ++i)
         if (criado[i])
             shared.fpDestroyResource(&shared, rec[i], idShared), criado[i] = false;
@@ -703,6 +722,21 @@ FfxErrorCode Geracao::Impl::Gera(const FfxFrameGenerationDispatchDescription* d,
         ++p->aFrenteN;
         p->aFrenteMax = std::max(p->aFrenteMax, aFrente);
     }
+    // o backend da AMD e o do preparo: um de cada vez (fiMx). Com o contexto sendo refeito (estado 1) nao ha o que gerar
+    std::unique_lock<std::mutex> lf(p->fiMx, std::try_to_lock);
+    if (!lf.owns_lock())
+        ++p->encontros, lf.lock();
+    if (p->estado != 2 || !p->contexto)
+        return FFX_ERROR_INVALID_ARGUMENT;
+    if (!p->threadsDitas && p->rastroLinhas < 120)
+    {
+        p->threadsDitas = true;
+        char linha[96];
+        snprintf(linha, sizeof linha, "threads: preparo %lu, geracao %lu\n", (unsigned long)p->threadPreparo.load(),
+                 (unsigned long)GetCurrentThreadId());
+        std::lock_guard<std::mutex> lk(p->filaMx); // o rastro e lido (Rastro) com ela
+        p->rastro += linha;
+    }
     const FfxFrameInterpolationPrepareDescription& pd = pr.pd;
     // a copia sem HUD deste quadro e conferida contra o quadro final; so a do passe conferido vai para a AMD: o fluxo
     // optico e a interpolacao partem dela e o HUD vem do quadro final, parado (como o FSR 3 da AMD com HUDLessColor,
@@ -1117,7 +1151,14 @@ bool Geracao::Quadro(ID3D12GraphicsCommandList* c, const QuadroGeracao& q, uint3
     pd.dilatedDepth = p->Rec(R_PROF_DIL + jogo);
     pd.dilatedMotionVectors = p->Rec(R_MOV_DIL + jogo);
     pd.reconstructedPrevDepth = p->Rec(R_PROF_REC + jogo);
-    FfxErrorCode e = ffxFrameInterpolationPrepare(&p->fic, &pd);
+    FfxErrorCode e;
+    {
+        std::unique_lock<std::mutex> lf(p->fiMx, std::try_to_lock);
+        if (!lf.owns_lock())
+            ++p->encontros, lf.lock();
+        p->threadPreparo = GetCurrentThreadId();
+        e = ffxFrameInterpolationPrepare(&p->fic, &pd);
+    }
     if (e != FFX_OK)
         return p->Erro("ffxFrameInterpolationPrepare", e), false;
     {
@@ -1153,6 +1194,11 @@ uint64_t Geracao::Gerados() const
     return p->gerados;
 }
 
+uint64_t Geracao::Encontros() const
+{
+    return p->encontros;
+}
+
 int Geracao::EstadoContexto() const
 {
     return p->estado;
@@ -1186,6 +1232,7 @@ bool Geracao::SemHud(ID3D12GraphicsCommandList* c, ID3D12Resource* fonte, D3D12_
         p->passesHud = passe + 1; // quantos passes o jogo tem (a procura corre todos)
     if (!p->sc || p->estado != 2 || !p->quadro || !c || !fonte || p->faseHud == 2 || passe != p->passeHud)
         return false;
+    std::lock_guard<std::mutex> lf(p->fiMx); // semHud e o estado deles tambem sao lidos por Gera (Confere)
     const D3D12_RESOURCE_DESC fd = fonte->GetDesc();
     if (fd.Width != p->telaW || fd.Height != p->telaH)
         return false;
@@ -1229,7 +1276,7 @@ bool Geracao::SemHud(ID3D12GraphicsCommandList* c, ID3D12Resource* fonte, D3D12_
     b[nb++] = transicao(alvo.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     c->ResourceBarrier(nb, b);
     p->semHudEstado[jogo] = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    std::lock_guard<std::mutex> lf(p->filaMx);
+    std::lock_guard<std::mutex> lq(p->filaMx);
     for (auto& f : p->fila)
         if (f.id == p->quadro)
             f.semHud = true, f.passeHud = passe;
@@ -1289,10 +1336,10 @@ double Geracao::FpsJogo() const
     return p->msJogo > 0 ? 1000.0 / p->msJogo : 0.0;
 }
 
-uint32_t Geracao::Ritmo(double& mediaMs, double& desvioMs, double& maxMs) const
+uint32_t Geracao::Ritmo(double& mediaMs, double& desvioMs, double& maxMs, double& p99Ms) const
 {
     uint32_t n = 0;
-    ffxDlss5RitmoDX12(&mediaMs, &desvioMs, &maxMs, &n);
+    ffxDlss5RitmoDX12(&mediaMs, &desvioMs, &maxMs, &n, &p99Ms);
     return n;
 }
 

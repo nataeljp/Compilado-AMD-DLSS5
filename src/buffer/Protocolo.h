@@ -30,10 +30,10 @@ namespace dlss5ov {
 // desconhecido ou absurdo (os shaders comparam o Z, como antes)
 inline float TanMeioFov(float fovY) { return fovY > 0.01f && fovY < 3.1f ? std::tan(0.5f * fovY) : 0.f; }
 
-constexpr uint32_t kVersao = 8; // 2: movimento RG32F acumulado ate a exportacao anterior; 3: espera (sem atraso);
+constexpr uint32_t kVersao = 9; // 2: movimento RG32F acumulado ate a exportacao anterior; 3: espera (sem atraso);
                                 // 4: quadros repetidos; 5: modo dos quadros gerados (repetido / mesclado);
                                 // 6: a luz de cada edicao (linear / logaritmica); 7: geracao de quadros da AMD;
-                                // 8: a geracao em uso, a taxa do monitor e o ritmo do jogo
+                                // 8: a geracao em uso, a taxa do monitor e o ritmo do jogo; 9: quadros na tela e 1% low
 constexpr uint32_t kSlotsEntrada = 2;
 constexpr uint32_t kSlotsEdicao = 3;
 
@@ -116,6 +116,9 @@ struct Cabecalho
     volatile uint32_t hzMonitor;        // jogo -> overlay: a taxa atual do monitor do jogo (0 = desconhecida)
     volatile uint32_t hzMaximo;         // jogo -> overlay: a maior taxa que o monitor aceita nesta resolucao
     volatile uint32_t fpsJogo10;        // jogo -> overlay: quadros do jogo por segundo x 10
+    volatile uint32_t apresentados10;   // jogo -> overlay: quadros na tela por segundo (reais + gerados) x 10, a cada 5 s
+    volatile uint32_t baixo1pct10;      // jogo -> overlay: "1% low" dos quadros na tela x 10 (1000 / o intervalo que so
+                                        // 1% das apresentacoes passa), a cada 5 s; 0 = sem apresentacoes da AMD
     volatile uint64_t consumido;        // ultimo quadro de entrada que o overlay ja copiou (o slot pode ser reescrito)
     volatile uint64_t lido[kSlotsEdicao]; // ultimo quadro do jogo que gravou leitura do slot de edicao k
     volatile uint64_t quadroJogo;         // ultimo quadro gravado pelo jogo

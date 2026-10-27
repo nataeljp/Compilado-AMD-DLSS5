@@ -2029,7 +2029,11 @@ RWTexture2D<float4> saida : register(u0);
                                                           hzMax)
                                                     : std::string("Limite o jogo a 30 ou 40 q/s para usar 3x ou 2x.")))
                 : e.geracaoPronta        ? (cfg.geracao >= 2 ? "geração " + std::to_string(pedida) +
-                                                                   "x ligada (swapchain da AMD em uso)"
+                                                                   "x ligada (swapchain da AMD em uso)" +
+                                                                   (fb.FpsTela() > 0
+                                                                        ? Fmt(": jogo %.0f q/s, tela %.0f q/s, 1%% low %.0f q/s",
+                                                                              fpsJogo, fb.FpsTela(), fb.Baixo1pct())
+                                                                        : std::string())
                                                              : std::string("geração desligada (liga aqui, sem reabrir o jogo)"))
                 : cfg.geracao < 2        ? ""
                 : instalacao == Instalacao::Outra

@@ -34,6 +34,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <random>
 #include <string>
 #include <thread>
 #include <vector>
@@ -209,8 +210,12 @@ int wmain(int argc, wchar_t** argv)
     semOverlay |= comoJogo; // o cliente e o da DLL injetada
     GetFileVersionInfoSizeW(L"kernel32.dll", nullptr); // importa a version.dll, como o TLOU2 (a DLL instalada com esse nome)
     bool depura = false, depuraGpu = false, adiantado = false;
+    // --apresenta-em-thread (com --como-jogo): o Present numa thread propria, como o TLOU2 -- o quadro seguinte (com o
+    // despacho do FSR e o preparo da geracao) e gravado enquanto o anterior esta no Present (que gera os quadros)
+    bool apresentaEmThread = false;
     for (int i = 3; i < argc; ++i)
     {
+        apresentaEmThread |= !wcscmp(argv[i], L"--apresenta-em-thread");
         adiantado |= !wcscmp(argv[i], L"--adiantado");
         depura |= !wcscmp(argv[i], L"--depura");
         depuraGpu |= !wcscmp(argv[i], L"--depura-gpu");
@@ -717,6 +722,31 @@ int wmain(int argc, wchar_t** argv)
     FILE* mapa = nullptr; // quadro do jogo -> quadro da sequencia (alinha a gravacao do overlay)
     _wfopen_s(&mapa, (saida + L"\\mapa.jsonl").c_str(), L"w");
     const auto passo = std::chrono::microseconds(1000000 / std::max(fps, 1));
+    // --apresenta-em-thread: a thread de apresentacao recebe o pedido e faz o Present; a de render so espera por ele antes
+    // de tocar no backbuffer seguinte
+    HANDLE pedeApresentar = CreateEventW(nullptr, FALSE, FALSE, nullptr), apresentou = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    std::atomic<bool> sairApresentador{false};
+    bool apresentando = false;
+    std::thread apresentador;
+    if (apresentaEmThread && sc)
+        apresentador = std::thread([&] {
+            // um atraso aleatorio de 0 a 3 ms antes do Present: as duas threads fora de fase, como no TLOU2. Mesmo assim o
+            // encontro e raro (2 em 2400 quadros, contados pelo modulo): o Present da AMD espera o ritmo das apresentacoes
+            // antes de chamar a geracao, e a thread de render espera esse Present antes do backbuffer seguinte
+            std::minstd_rand sorteio(12345);
+            while (WaitForSingleObject(pedeApresentar, INFINITE) == WAIT_OBJECT_0 && !sairApresentador)
+            {
+                const auto ate = std::chrono::steady_clock::now() + std::chrono::microseconds(sorteio() % 3000);
+                while (std::chrono::steady_clock::now() < ate)
+                    YieldProcessor();
+                sc->Present(0, 0);
+                SetEvent(apresentou);
+            }
+        });
+    auto esperaApresentacao = [&] {
+        if (apresentando)
+            WaitForSingleObject(apresentou, INFINITE), apresentando = false;
+    };
     auto proximo = std::chrono::steady_clock::now();
     const auto inicio = proximo;
     for (int v = 0; v < voltas; ++v)
@@ -896,6 +926,7 @@ int wmain(int argc, wchar_t** argv)
                 }
                 else
                     barreira(saidaTela.r.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                esperaApresentacao(); // o backbuffer seguinte so existe depois do Present do anterior
                 ComPtr<ID3D12Resource> bb;
                 sc->GetBuffer(sc->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&bb));
                 barreira(bb.Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST);
@@ -923,14 +954,24 @@ int wmain(int argc, wchar_t** argv)
                     fflush(stdout);
                     ExitProcess(9);
                 }
-                sc->Present(0, 0);
-                Ck(fila->Signal(cerca.Get(), ++valor), "signal");
+                if (apresentador.joinable())
+                {
+                    Ck(fila->Signal(cerca.Get(), ++valor), "signal"); // so a lista do quadro (o Present corre a parte)
+                    apresentando = true;
+                    SetEvent(pedeApresentar);
+                }
+                else
+                {
+                    sc->Present(0, 0);
+                    Ck(fila->Signal(cerca.Get(), ++valor), "signal");
+                }
                 cerca->SetEventOnCompletion(valor, ev);
                 WaitForSingleObject(ev, INFINITE);
                 if (trava && UINT64(v) * N + i + 1 == trava)
                     Sleep(8000);
                 if (recria && UINT64(v) * N + i + 1 == recria)
                 {
+                    esperaApresentacao();
                     // como um jogo que troca o modo de tela: solta o swapchain e cria outro na mesma janela
                     sc.Reset();
                     for (int k = 0; k < 20; ++k) // a DXGI solta a janela um pouco depois (como um jogo entre telas)
@@ -1043,6 +1084,13 @@ int wmain(int argc, wchar_t** argv)
             proximo += passo;
             std::this_thread::sleep_until(proximo);
         }
+    esperaApresentacao();
+    if (apresentador.joinable())
+    {
+        sairApresentador = true;
+        SetEvent(pedeApresentar);
+        apresentador.join();
+    }
     printf("quadros com a edicao do overlay: %llu de %u; gravados %llu\n", (unsigned long long)aplicados, N * voltas,
            (unsigned long long)gravados);
     const double seg = std::chrono::duration<double>(std::chrono::steady_clock::now() - inicio).count();

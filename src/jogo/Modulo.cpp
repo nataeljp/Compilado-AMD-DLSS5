@@ -687,18 +687,24 @@ void GeracaoQuadro(ffxContext* ctx, const ffxDispatchDescUpscale* u, ID3D12Graph
     {
         const double s = double(agora - marca) / 1000.0, jogo = double(g_quadrosGeracao - quadrosAntes) / s,
                      gerados = double(g_ger.Gerados() - antes) / s;
-        double media = 0, desvio = 0, maior = 0, aFrente = 0;
+        double media = 0, desvio = 0, maior = 0, p99 = 0, aFrente = 0;
         uint64_t aFrenteMax = 0, semPreparo = 0;
-        const uint32_t n = g_ger.Ritmo(media, desvio, maior);
+        const uint32_t n = g_ger.Ritmo(media, desvio, maior, p99);
+        if (cab) // o painel: quadros na tela (reais + gerados) e o 1% low destes 5 s (0 = sem apresentacoes da AMD)
+        {
+            cab->apresentados10 = uint32_t(double(n) / s * 10.0 + 0.5);
+            cab->baixo1pct10 = p99 > 0 ? uint32_t(10000.0 / p99 + 0.5) : 0;
+        }
         if (g_ger.Fila(aFrente, aFrenteMax, semPreparo))
             Log("geracao: o jogo prepara %.2f quadros a frente do que apresenta (maior %llu); %llu apresentacoes sem o "
                 "preparo do proprio quadro",
                 aFrente, (unsigned long long)aFrenteMax, (unsigned long long)semPreparo);
         Log("geracao: pedida %ux, em uso %ux (monitor %u Hz, aceita ate %u), jogo %.0f quadros/s (maior intervalo %.1f ms, "
             "%u engasgos > 2x a media) + %.0f gerados/s = %.0f apresentados/s | ritmo: %u apresentacoes, a cada %.2f ms "
-            "(desvio %.2f, maior %.2f) | N mudou %u vezes",
+            "(desvio %.2f, maior %.2f, 1%% low %.0f q/s) | N mudou %u vezes | preparo e geracao se encontraram %llu vezes",
             pedida >= 2 ? std::min<uint32_t>(pedida, 4) : 1, pedida >= 2 ? g_ger.EmUso() : 1, g_ger.Hz(), g_ger.HzMaximo(),
-            jogo, g_maiorMs, g_engasgos, gerados, jogo + gerados, n, media, desvio, maior, g_ger.TrocasN());
+            jogo, g_maiorMs, g_engasgos, gerados, jogo + gerados, n, media, desvio, maior, p99 > 0 ? 1000.0 / p99 : 0.0,
+            g_ger.TrocasN(), (unsigned long long)g_ger.Encontros());
         // as primeiras apresentacoes com geracao, uma a uma: qual quadro cada uma usou (Geracao::Rastro)
         const std::string rastro = g_ger.Rastro();
         for (size_t i = 0, f; i < rastro.size(); i = f + 1)
@@ -784,16 +790,32 @@ ffxReturnCode_t Configura(ffxContext* ctx, const ffxConfigureDescHeader* desc)
             fg = reinterpret_cast<ConfiguraGeracaoJogo*>(const_cast<ffxConfigureDescHeader*>(h));
     if (!fg)
         return oConfigura(ctx, desc);
+    // So desliga a do jogo quando a nossa pode gerar: o swapchain da AMD e o nosso (o modulo entrou antes do DirectX) e o
+    // contexto esta pronto. Injetado com o jogo ja aberto a nossa nao gera, e desligar a do jogo o deixava sem nenhuma.
+    // E o pedido do painel so muda a decisao depois de 1 s igual: no TLOU2 ele alternava entre 0x e 4x varias vezes por
+    // segundo (o overlay religando) e a geracao do jogo ligava e desligava junto
+    static uint32_t estavel = 0, visto = 0;
+    static ULONGLONG desde = 0;
     const uint32_t painel = GeracaoPedidaPainel();
-    const bool jogoQuer = fg->frameGenerationEnabled, tira = jogoQuer && painel >= 2;
+    const ULONGLONG agoraMs = GetTickCount64();
+    if (painel != visto)
+        visto = painel, desde = agoraMs;
+    if (agoraMs - desde >= 1000)
+        estavel = visto;
+    const bool nossaPode = g_ger.TemSwapchain() && g_ger.EstadoContexto() == 2;
+    const bool jogoQuer = fg->frameGenerationEnabled, tira = jogoQuer && nossaPode && estavel >= 2;
     g_fgDoJogo = jogoQuer && !tira;
-    static std::atomic<int> dito{-1}; // 0 a do jogo desligada, 1 ligada, 2 pedida pelo jogo e desligada pelo painel
-    const int agora = tira ? 2 : jogoQuer ? 1 : 0;
+    // 0 a do jogo desligada, 1 ligada, 2 pedida pelo jogo e desligada pelo painel, 3 ligada com o painel pedindo a nossa
+    // (que nao pode gerar)
+    static std::atomic<int> dito{-1};
+    const int agora = tira ? 2 : jogoQuer ? (estavel >= 2 && !nossaPode ? 3 : 1) : 0;
     if (dito.exchange(agora) != agora)
         Log(agora == 2   ? "o jogo pede a geracao FSR 3 dele, mas o painel pede %ux: a dele fica desligada e a nossa liga"
+            : agora == 3 ? "o jogo ligou a geracao FSR 3 dele; o painel pede %ux, mas a nossa nao pode gerar (o modulo "
+                           "entrou com o jogo aberto: instale na pasta do jogo e reabra) -- a do jogo segue ligada"
             : agora == 1 ? "o jogo ligou a geracao FSR 3 dele e o painel pede %ux: a nossa fica desligada"
                          : "a geracao FSR 3 do jogo esta desligada (painel: %ux)",
-            painel);
+            estavel);
     if (!tira)
         return oConfigura(ctx, desc);
     fg->frameGenerationEnabled = false; // so durante a chamada: o jogo nao ve a troca

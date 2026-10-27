@@ -27,6 +27,8 @@ class FonteBuffer
     uint32_t HzMonitor() const { return cab ? cab->hzMonitor : 0; }
     uint32_t HzMaximo() const { return cab ? cab->hzMaximo : 0; }
     double FpsJogo() const { return cab ? cab->fpsJogo10 / 10.0 : 0.0; }
+    double FpsTela() const { return cab ? cab->apresentados10 / 10.0 : 0.0; }  // reais + gerados (a cada 5 s)
+    double Baixo1pct() const { return cab ? cab->baixo1pct10 / 10.0 : 0.0; }  // 1% low dos quadros na tela
     void SemEspera() { if (cab) cab->espera = 0; } // overlay pausado: o jogo nao pode ficar esperando
     void DefineInvertida(bool inv) { if (cab) cab->profInvertidaUsada = inv ? 1u : 0u; }
     bool JogoVivo() const;
