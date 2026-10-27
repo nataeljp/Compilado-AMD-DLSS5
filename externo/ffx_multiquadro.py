@@ -388,4 +388,18 @@ tr(c, '''    entry.vsync                             = false; // DLSS5 Overlay: 
 ''', '''    entry.vsync                             = false; // DLSS5 Overlay: era bVsync (o do jogo)
     (void)bVsync;
 ''')
+# a fila do jogo fica segura enquanto o swapchain existe: dentro do swapchain de geracao do proprio jogo (o FSR 3 dele,
+# ligado no menu do TLOU2), a "fila do jogo" que o nosso recebe e a fila de apresentacao interna do de fora, que ele solta
+# antes de soltar o nosso -- o shutdown do nosso sinalizava nela ja morta (acesso invalido no fechamento, medido no sample
+# da AMD com a geracao dele ligada)
+tr(c, '''        presentInfo.gameQueue       = queue;
+''', '''        presentInfo.gameQueue       = queue;
+        queue->AddRef(); // DLSS5 Overlay: solta no fim do shutdown
+''')
+tr(c, '''        DeleteCriticalSection(&presentInfo.criticalSectionScheduledFrame);
+
+        std::ignore = SafeRelease(presentInfo.device);''', '''        DeleteCriticalSection(&presentInfo.criticalSectionScheduledFrame);
+
+        SafeRelease(presentInfo.gameQueue); // DLSS5 Overlay: segura desde a criacao
+        std::ignore = SafeRelease(presentInfo.device);''')
 print(f'ffx_multiquadro: {mudou} trechos aplicados')

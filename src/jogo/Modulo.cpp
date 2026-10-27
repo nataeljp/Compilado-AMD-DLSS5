@@ -55,6 +55,7 @@ void LigaDred();
 void ListaRecusada(ID3D12GraphicsCommandList* l, HRESULT r);
 void RelataEnvio(ID3D12CommandQueue* q, UINT n, ID3D12CommandList* const* l);
 void ConfereDispositivo();
+uint32_t GeracaoPedidaPainel();
 
 void Log(const char* f, ...)
 {
@@ -652,8 +653,8 @@ void GeracaoQuadro(ffxContext* ctx, const ffxDispatchDescUpscale* u, ID3D12Graph
     g.reset = u->reset;
     // o pedido do overlay conectado; sem ele (ainda nao ligou a captura, ou fechou), o do lancamento
     dlss5ov::Cabecalho* cab = g_clienteOk ? g_cli.Cab() : nullptr;
-    const uint32_t pedida = g_fgDoJogo ? 0u // a do proprio jogo esta ligada
-                            : cab && g_cli.OverlayVivo() ? cab->geracaoQuadros : g_geracaoLancamento;
+    const uint32_t pedida = g_fgDoJogo ? 0u // a do proprio jogo esta ligada (o painel pede 1x)
+                                       : GeracaoPedidaPainel();
     if (cab)
         cab->geracaoPronta = 1;
     static int estadoDito = 0;
@@ -760,17 +761,45 @@ ffxReturnCode_t CriaContexto(ffxContext* ctx, ffxCreateContextDescHeader* desc, 
     return r;
 }
 
+// a geracao que o painel do overlay pede (sem o overlay conectado, a do lancamento). O batimento do overlay atrasa sob
+// carga (rede grande + geracao a 4K): o pedido dele vale ate 5 s sem batimento -- com o limite de 1 s do OverlayVivo a
+// nossa geracao (e a do jogo, que ela desliga) ligava e desligava
+uint32_t GeracaoPedidaPainel()
+{
+    dlss5ov::Cabecalho* cab = g_clienteOk ? g_cli.Cab() : nullptr;
+    if (cab && cab->ativo && GetTickCount64() - cab->batimentoOverlay < 5000)
+        return cab->geracaoQuadros;
+    return g_geracaoLancamento;
+}
+
+// A escolha do painel manda. Com 2x-4x pedido no overlay, a geracao FSR 3 do proprio jogo fica desligada: a configuracao
+// que o jogo manda a AMD a cada quadro vai com frameGenerationEnabled = false (o swapchain de geracao dele so repassa os
+// quadros ao nosso, que gera). Com 1x, a do jogo segue como o jogo quiser e a nossa fica desligada (duas geracoes
+// empilhadas: travada e fantasma). No TLOU2 com a geracao dele ligada no menu, a nossa ficava desligada sem aviso
 ffxReturnCode_t Configura(ffxContext* ctx, const ffxConfigureDescHeader* desc)
 {
+    ConfiguraGeracaoJogo* fg = nullptr;
     for (auto* h = desc; h; h = h->pNext)
         if (h->type == 0x00020002u) // FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION
-        {
-            const bool liga = reinterpret_cast<const ConfiguraGeracaoJogo*>(h)->frameGenerationEnabled;
-            if (liga != g_fgDoJogo.exchange(liga))
-                Log("o jogo %s a geracao FSR 3 dele%s", liga ? "ligou" : "desligou",
-                    liga ? ": a nossa fica desligada enquanto isso (duas geracoes empilhadas: travada e fantasma)" : "");
-        }
-    return oConfigura(ctx, desc);
+            fg = reinterpret_cast<ConfiguraGeracaoJogo*>(const_cast<ffxConfigureDescHeader*>(h));
+    if (!fg)
+        return oConfigura(ctx, desc);
+    const uint32_t painel = GeracaoPedidaPainel();
+    const bool jogoQuer = fg->frameGenerationEnabled, tira = jogoQuer && painel >= 2;
+    g_fgDoJogo = jogoQuer && !tira;
+    static std::atomic<int> dito{-1}; // 0 a do jogo desligada, 1 ligada, 2 pedida pelo jogo e desligada pelo painel
+    const int agora = tira ? 2 : jogoQuer ? 1 : 0;
+    if (dito.exchange(agora) != agora)
+        Log(agora == 2   ? "o jogo pede a geracao FSR 3 dele, mas o painel pede %ux: a dele fica desligada e a nossa liga"
+            : agora == 1 ? "o jogo ligou a geracao FSR 3 dele e o painel pede %ux: a nossa fica desligada"
+                         : "a geracao FSR 3 do jogo esta desligada (painel: %ux)",
+            painel);
+    if (!tira)
+        return oConfigura(ctx, desc);
+    fg->frameGenerationEnabled = false; // so durante a chamada: o jogo nao ve a troca
+    const ffxReturnCode_t r = oConfigura(ctx, desc);
+    fg->frameGenerationEnabled = true;
+    return r;
 }
 
 ffxReturnCode_t Despacha(ffxContext* ctx, const ffxDispatchDescHeader* desc)
