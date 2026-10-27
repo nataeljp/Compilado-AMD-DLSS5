@@ -65,6 +65,9 @@ class ClienteBuffer
         uint64_t quadros = 0, exportados = 0, aplicados = 0, idadeSoma = 0, idadeMax = 0;
         uint64_t esperas = 0, estouros = 0;
         double esperaMs = 0, esperaMsMax = 0;
+        // por que a espera falhou: a edicao nao saiu no prazo, o overlay sem batimento (> 1 s), a cerca da GPU nao chegou
+        // depois do aviso; e os quadros que nao esperaram (espera suspensa depois de 2 falhas, ou overlay sem batimento)
+        uint64_t falhaPrazo = 0, falhaBatimento = 0, falhaCerca = 0, suspensos = 0, semBatimento = 0;
     } diag;
     // a lista do ultimo quadro ja foi submetida nesta fila: sinaliza a cerca do jogo (chamar depois do Execute/Present)
     void Submetido(ID3D12CommandQueue* q);

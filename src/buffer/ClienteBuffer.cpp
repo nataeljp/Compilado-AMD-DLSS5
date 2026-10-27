@@ -777,8 +777,13 @@ void ClienteBuffer::EsperaEdicao(std::mutex& mx)
         std::lock_guard<std::mutex> lk(mx);
         // so no quadro logo depois de uma exportacao (quadro = o ultimo gravado; este sera quadro + 1)
         if (!cab || !evPublica || !evCerca || !geracao || !cercaOverlay || !cab->espera || !cab->aplica ||
-            !OverlayVivo() || !ultimaExport || ultimaExport != quadro || quadro < esperaSuspensaAte)
+            !ultimaExport || ultimaExport != quadro)
             return;
+        if (!OverlayVivo() || quadro < esperaSuspensaAte) // devia esperar e nao espera: o log conta por que
+        {
+            ++(OverlayVivo() ? diag.suspensos : diag.semBatimento);
+            return;
+        }
         alvo = ultimaExport;
         cerca = cercaOverlay;
     }
@@ -787,6 +792,7 @@ void ClienteBuffer::EsperaEdicao(std::mutex& mx)
     QueryPerformanceCounter(&t0);
     const ULONGLONG fim = GetTickCount64() + kPrazoEspera;
     bool ok = false;
+    int falha = 0; // 1 prazo, 2 batimento, 3 cerca
     for (;;)
     {
         // a edicao de `alvo` (ou mais nova) publicada: o overlay grava a cerca antes do quadro
@@ -805,10 +811,14 @@ void ClienteBuffer::EsperaEdicao(std::mutex& mx)
             if (cerca->GetCompletedValue() < v && resta && SUCCEEDED(cerca->SetEventOnCompletion(v, evCerca)))
                 WaitForSingleObject(evCerca, resta);
             ok = cerca->GetCompletedValue() >= v;
+            falha = ok ? 0 : 3;
             break;
         }
         if (!resta || !OverlayVivo() || !cab->espera)
+        {
+            falha = !resta ? 1 : 2;
             break;
+        }
         WaitForSingleObject(evPublica, resta); // um disparo velho so faz conferir de novo
     }
     QueryPerformanceCounter(&t1);
@@ -819,6 +829,7 @@ void ClienteBuffer::EsperaEdicao(std::mutex& mx)
     ++diag.esperas;
     diag.esperaMs += ms;
     diag.esperaMsMax = std::max(diag.esperaMsMax, ms);
+    diag.falhaPrazo += falha == 1, diag.falhaBatimento += falha == 2, diag.falhaCerca += falha == 3;
     if (ok)
         estourosSeguidos = 0;
     else

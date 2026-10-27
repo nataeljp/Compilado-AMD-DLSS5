@@ -1090,13 +1090,15 @@ ffxReturnCode_t Despacha(ffxContext* ctx, const ffxDispatchDescHeader* desc)
             const auto& d = g_cli.diag;
             Log("FSR em %.1f s: %llu despachos (%.0f/s), render %ux%u..%ux%u, resets %llu, saida trocou %llu vezes, jitter max "
                 "%.2f | cliente: %llu quadros, %llu exportados, %llu com edicao (idade media %.1f, max %llu quadros) | "
-                "sem atraso: %llu esperas, media %.1f ms, max %.1f ms, %llu estouradas",
+                "sem atraso: %llu esperas, media %.1f ms, max %.1f ms, %llu estouradas (prazo %llu, batimento %llu, "
+                "cerca %llu); sem esperar: %llu suspensos, %llu sem batimento",
                 (agora - marca) / 1000.0, (unsigned long long)despachos, despachos * 1000.0 / double(agora - marca), rwMin,
                 rhMin, rwMax, rhMax, (unsigned long long)resets, (unsigned long long)trocasSaida, jMax,
                 (unsigned long long)d.quadros, (unsigned long long)d.exportados, (unsigned long long)d.aplicados,
                 d.aplicados ? double(d.idadeSoma) / double(d.aplicados) : 0.0, (unsigned long long)d.idadeMax,
                 (unsigned long long)d.esperas, d.esperas ? d.esperaMs / double(d.esperas) : 0.0, d.esperaMsMax,
-                (unsigned long long)d.estouros);
+                (unsigned long long)d.estouros, (unsigned long long)d.falhaPrazo, (unsigned long long)d.falhaBatimento,
+                (unsigned long long)d.falhaCerca, (unsigned long long)d.suspensos, (unsigned long long)d.semBatimento);
             g_cli.diag = {};
             despachos = resets = trocasSaida = 0;
             rwMin = rhMin = ~0u, rwMax = rhMax = 0;
