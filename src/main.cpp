@@ -219,10 +219,12 @@ struct App
         int passes = 1;
         bool redeCompleta = true;
     } sessao;
-    // os modos temporais do runtime so rodam com 1 passe (native_fast_history_policy.h)
+    // com o historico da propria rede os passes tambem valem: no caminho do runtime em uso (LmxxfNrSetPasses -> a rede HIP)
+    // so o ultimo passe recebe o historico e da a decisao dele (hip_reference_network.h, MultiPassRest); o limite de 1
+    // passe e do consumidor experimental (native_fast_history_policy.h), que este runtime nao usa
     Sessao SessaoDoConfig() const
     {
-        return {cfg.alturaRede, cfg.redePequena, temporalSessao > 0 ? 1 : cfg.rede.passes, cfg.rede.redeCompleta};
+        return {cfg.alturaRede, cfg.redePequena, cfg.rede.passes, cfg.rede.redeCompleta};
     }
     // ao ligar: os valores do painel (e do perfil do jogo) passam a valer; a rede e recriada so se a escolha grande /
     // pequena mudou ou se ela tinha sido desligada (emergencia de memoria)

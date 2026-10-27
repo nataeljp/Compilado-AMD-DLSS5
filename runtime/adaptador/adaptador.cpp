@@ -141,9 +141,15 @@ static bool variante(Ctx *c, std::wstring *saida) {
     return true;
 }
 
+static int32_t (*g_setPasses)(void *, uint32_t); // [overlay] LmxxfNrSetPasses do runtime v3 (passes sem recriar a rede)
+
 static int32_t constroi(Ctx *c) {
     if (c->inner) { U.Drain(c->inner); U.Destroy(c->inner); c->inner = nullptr; }
-    char v[8]; std::snprintf(v, sizeof v, "%d", c->passes);
+    // [overlay] com o runtime v3 a rede nasce com 1 passe e os passes vao pela chamada direta (LmxxfNrSetPasses) logo
+    // depois: o runtime recusa o historico da rede (DLSS5_TEMPORAL_MODE 1) com DLSS5_MULTI_PASS > 1 na criacao, mas a
+    // rede HIP roda 2-3 passes com ele (o historico entra so no ultimo passe)
+    const int passesAmbiente = g_setPasses ? 1 : c->passes;
+    char v[8]; std::snprintf(v, sizeof v, "%d", passesAmbiente);
     SetEnvironmentVariableA("DLSS5_MULTI_PASS", v);
     _putenv_s("DLSS5_MULTI_PASS", v);
     _putenv_s("DLSS5_MULTI_PASS_PREDICT", "0");
@@ -155,6 +161,7 @@ static int32_t constroi(Ctx *c) {
     if (r) return r;
     r = U.PrepareSession(c->inner);
     c->built = r == LMXXF_NR_OK;
+    c->passesSujo = c->passes != passesAmbiente; // os passes de verdade vao pela chamada direta no proximo quadro
     c->guiasSujas = c->guiaMov != nullptr; // sessao nova: as guias do host valem para ela tambem
     c->forcaSuja = c->forcaHist != 1.f;
     c->recorteSujo = c->recorteHist != 0.f;
@@ -166,7 +173,6 @@ extern "C" { static void loga(const char *fmt, ...); }
 static int32_t (*g_override)(void *, const char *, const float *, uint64_t); // [lmxxf2] LmxxfNrOverrideWeight do runtime
 // [overlay] runtime v3: blocos pulados e passes por quadro, sem recriar a rede (o ambiente o runtime so le ao carregar)
 static int32_t (*g_setSkip)(void *, const uint32_t *, uint32_t);
-static int32_t (*g_setPasses)(void *, uint32_t);
 static int32_t (*g_setGuias)(void *, void *, void *, uint32_t); // [overlay] LmxxfNrSetHistoryGuides do upstream
 static int32_t (*g_setForcaHist)(void *, float);                  // [overlay] LmxxfNrSetHistoryStrength do upstream
 static int32_t (*g_setRecorteHist)(void *, float);                // [overlay] LmxxfNrSetHistoryClip do upstream

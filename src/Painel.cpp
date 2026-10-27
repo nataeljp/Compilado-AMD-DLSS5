@@ -1474,12 +1474,10 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                 Marca("Rede completa (71 blocos)", &cfg.rede.redeCompleta,
                       "Desligado pula 3 blocos (42, 43, 46): ~1 ms mais rapido. So na rede grande.");
                 ImGui::EndDisabled();
-                ImGui::BeginDisabled(e.historicoAtivo);
                 DeslizadorInt("Passes", &cfg.rede.passes, 1, 3, "%d",
                               "Passes da rede por resposta (1 = normal); mais = mais forte e mais caro. Vale ao religar.", 1.f);
-                ImGui::EndDisabled();
                 if (!e.alvo.empty() && (cfg.redePequena != e.pequenaSessao || cfg.alturaRede != e.alturaSessao ||
-                                        (cfg.rede.passes != e.passesSessao && !e.historicoAtivo) ||
+                                        cfg.rede.passes != e.passesSessao ||
                                         cfg.rede.redeCompleta != e.completaSessao))
                 {
                     ImGui::PushTextWrapPos(0.f);
