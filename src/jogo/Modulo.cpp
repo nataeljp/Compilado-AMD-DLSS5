@@ -782,13 +782,9 @@ void GeracaoQuadro(ffxContext* ctx, const ffxDispatchDescUpscale* u, ID3D12Graph
         }
         char hud[200];
         const uint32_t capturas = semhud::Relato(hud, sizeof hud);
-        static uint64_t feitasAntes = 0, usadasAntes = 0;
-        uint64_t feitas = 0, usadas = 0;
-        g_ger.CopiasSemHud(feitas, usadas);
-        if (g_ger.UiDoJogoEmUso())
-            Log("geracao: UI do jogo em uso; a imagem sem HUD dele copiada no Present em %llu quadros, usada em %llu",
-                (unsigned long long)(feitas - feitasAntes), (unsigned long long)(usadas - usadasAntes));
-        feitasAntes = feitas, usadasAntes = usadas;
+        char ui[320];
+        if (g_ger.RelatoUi(ui, sizeof ui))
+            Log("geracao: %s", ui);
         if (pedida >= 2 && SemHudLigado() && !g_ger.UiDoJogoEmUso())
         {
             uint32_t passe = 0, passes = 0;
@@ -1077,19 +1073,6 @@ ffxReturnCode_t Despacha(ffxContext* ctx, const ffxDispatchDescHeader* desc)
 {
     if (desc && desc->type == FFX_API_DISPATCH_DESC_TYPE_UPSCALE)
         semhud::Fecha(); // o upscaler de um quadro novo: a janela do anterior acabou (mesmo sem Present no meio)
-    if (desc && desc->type == 0x00020004u) // FRAMEGENERATION_PREPARE: o frameID do jogo e a lista do quadro
-    {
-        struct PreparoJogo // ffxDispatchDescFrameGenerationPrepare (ffx_api/ffx_framegeneration.h) ate a lista
-        {
-            ffxDispatchDescHeader header;
-            uint64_t frameID;
-            uint32_t flags;
-            void* commandList;
-        };
-        const auto* pj = reinterpret_cast<const PreparoJogo*>(desc);
-        if (pj->commandList)
-            g_ger.QuadroDoJogo(pj->frameID, static_cast<ID3D12CommandList*>(pj->commandList));
-    }
     const ffxReturnCode_t r = oDespacha(ctx, desc);
     if (r != FFX_API_RETURN_OK || !desc || desc->type != FFX_API_DISPATCH_DESC_TYPE_UPSCALE)
         return r;

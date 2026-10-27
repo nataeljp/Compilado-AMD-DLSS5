@@ -127,25 +127,12 @@ struct Geracao::Impl
         uint64_t enviado;          // ordem de envio a GPU (0 = ainda nao)
         bool semHud;               // a imagem sem HUD deste quadro esta em semHud[id % kJogos]
         uint32_t passeHud;         // de qual passe do jogo ela veio
-        ID3D12Resource* semHudJogo = nullptr; // a imagem sem HUD que o jogo entregou para ESTE quadro (HUDLessColor)
-        uint32_t semHudJogoEstado = 0;
     };
-    // o frameID que o jogo da a geracao FSR 3 dele -> o nosso quadro (o preparo dele vem logo depois do despacho do FSR
-    // do mesmo quadro, na thread de render): a imagem sem HUD da configuracao dele vai para o quadro certo mesmo com a
-    // thread de render configurando o seguinte antes do Present deste (TLOU2)
-    struct
-    {
-        uint64_t jogo, nosso;
-    } mapaIds[8] = {};
-    uint64_t preparosJogo = 0;
-    struct
-    {
-        uint64_t jogo;
-        ID3D12Resource* r;
-        uint32_t estado;
-    } semHudPendente{}; // configurada antes do preparo do mesmo frameID
-    // escolhe na fila o preparado deste Present (Gera e AntesDoPresent, com filaMx): com os envios, o mais novo ja
-    // enviado a GPU; sem, o mais antigo gravado
+    // a UI do jogo vale de fato: textura ou callback, ou a imagem sem HUD com a copia dela funcionando (usada nas ultimas
+    // 30 apresentacoes) -- sem a copia a procura da imagem sem HUD volta, em vez de o HUD ser interpolado com a cena
+    bool UiAtiva() const { return uiEmUso && (!uiSoSemHud || chamadas - chamadaUltimaCopia < 30); }
+    // escolhe na fila o preparado deste Present (Gera, com filaMx): com os envios, o mais novo ja enviado a GPU; sem, o
+    // mais antigo gravado
     size_t EscolhePreparado() const
     {
         size_t k = fila.size();
@@ -158,24 +145,6 @@ struct Geracao::Impl
         else if (!fila.empty())
             k = 0;
         return k;
-    }
-    void PoeSemHudJogo(uint64_t nosso, ID3D12Resource* r, uint32_t estado) // com filaMx
-    {
-        for (auto& f : fila)
-            if (f.id == nosso)
-                f.semHudJogo = r, f.semHudJogoEstado = estado;
-    }
-    struct
-    {
-        uint64_t jogo;
-        ID3D12CommandList* lista;
-    } preparoAntes{}; // o preparo do jogo gravado antes do nosso (do FSR) na mesma lista
-    void LigaIdJogo(uint64_t jogo, uint64_t nosso) // com filaMx
-    {
-        ++preparosJogo;
-        mapaIds[preparosJogo % 8] = {jogo, nosso};
-        if (semHudPendente.r && semHudPendente.jogo == jogo)
-            PoeSemHudJogo(nosso, semHudPendente.r, semHudPendente.estado), semHudPendente = {};
     }
     uint64_t ordemEnvio = 0;
     bool comEnvio = false; // o gancho de ExecuteCommandLists informa os envios
@@ -198,8 +167,17 @@ struct Geracao::Impl
     } uiIds[8] = {};                   // o frameID do jogo de cada quadro nosso (o callback recebe o do jogo)
     bool uiTexturaNossa = false;       // a textura de UI do jogo esta registrada no nosso swapchain
     std::atomic<bool> uiEmUso{false};
-    // a copia da imagem sem HUD do jogo (HUDLessColor) feita no Present dele, na fila dele (AntesDoPresent)
+    // a imagem sem HUD do jogo (HUDLessColor, a da ultima configuracao) e a copia dela feita no Present dele, na fila
+    // dele (AntesDoPresent)
+    ID3D12Resource* uiSemHud = nullptr;
+    uint32_t uiSemHudEstado = 0;
+    bool uiSoSemHud = false; // a UI do jogo e so a imagem sem HUD: sem a copia, a nossa procura volta a valer
     Microsoft::WRL::ComPtr<ID3D12CommandQueue> filaJogo;
+    // por que o Present nao copiou (log de 5 s): chamadas, sem a imagem, fora do tamanho da tela, sem a fila do jogo
+    uint64_t antesChamadas = 0, antesSemImagem = 0, antesTamanho = 0, antesSemFila = 0;
+    UINT tamW = 0, tamH = 0;
+    DXGI_FORMAT tamFmt = DXGI_FORMAT_UNKNOWN;
+    uint64_t chamadaUltimaCopia = 0; // a apresentacao (chamadas) da ultima copia usada
     static constexpr int kCopias = 4;
     Microsoft::WRL::ComPtr<ID3D12Resource> copiaSemHud[kCopias];
     D3D12_RESOURCE_STATES copiaEstado[kCopias] = {};
@@ -207,8 +185,7 @@ struct Geracao::Impl
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> copiaLista;
     Microsoft::WRL::ComPtr<ID3D12Fence> copiaCerca;
     uint64_t copiaValor[kCopias] = {}, copiaN = 0, copiaUltimo = 0;
-    std::atomic<int> copiaPronta{-1}; // a copia do Present em curso (Gera a consome)
-    uint64_t copiaQuadro = 0;         // de qual quadro nosso ela e (Gera so a usa no mesmo)
+    std::atomic<int> copiaPronta{-1}; // a copia do Present em curso (Gera, chamada dentro dele, a consome)
     uint64_t copiasFeitas = 0, copiasUsadas = 0;
     static FfxErrorCode UiCallback(const FfxPresentCallbackDescription* d, void* ctx);
     std::atomic<uint64_t> encontros{0}; // vezes em que um esperou o outro em fiMx (sem a trava, os dois juntos no backend)
@@ -826,10 +803,11 @@ FfxErrorCode Geracao::Impl::Gera(const FfxFrameGenerationDispatchDescription* d,
     ID3D12Resource* semHud = nullptr;
     // a do proprio jogo (HUDLessColor), copiada no Present dele (AntesDoPresent): a deste quadro
     const int copia = p->copiaPronta.exchange(-1);
-    if (p->uiEmUso && copia >= 0 && p->copiaQuadro == pr.id)
+    if (p->uiEmUso && copia >= 0)
     {
         semHud = p->copiaSemHud[copia].Get();
         ++p->copiasUsadas;
+        p->chamadaUltimaCopia = p->chamadas;
     }
     else if (pr.semHud)
     {
@@ -838,7 +816,7 @@ FfxErrorCode Geracao::Impl::Gera(const FfxFrameGenerationDispatchDescription* d,
         if (p->faseHud == 1 && pr.passeHud == p->passeHud)
             semHud = copia;
     }
-    else if (!p->uiEmUso) // com a UI do jogo (textura ou callback) o quadro ja chega sem ela: nada a procurar
+    else if (!p->UiAtiva()) // com a UI do jogo (textura ou callback) o quadro ja chega sem ela: nada a procurar
         p->Falta();
     p->semHudApresentado = semHud ? semHud : pr.semHud ? p->semHud[pr.id % kJogos].Get() : nullptr;
     FfxResource corSemHud{};
@@ -1315,8 +1293,6 @@ bool Geracao::Quadro(ID3D12GraphicsCommandList* c, const QuadroGeracao& q, uint3
         std::lock_guard<std::mutex> lk(p->filaMx);
         ++p->despachosRastro;
         p->fila.push_back({p->quadro, pd, ListaNativa(c), 0, false, 0});
-        if (p->preparoAntes.lista && p->preparoAntes.lista == p->fila.back().lista) // o preparo do jogo veio antes
-            p->LigaIdJogo(p->preparoAntes.jogo, p->quadro), p->preparoAntes = {};
         while (p->fila.size() > size_t(kJogos)) // mais preparados que apresentacoes (o jogo pulou um Present): o velho sai
             p->fila.pop_front();
     }
@@ -1372,36 +1348,12 @@ void Geracao::UiJogo(const UiDoJogo& u, bool nossa)
         ffxRegisterFrameinterpolationUiResourceDX12(p->ffxSc, FfxResource{}, 0);
         p->uiTexturaNossa = false;
     }
-    // a imagem sem HUD vai para o quadro dela (o frameID da configuracao -> o nosso quadro do preparo do jogo) e e
-    // copiada no Present dele (AntesDoPresent). Sem o preparo do jogo visto, a do quadro mais novo (a configuracao vem
-    // depois do despacho do FSR do mesmo quadro)
-    std::lock_guard<std::mutex> lf(p->filaMx);
-    ID3D12Resource* r = nossa ? u.semHud : nullptr;
-    if (!p->preparosJogo)
-    {
-        p->PoeSemHudJogo(p->quadro, r, u.semHudEstado);
-        return;
-    }
-    for (const auto& m : p->mapaIds)
-        if (m.nosso && m.jogo == u.frameId)
-        {
-            p->PoeSemHudJogo(m.nosso, r, u.semHudEstado);
-            return;
-        }
-    p->semHudPendente = {u.frameId, r, u.semHudEstado}; // o preparo deste frameID ainda vem
-}
-
-// o preparo da geracao do jogo (frameID dele) na lista `c`: o nosso quadro e o preparado na mesma lista (o despacho do
-// FSR do mesmo quadro); com o preparo do jogo antes do FSR, o proximo preparado nela (Quadro)
-void Geracao::QuadroDoJogo(uint64_t idJogo, ID3D12CommandList* c)
-{
-    std::lock_guard<std::mutex> lk(p->mx);
-    std::lock_guard<std::mutex> lf(p->filaMx);
-    ID3D12CommandList* nativa = ListaNativa(c);
-    if (!p->fila.empty() && p->fila.back().lista == nativa)
-        p->LigaIdJogo(idJogo, p->fila.back().id);
-    else
-        p->preparoAntes = {idJogo, nativa};
+    // a imagem sem HUD: a da ultima configuracao, copiada no Present (AntesDoPresent) -- como o swapchain da AMD, que no
+    // Present usa a configuracao mais nova (o jogo configura o quadro antes do Present dele e o seguinte depois). Casar
+    // pelo frameID do preparo do jogo falhou no TLOU2: nenhuma copia (o preparo dele nao vem na lista do FSR)
+    p->uiSemHud = nossa ? u.semHud : nullptr;
+    p->uiSemHudEstado = u.semHudEstado;
+    p->uiSoSemHud = u.semHud && !u.textura && !u.callback;
 }
 
 void Geracao::CopiasSemHud(uint64_t& feitas, uint64_t& usadas) const
@@ -1422,24 +1374,29 @@ void Geracao::AntesDoPresent()
 {
     std::lock_guard<std::mutex> lk(p->mx);
     p->copiaPronta = -1;
-    if (!p->uiEmUso || !p->filaJogo || !p->dev || p->estado != 2)
+    if (!p->uiEmUso || !p->dev || p->estado != 2)
         return;
-    // o quadro deste Present (a mesma escolha de Gera, que vem logo depois dentro dele) e a imagem sem HUD dele
-    ID3D12Resource* fonte = nullptr;
-    uint32_t estadoFonte = 0;
-    uint64_t quadroFonte = 0;
-    {
-        std::lock_guard<std::mutex> lf(p->filaMx);
-        const size_t k = p->EscolhePreparado();
-        if (k < p->fila.size())
-            fonte = p->fila[k].semHudJogo, estadoFonte = p->fila[k].semHudJogoEstado, quadroFonte = p->fila[k].id;
-    }
+    ++p->antesChamadas;
+    ID3D12Resource* fonte = p->uiSemHud;
+    const uint32_t estadoFonte = p->uiSemHudEstado;
     if (!fonte)
+    {
+        ++p->antesSemImagem;
         return;
+    }
+    if (!p->filaJogo)
+    {
+        ++p->antesSemFila;
+        return;
+    }
     const D3D12_RESOURCE_DESC fd = fonte->GetDesc();
     if (fd.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || fd.Width != p->telaW || fd.Height != p->telaH ||
         fd.SampleDesc.Count != 1)
-        return; // a interpolacao quer a imagem no tamanho da tela
+    {
+        ++p->antesTamanho; // a interpolacao quer a imagem no tamanho da tela
+        p->tamW = UINT(fd.Width), p->tamH = fd.Height, p->tamFmt = fd.Format;
+        return;
+    }
     if (!p->copiaCerca)
     {
         if (FAILED(p->dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&p->copiaCerca))))
@@ -1508,14 +1465,35 @@ void Geracao::AntesDoPresent()
     p->filaJogo->ExecuteCommandLists(1, l);
     p->filaJogo->Signal(p->copiaCerca.Get(), ++p->copiaUltimo);
     p->copiaValor[k] = p->copiaUltimo;
-    p->copiaQuadro = quadroFonte;
     p->copiaPronta = k;
     ++p->copiasFeitas;
 }
 
 bool Geracao::UiDoJogoEmUso() const
 {
-    return p->uiEmUso;
+    return p->UiAtiva();
+}
+
+// o log de 5 s: a imagem sem HUD do jogo copiada (e por que nao) e usada desde o ultimo relato; false sem a UI do jogo
+bool Geracao::RelatoUi(char* b, size_t n)
+{
+    std::lock_guard<std::mutex> lk(p->mx);
+    if (!p->uiEmUso)
+        return false;
+    char tam[64] = "";
+    if (p->antesTamanho)
+        snprintf(tam, sizeof tam, " (%ux%u fmt %d, tela %ux%u)", p->tamW, p->tamH, int(p->tamFmt), p->telaW, p->telaH);
+    static uint64_t feitas0 = 0, usadas0 = 0;
+    snprintf(b, n,
+             "UI do jogo em uso%s; imagem sem HUD copiada no Present em %llu de %llu (sem imagem %llu, outro tamanho %llu%s, "
+             "sem a fila do jogo %llu), usada em %llu",
+             p->UiAtiva() ? "" : " mas SEM a copia (a procura da imagem sem HUD volta)",
+             (unsigned long long)(p->copiasFeitas - feitas0), (unsigned long long)p->antesChamadas,
+             (unsigned long long)p->antesSemImagem, (unsigned long long)p->antesTamanho, tam,
+             (unsigned long long)p->antesSemFila, (unsigned long long)(p->copiasUsadas - usadas0));
+    feitas0 = p->copiasFeitas, usadas0 = p->copiasUsadas;
+    p->antesChamadas = p->antesSemImagem = p->antesTamanho = p->antesSemFila = 0;
+    return true;
 }
 
 // o callback de UI do jogo (FfxApiPresentCallbackFunc, ffx_api/ffx_framegeneration.h) chamado pelo nosso swapchain, na

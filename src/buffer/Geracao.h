@@ -80,9 +80,7 @@ class Geracao
     // na fila do jogo, depois do quadro inteiro e antes do seguinte (a interpolacao le a copia: a do mesmo quadro)
     void FilaDoJogo(ID3D12CommandQueue* q);
     void AntesDoPresent();
-    // o preparo da geracao FSR 3 do jogo (o frameID dele, na lista em que foi gravado): liga o frameID da configuracao
-    // ao nosso quadro -- a imagem sem HUD de cada configuracao vai para o quadro dela
-    void QuadroDoJogo(uint64_t idJogo, ID3D12CommandList* c);
+    bool RelatoUi(char* b, size_t n); // o log de 5 s da UI do jogo (false sem ela)
     void CopiasSemHud(uint64_t& feitas, uint64_t& usadas) const; // desde o inicio (o log de 5 s mostra a diferenca)
     // um quadro gerado em `pasta` (os gerados, o real, a imagem sem HUD e os quadros como foram para a tela): a gravacao
     // do overlay pede, para ver o HUD dos gerados como sai no jogo

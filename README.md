@@ -160,8 +160,9 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
     HUD); em 4x 0,4–0,9% (só a UI semitransparente, onde a cena aparece por trás). Sem UI à parte vale a procura.
     A imagem sem HUD (o modo do TLOU2) é copiada para uma textura nossa no Present do swapchain de geração do jogo, na
     fila dele — depois do quadro inteiro e antes do seguinte; lida depois, na fila da interpolação, ela já podia ser a
-    do quadro seguinte. E cada uma vai para o quadro dela pelo frameID que o jogo dá ao preparo da geração dele (no
-    TLOU2 a thread de render configura o quadro seguinte antes do Present deste).
+    do quadro seguinte. É a da última configuração, como o swapchain da AMD faz no Present. Sem a cópia, a procura da
+    imagem sem HUD volta a valer (antes o HUD ficava interpolado com a cena: legenda borrada e ícone da arma dobrado
+    nos gerados da gravação do TLOU2); o log diz a cada 5 s quantas foram copiadas e por que não.
   - **O pedido do painel fica**: o último pedido de geração do painel vale até ele mandar outro. Antes, com o overlay
     parado (gravação segurando o laço dele, rede recriada ao mudar um ajuste, desligado e religado) a geração caía para
     a do lançamento por 1–2 s, a do jogo voltava e o HUD e o ritmo pulavam. Medido: overlay desligado 8 s no meio do
