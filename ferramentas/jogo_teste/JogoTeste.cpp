@@ -19,6 +19,7 @@
 //   modo de tela ou de HDR (o swapchain antigo preso por alguem faz a criacao falhar)
 #include "../../src/buffer/ClienteBuffer.h"
 #include "../../src/buffer/Geracao.h"
+#include "Cubo.h"
 #include "../../externo/ffx/ffx_api.h"
 #include "../../externo/ffx/ffx_upscale.h"
 #include "../../externo/ffx/dx12/ffx_api_dx12.h"
@@ -94,7 +95,21 @@ RWTexture2D<float4> sai : register(u0);
 [numthreads(8, 8, 1)] void CSTom(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= w || id.y >= h) return;
+    if (id.y < 4 && id.x < 64) // o numero do quadro (16 bits, 4 px cada) no canto: o despejo diz que instante e
+    {
+        sai[id.xy] = ((quadro >> (id.x / 4)) & 1) ? float4(1, 1, 1, 1) : float4(0, 0, 0, 1);
+        return;
+    }
     const float3 c = max(ent[id.xy].rgb, 0);
+    sai[id.xy] = float4(c / (1 + c), 1);
+}
+// a verdade (--verdade): a cena desenhada a 2x2 por pixel, a media e o mesmo tonemap
+[numthreads(8, 8, 1)] void CSVerdade(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= w || id.y >= h) return;
+    const uint2 p = id.xy * 2;
+    const float3 c = (max(ent[p].rgb, 0) + max(ent[p + uint2(1, 0)].rgb, 0) + max(ent[p + uint2(0, 1)].rgb, 0) +
+                      max(ent[p + uint2(1, 1)].rgb, 0)) * 0.25;
     sai[id.xy] = float4(c / (1 + c), 1);
 }
 float Ruido(uint2 p, uint q)
@@ -171,9 +186,15 @@ int wmain(int argc, wchar_t** argv)
         if (!wcscmp(argv[i], L"--pos"))
             pos = !wcscmp(argv[i + 1], L"grao") ? 1 : !wcscmp(argv[i + 1], L"nitidez") ? 2 : 0;
     }
-    bool hud = false;
+    bool hud = false, cubo = false;
+    UINT64 verdade = 0; // --verdade Q (com --cubo --hud): grava a verdade dos instantes Q-1 + k/N (k = 0..N) e sai
     for (int i = 3; i < argc; ++i)
+    {
         hud |= !wcscmp(argv[i], L"--hud");
+        cubo |= !wcscmp(argv[i], L"--cubo");
+        if (!wcscmp(argv[i], L"--verdade") && i + 1 < argc)
+            verdade = UINT64(_wtoi64(argv[i + 1]));
+    }
     for (int i = 3; i < argc; ++i)
     {
         raw |= !wcscmp(argv[i], L"--raw");
@@ -205,14 +226,17 @@ int wmain(int argc, wchar_t** argv)
             printf("depuracao do D3D12 indisponivel (falta .\\D3D12\\d3d12SDKLayers.dll)\n");
     }
     CreateDirectoryW(saida.c_str(), nullptr);
-    // tamanho e quadros: meta.jsonl
-    FILE* f = nullptr;
-    _wfopen_s(&f, (seq + L"\\meta.jsonl").c_str(), L"r");
-    if (!f)
-        return 2;
-    char linha[4096];
-    fgets(linha, sizeof linha, f);
-    fclose(f);
+    // tamanho e quadros: meta.jsonl (a cena 3D, --cubo: 1920x1080, 240 quadros por volta, a animacao segue entre voltas)
+    char linha[4096] = "{\"rede_w\": 1920, \"rede_h\": 1080, \"quadros\": 240, \"perto\": 0.1, \"fovY\": 1.0472}";
+    if (!cubo)
+    {
+        FILE* f = nullptr;
+        _wfopen_s(&f, (seq + L"\\meta.jsonl").c_str(), L"r");
+        if (!f)
+            return 2;
+        fgets(linha, sizeof linha, f);
+        fclose(f);
+    }
     auto num = [&](const char* k) {
         const char* p = strstr(linha, k);
         return p ? atof(p + strlen(k)) : 0.0;
@@ -279,7 +303,8 @@ int wmain(int argc, wchar_t** argv)
     Ck(dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&cerca)), "cerca");
     HANDLE ev = CreateEventW(nullptr, FALSE, FALSE, nullptr);
 
-    auto cria = [&](Tex& t, DXGI_FORMAT fmt, UINT bpp, bool uav, UINT tw, UINT th) {
+    auto cria = [&](Tex& t, DXGI_FORMAT fmt, UINT bpp, bool uav, UINT tw, UINT th,
+                    D3D12_RESOURCE_FLAGS extra = D3D12_RESOURCE_FLAG_NONE) {
         D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
         D3D12_RESOURCE_DESC rd{};
         rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -288,21 +313,32 @@ int wmain(int argc, wchar_t** argv)
         rd.DepthOrArraySize = rd.MipLevels = 1;
         rd.Format = fmt;
         rd.SampleDesc.Count = 1;
-        rd.Flags = uav ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_NONE;
+        rd.Flags = (uav ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_NONE) | extra;
         Ck(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&t.r)),
            "textura");
         dev->GetCopyableFootprints(&rd, 0, 1, 0, &t.fp, nullptr, nullptr, nullptr);
         t.bpp = bpp;
     };
     Tex cor, mov, prof, saidaFsr, saidaFsr2;
-    cria(cor, DXGI_FORMAT_R16G16B16A16_FLOAT, 8, true, W, H);
+    cria(cor, DXGI_FORMAT_R16G16B16A16_FLOAT, 8, true, W, H, cubo ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET : D3D12_RESOURCE_FLAG_NONE);
     if (comoJogo)
     {
         cria(saidaFsr, DXGI_FORMAT_R16G16B16A16_FLOAT, 8, true, W, H);
         cria(saidaFsr2, DXGI_FORMAT_R16G16B16A16_FLOAT, 8, true, W, H); // --adiantado: a do quadro anterior
     }
-    cria(mov, DXGI_FORMAT_R32G32_FLOAT, 8, false, RW, RH);
-    cria(prof, DXGI_FORMAT_R32_FLOAT, 4, false, RW, RH);
+    cria(mov, DXGI_FORMAT_R32G32_FLOAT, 8, false, RW, RH, cubo ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET : D3D12_RESOURCE_FLAG_NONE);
+    if (cubo) // profundidade de verdade: o alvo de profundidade, lido pelo FSR
+        cria(prof, DXGI_FORMAT_R32_TYPELESS, 4, false, RW, RH, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
+    else
+        cria(prof, DXGI_FORMAT_R32_FLOAT, 4, false, RW, RH);
+    CenaCubo cena;
+    if (cubo)
+    {
+        if (!cena.Cria(dev.Get()))
+            return 10;
+        cena.Alvos(0, cor.r.Get(), mov.r.Get(), prof.r.Get());
+        printf("cena 3D: cubos girando sobre piso e parede, camera balancando (profundidade e movimento de verdade)\n");
+    }
     // um buffer de upload para os tres e um de leitura para a saida
     const UINT64 tc = UINT64(cor.fp.Footprint.RowPitch) * H, tm = UINT64(mov.fp.Footprint.RowPitch) * RH,
                  tp = UINT64(prof.fp.Footprint.RowPitch) * RH;
@@ -353,7 +389,7 @@ int wmain(int argc, wchar_t** argv)
     Tex hudA, hudB;
     ComPtr<ID3D12DescriptorHeap> hudDesc, hudRtv;
     ComPtr<ID3D12RootSignature> hudRaizC, hudRaizG;
-    ComPtr<ID3D12PipelineState> hudTom, hudPos, hudDesenho;
+    ComPtr<ID3D12PipelineState> hudTom, hudPos, hudDesenho, hudVerdade;
     UINT hudInc = 0, hudIncRtv = 0;
     PfnFfxCreateContext fsrCria = nullptr;
     PfnFfxDispatch fsrDespacha = nullptr;
@@ -461,6 +497,7 @@ int wmain(int argc, wchar_t** argv)
             };
             computa("CSTom", hudTom);
             computa("CSPos", hudPos);
+            computa("CSVerdade", hudVerdade);
             auto vs = compila("VSHud", "vs_5_1"), ps = compila("PSHud", "ps_5_1");
             D3D12_GRAPHICS_PIPELINE_STATE_DESC g{};
             g.pRootSignature = hudRaizG.Get();
@@ -483,8 +520,9 @@ int wmain(int argc, wchar_t** argv)
             g.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
             g.SampleDesc.Count = 1;
             Ck(dev->CreateGraphicsPipelineState(&g, IID_PPV_ARGS(&hudDesenho)), "hud: pso do desenho");
-            // descritores: [0] SRV da saida do FSR, [1] UAV de A, [2] SRV de A, [3] UAV de B; alvos: A, B
-            D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 4, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0};
+            // descritores: [0] SRV da saida do FSR, [1] UAV de A, [2] SRV de A, [3] UAV de B, [4] SRV da verdade (2x2 por
+            // pixel, --verdade), [5] UAV de A; alvos: A, B
+            D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 6, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0};
             Ck(dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&hudDesc)), "hud: heap");
             D3D12_DESCRIPTOR_HEAP_DESC hr{D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 2, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 0};
             Ck(dev->CreateDescriptorHeap(&hr, IID_PPV_ARGS(&hudRtv)), "hud: heap de alvos");
@@ -507,6 +545,7 @@ int wmain(int argc, wchar_t** argv)
             dev->CreateUnorderedAccessView(hudA.r.Get(), nullptr, &uv, cpu(1));
             dev->CreateShaderResourceView(hudA.r.Get(), &sv, cpu(2));
             dev->CreateUnorderedAccessView(hudB.r.Get(), nullptr, &uv, cpu(3));
+            dev->CreateUnorderedAccessView(hudA.r.Get(), nullptr, &uv, cpu(5));
             D3D12_CPU_DESCRIPTOR_HANDLE rh = hudRtv->GetCPUDescriptorHandleForHeapStart();
             dev->CreateRenderTargetView(hudA.r.Get(), nullptr, rh);
             rh.ptr += hudIncRtv;
@@ -563,6 +602,112 @@ int wmain(int argc, wchar_t** argv)
         x.Transition = {r, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, a, b};
         cl->ResourceBarrier(1, &x);
     };
+    // --hud: o HUD, parado na tela, desenhado com mistura no alvo (0 = A, 1 = B, ja em RENDER_TARGET): painel
+    // translucido com 6 linhas de texto, barra de vida e mira
+    auto desenhaHud = [&](int alvo) {
+        D3D12_CPU_DESCRIPTOR_HANDLE rt = hudRtv->GetCPUDescriptorHandleForHeapStart();
+        rt.ptr += SIZE_T(alvo) * hudIncRtv;
+        cl->OMSetRenderTargets(1, &rt, FALSE, nullptr);
+        const D3D12_VIEWPORT vp{0, 0, float(W), float(H), 0, 1};
+        const D3D12_RECT sr{0, 0, LONG(W), LONG(H)};
+        cl->RSSetViewports(1, &vp);
+        cl->RSSetScissorRects(1, &sr);
+        cl->SetGraphicsRootSignature(hudRaizG.Get());
+        cl->SetPipelineState(hudDesenho.Get());
+        cl->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        float ret[10][8] = {{0.02f, 0.03f, 0.32f, 0.40f, 0.10f, 0.15f, 0.25f, 0.60f},
+                            {0.30f, 0.90f, 0.70f, 0.95f, 0.80f, 0.20f, 0.20f, 0.90f},
+                            {0.497f, 0.47f, 0.503f, 0.53f, 1, 1, 1, 1},
+                            {0.48f, 0.497f, 0.52f, 0.503f, 1, 1, 1, 1}};
+        for (int l = 0; l < 6; ++l)
+        {
+            const float y = 0.07f + 0.05f * float(l);
+            const float linha[8] = {0.04f, y, 0.20f + 0.015f * float(l), y + 0.018f, 0.9f, 0.9f, 0.9f, 1.f};
+            std::copy(linha, linha + 8, ret[4 + l]);
+        }
+        for (const auto& x : ret)
+        {
+            cl->SetGraphicsRoot32BitConstants(0, 8, x, 0);
+            cl->DrawInstanced(6, 1, 0, 0);
+        }
+    };
+    if (verdade && cubo && hud && comoJogo)
+    {
+        // --verdade Q: os instantes Q-1 + k/N (k = 0..N; N = --multi) desenhados a 2x2 por pixel, com o mesmo tonemap e
+        // o mesmo HUD, gravados como o despejo da geracao (verdade<k>_WxH_pitchP_fmt10.raw na pasta de saida)
+        Tex corV, movV, profV;
+        cria(corV, DXGI_FORMAT_R16G16B16A16_FLOAT, 8, false, 2 * W, 2 * H, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+        cria(movV, DXGI_FORMAT_R32G32_FLOAT, 8, false, 2 * W, 2 * H, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+        cria(profV, DXGI_FORMAT_R32_TYPELESS, 4, false, 2 * W, 2 * H, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
+        cena.Alvos(1, corV.r.Get(), movV.r.Get(), profV.r.Get());
+        D3D12_SHADER_RESOURCE_VIEW_DESC sv{};
+        sv.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        sv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        sv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        sv.Texture2D.MipLevels = 1;
+        D3D12_CPU_DESCRIPTOR_HANDLE hv = hudDesc->GetCPUDescriptorHandleForHeapStart();
+        hv.ptr += SIZE_T(4) * hudInc;
+        dev->CreateShaderResourceView(corV.r.Get(), &sv, hv);
+        D3D12_GPU_DESCRIPTOR_HANDLE gv = hudDesc->GetGPUDescriptorHandleForHeapStart();
+        gv.ptr += UINT64(4) * hudInc;
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
+        UINT64 total = 0;
+        const D3D12_RESOURCE_DESC da = hudA.r->GetDesc();
+        dev->GetCopyableFootprints(&da, 0, 1, 0, &fp, nullptr, nullptr, &total);
+        ComPtr<ID3D12Resource> leV;
+        buf(D3D12_HEAP_TYPE_READBACK, total, D3D12_RESOURCE_STATE_COPY_DEST, leV);
+        for (uint32_t k = 0; k <= multi; ++k)
+        {
+            const double t = (double(verdade) - 1.0 + double(k) / multi) / fps;
+            Ck(al->Reset(), "reset");
+            Ck(cl->Reset(al.Get(), nullptr), "list");
+            barreira(corV.r.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            barreira(movV.r.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            barreira(profV.r.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+            cena.Desenha(cl.Get(), 1, 2 * W, 2 * H, t, t - 1.0 / fps);
+            barreira(corV.r.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            barreira(movV.r.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COMMON);
+            barreira(profV.r.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_COMMON);
+            barreira(hudA.r.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            ID3D12DescriptorHeap* hs[] = {hudDesc.Get()};
+            cl->SetDescriptorHeaps(1, hs);
+            cl->SetComputeRootSignature(hudRaizC.Get());
+            const uint32_t kc[4] = {0, 0, W, H};
+            cl->SetComputeRoot32BitConstants(0, 4, kc, 0);
+            cl->SetPipelineState(hudVerdade.Get());
+            cl->SetComputeRootDescriptorTable(1, gv);
+            cl->Dispatch((W + 7) / 8, (H + 7) / 8, 1);
+            barreira(hudA.r.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            desenhaHud(0);
+            barreira(hudA.r.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
+            D3D12_TEXTURE_COPY_LOCATION dst{leV.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+            dst.PlacedFootprint = fp;
+            D3D12_TEXTURE_COPY_LOCATION src{hudA.r.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+            cl->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+            barreira(hudA.r.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
+            barreira(corV.r.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+            Ck(cl->Close(), "close");
+            ID3D12CommandList* lv[] = {cl.Get()};
+            fila->ExecuteCommandLists(1, lv);
+            Ck(fila->Signal(cerca.Get(), ++valor), "signal");
+            cerca->SetEventOnCompletion(valor, ev);
+            WaitForSingleObject(ev, INFINITE);
+            void* mp = nullptr;
+            Ck(leV->Map(0, nullptr, &mp), "map");
+            wchar_t arq[128];
+            swprintf(arq, 128, L"\\verdade%u_%ux%u_pitch%u_fmt10.raw", k, W, H, fp.Footprint.RowPitch);
+            FILE* fv = nullptr;
+            _wfopen_s(&fv, (saida + arq).c_str(), L"wb");
+            if (fv)
+            {
+                fwrite(mp, 1, size_t(fp.Footprint.RowPitch) * H, fv);
+                fclose(fv);
+            }
+            leV->Unmap(0, nullptr);
+        }
+        printf("verdade: quadro %llu, %u instantes gravados\n", (unsigned long long)verdade, multi + 1);
+        return 0;
+    }
     uint64_t aplicados = 0, gravados = 0;
     FILE* mapa = nullptr; // quadro do jogo -> quadro da sequencia (alinha a gravacao do overlay)
     _wfopen_s(&mapa, (saida + L"\\mapa.jsonl").c_str(), L"w");
@@ -573,6 +718,22 @@ int wmain(int argc, wchar_t** argv)
         for (UINT i = 0; i < N; ++i)
         {
             bomba();
+            if (cubo)
+            {
+                // a cena 3D no instante deste quadro (o tempo e o numero do quadro), com o movimento desde o anterior
+                const UINT64 qc = UINT64(v) * N + i;
+                Ck(al->Reset(), "reset");
+                Ck(cl->Reset(al.Get(), nullptr), "list");
+                barreira(cor.r.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_RENDER_TARGET);
+                barreira(mov.r.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_RENDER_TARGET);
+                barreira(prof.r.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+                cena.Desenha(cl.Get(), 0, RW, RH, double(qc) / fps, (double(qc) - 1.0) / fps);
+                barreira(cor.r.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                barreira(mov.r.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                barreira(prof.r.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            }
+            else
+            {
             unsigned char* m = nullptr;
             up->Map(0, nullptr, (void**)&m);
             le_arquivo(L"orig", i, m, 8, cor.fp.Footprint.RowPitch);
@@ -622,6 +783,7 @@ int wmain(int argc, wchar_t** argv)
             barreira(cor.r.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             barreira(mov.r.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             barreira(prof.r.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            }
             if (comoJogo)
             {
                 // o FSR do "jogo": entrada na resolucao de render, saida na da tela (a DLSS5Buffer.dll age aqui)
@@ -638,12 +800,13 @@ int wmain(int argc, wchar_t** argv)
                 u.depth = ffxApiGetResourceDX12(prof.r.Get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
                 u.motionVectors = ffxApiGetResourceDX12(mov.r.Get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
                 u.output = ffxApiGetResourceDX12(saidaAgora.r.Get(), FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
-                u.motionVectorScale = {render < 1.f ? float(RW) : 1.f, render < 1.f ? float(RH) : 1.f};
+                // o movimento em uv (a cena 3D e --render < 1) vira pixels pela escala; o da sequencia ja vem em pixels
+                u.motionVectorScale = {cubo || render < 1.f ? float(RW) : 1.f, cubo || render < 1.f ? float(RH) : 1.f};
                 u.renderSize = {RW, RH};
                 u.upscaleSize = {W, H};
                 u.frameTimeDelta = 1000.f / float(std::max(fps, 1));
                 u.preExposure = 1.f;
-                u.reset = i == 0 && (!laco || v == 0);
+                u.reset = cubo ? q == 0 : i == 0 && (!laco || v == 0); // a cena 3D segue entre as voltas
                 u.cameraNear = perto > 0.f ? perto : 0.1f;
                 u.cameraFar = 1e7f;
                 u.cameraFovAngleVertical = fovY > 0.f ? fovY : 1.0472f;
@@ -722,32 +885,7 @@ int wmain(int argc, wchar_t** argv)
                         alvoHud = &hudB;
                     }
                     barreira(alvoHud->r.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_RENDER_TARGET);
-                    D3D12_CPU_DESCRIPTOR_HANDLE rt = hudRtv->GetCPUDescriptorHandleForHeapStart();
-                    rt.ptr += alvoHud == &hudB ? hudIncRtv : 0;
-                    cl->OMSetRenderTargets(1, &rt, FALSE, nullptr);
-                    const D3D12_VIEWPORT vp{0, 0, float(W), float(H), 0, 1};
-                    const D3D12_RECT sr{0, 0, LONG(W), LONG(H)};
-                    cl->RSSetViewports(1, &vp);
-                    cl->RSSetScissorRects(1, &sr);
-                    cl->SetGraphicsRootSignature(hudRaizG.Get());
-                    cl->SetPipelineState(hudDesenho.Get());
-                    cl->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-                    // o HUD, parado na tela: painel translucido com 6 linhas de texto, barra de vida e mira
-                    float ret[10][8] = {{0.02f, 0.03f, 0.32f, 0.40f, 0.10f, 0.15f, 0.25f, 0.60f},
-                                        {0.30f, 0.90f, 0.70f, 0.95f, 0.80f, 0.20f, 0.20f, 0.90f},
-                                        {0.497f, 0.47f, 0.503f, 0.53f, 1, 1, 1, 1},
-                                        {0.48f, 0.497f, 0.52f, 0.503f, 1, 1, 1, 1}};
-                    for (int l = 0; l < 6; ++l)
-                    {
-                        const float y = 0.07f + 0.05f * float(l);
-                        const float linha[8] = {0.04f, y, 0.20f + 0.015f * float(l), y + 0.018f, 0.9f, 0.9f, 0.9f, 1.f};
-                        std::copy(linha, linha + 8, ret[4 + l]);
-                    }
-                    for (const auto& x : ret)
-                    {
-                        cl->SetGraphicsRoot32BitConstants(0, 8, x, 0);
-                        cl->DrawInstanced(6, 1, 0, 0);
-                    }
+                    desenhaHud(alvoHud == &hudB ? 1 : 0);
                     barreira(alvoHud->r.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
                     final_ = alvoHud->r.Get();
                 }
