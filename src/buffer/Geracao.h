@@ -76,6 +76,17 @@ class Geracao
     // no lugar da dele (o modulo tira a UI do swapchain do jogo); sem isso a UI volta a ser do jogo
     void UiJogo(const UiDoJogo& u, bool nossa);
     bool UiDoJogoEmUso() const; // a UI vem do jogo: a procura da imagem sem HUD fica parada
+    // a fila do jogo (a do swapchain de geracao dele) e o Present dele: a imagem sem HUD que ele entrega e copiada ali,
+    // na fila do jogo, depois do quadro inteiro e antes do seguinte (a interpolacao le a copia: a do mesmo quadro)
+    void FilaDoJogo(ID3D12CommandQueue* q);
+    void AntesDoPresent();
+    // o preparo da geracao FSR 3 do jogo (o frameID dele, na lista em que foi gravado): liga o frameID da configuracao
+    // ao nosso quadro -- a imagem sem HUD de cada configuracao vai para o quadro dela
+    void QuadroDoJogo(uint64_t idJogo, ID3D12CommandList* c);
+    void CopiasSemHud(uint64_t& feitas, uint64_t& usadas) const; // desde o inicio (o log de 5 s mostra a diferenca)
+    // um quadro gerado em `pasta` (os gerados, o real, a imagem sem HUD e os quadros como foram para a tela): a gravacao
+    // do overlay pede, para ver o HUD dos gerados como sai no jogo
+    void DespejaEm(const char* pasta);
     // ExecuteCommandLists do jogo (gancho do modulo): a lista com o preparo de um quadro foi para a GPU. A apresentacao
     // usa o preparo mais novo ja enviado -- o motor pode gravar o quadro seguinte antes do Present deste, mas so o envia
     // depois. Sem esta informacao (jogo de teste direto), a ordem de gravacao

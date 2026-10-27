@@ -102,6 +102,31 @@ struct RegistraUiJogo // ffxConfigureDescFrameGenerationSwapChainRegisterUiResou
     FfxApiResource uiResource;
     uint32_t flags;
 };
+// a criacao do swapchain de geracao do jogo (ffx_api/dx12/ffx_api_dx12.h: ...SWAPCHAIN_WRAP/NEW/FOR_HWND_DX12)
+struct SwapGeracaoEmbrulha // 0x30001
+{
+    ffxCreateContextDescHeader header;
+    IDXGISwapChain4** swapchain;
+    ID3D12CommandQueue* gameQueue;
+};
+struct SwapGeracaoNovo // 0x30005
+{
+    ffxCreateContextDescHeader header;
+    IDXGISwapChain4** swapchain;
+    DXGI_SWAP_CHAIN_DESC* desc;
+    IDXGIFactory* dxgiFactory;
+    ID3D12CommandQueue* gameQueue;
+};
+struct SwapGeracaoJanela // 0x30006
+{
+    ffxCreateContextDescHeader header;
+    IDXGISwapChain4** swapchain;
+    HWND hwnd;
+    DXGI_SWAP_CHAIN_DESC1* desc;
+    DXGI_SWAP_CHAIN_FULLSCREEN_DESC* fullscreenDesc;
+    IDXGIFactory* dxgiFactory;
+    ID3D12CommandQueue* gameQueue;
+};
 PfnFfxDestroyContext oDestroiContexto = nullptr;
 // a UI que o jogo entrega a geracao FSR 3 dele: vai para o nosso swapchain enquanto a nossa gera no lugar (Configura)
 std::mutex g_mxUi;
@@ -678,6 +703,27 @@ void GeracaoQuadro(ffxContext* ctx, const ffxDispatchDescUpscale* u, ID3D12Graph
         cab->geracaoPronta = 1;
     static int estadoDito = 0;
     g_ger.Quadro(lista, g, std::min<uint32_t>(pedida, 4));
+    {
+        // a gravacao do overlay (Ctrl+Shift+G) pede um quadro gerado na pasta dela: arquivo em %TEMP% com o nosso pid
+        static ULONGLONG visto = 0;
+        if (GetTickCount64() - visto >= 1000)
+        {
+            visto = GetTickCount64();
+            wchar_t tmp[MAX_PATH], arq[MAX_PATH + 40];
+            GetTempPathW(MAX_PATH, tmp);
+            swprintf(arq, MAX_PATH + 40, L"%sDLSS5Ov.despejo.%lu", tmp, GetCurrentProcessId());
+            FILE* f = nullptr;
+            if (!_wfopen_s(&f, arq, L"rb") && f)
+            {
+                char pasta[1024] = {};
+                fread(pasta, 1, sizeof pasta - 1, f);
+                fclose(f);
+                DeleteFileW(arq);
+                g_ger.DespejaEm(pasta);
+                Log("geracao: um quadro gerado sera gravado em %s (pedido da gravacao do overlay)", pasta);
+            }
+        }
+    }
     // a procura da imagem sem HUD so quando o jogo nao entrega a UI dele (Configura): com ela, o quadro ja chega sem UI
     g_querSemHud = SemHudLigado() && pedida >= 2 && g_ger.EmUso() >= 2 && !g_ger.UiDoJogoEmUso();
     ++g_quadrosGeracao;
@@ -736,7 +782,14 @@ void GeracaoQuadro(ffxContext* ctx, const ffxDispatchDescUpscale* u, ID3D12Graph
         }
         char hud[200];
         const uint32_t capturas = semhud::Relato(hud, sizeof hud);
-        if (pedida >= 2 && SemHudLigado())
+        static uint64_t feitasAntes = 0, usadasAntes = 0;
+        uint64_t feitas = 0, usadas = 0;
+        g_ger.CopiasSemHud(feitas, usadas);
+        if (g_ger.UiDoJogoEmUso())
+            Log("geracao: UI do jogo em uso; a imagem sem HUD dele copiada no Present em %llu quadros, usada em %llu",
+                (unsigned long long)(feitas - feitasAntes), (unsigned long long)(usadas - usadasAntes));
+        feitasAntes = feitas, usadasAntes = usadas;
+        if (pedida >= 2 && SemHudLigado() && !g_ger.UiDoJogoEmUso())
         {
             uint32_t passe = 0, passes = 0;
             double igual = 0, troca = 0;
@@ -760,6 +813,52 @@ void GeracaoQuadro(ffxContext* ctx, const ffxDispatchDescUpscale* u, ID3D12Graph
     }
 }
 
+// O Present do swapchain de geracao do jogo (o FSR 3 dele, por fora do nosso): a imagem sem HUD que o jogo entrega
+// (HUDLessColor) e copiada ali, na fila do jogo -- depois de todo o quadro e antes do seguinte. Lida depois, na fila de
+// interpolacao, ela ja podia ser a do quadro seguinte (o jogo reescreve a mesma textura, ou alterna duas): o HUD, as
+// marcacoes e as legendas nao conferiam com o quadro e eram interpolados com a cena
+using PfnPresenta = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT);
+using PfnPresenta1 = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain1*, UINT, UINT, const DXGI_PRESENT_PARAMETERS*);
+PfnPresenta oPresentaJogo = nullptr;
+PfnPresenta1 oPresenta1Jogo = nullptr;
+
+HRESULT STDMETHODCALLTYPE PresentaJogo(IDXGISwapChain* sc, UINT sync, UINT flags)
+{
+    if (!(flags & DXGI_PRESENT_TEST))
+    {
+        semhud::Proprio eu; // a lista da copia e nossa (os ganchos de lista nao a contam)
+        g_ger.AntesDoPresent();
+    }
+    return oPresentaJogo(sc, sync, flags);
+}
+
+HRESULT STDMETHODCALLTYPE Presenta1Jogo(IDXGISwapChain1* sc, UINT sync, UINT flags, const DXGI_PRESENT_PARAMETERS* p)
+{
+    if (!(flags & DXGI_PRESENT_TEST))
+    {
+        semhud::Proprio eu;
+        g_ger.AntesDoPresent();
+    }
+    return oPresenta1Jogo(sc, sync, flags, p);
+}
+
+void EngancheSwapchainDoJogo(IDXGISwapChain4* sc, ID3D12CommandQueue* fila)
+{
+    g_ger.FilaDoJogo(fila);
+    if (oPresentaJogo) // a classe do swapchain do jogo e uma so: os proximos (troca de modo de tela) ja passam pelo gancho
+        return;
+    void** vt = *reinterpret_cast<void***>(sc);
+    oPresentaJogo = reinterpret_cast<PfnPresenta>(vt[8]);
+    oPresenta1Jogo = reinterpret_cast<PfnPresenta1>(vt[22]);
+    DetourTransactionBegin();
+    DetourUpdateThread(GetCurrentThread());
+    DetourAttach(reinterpret_cast<PVOID*>(&oPresentaJogo), reinterpret_cast<PVOID>(&PresentaJogo));
+    DetourAttach(reinterpret_cast<PVOID*>(&oPresenta1Jogo), reinterpret_cast<PVOID>(&Presenta1Jogo));
+    const LONG r = DetourTransactionCommit();
+    Log("geracao: Present do swapchain de geracao do jogo enganchado (a imagem sem HUD copiada nele): %s",
+        r == NO_ERROR ? "ok" : "falhou");
+}
+
 ffxReturnCode_t CriaContexto(ffxContext* ctx, ffxCreateContextDescHeader* desc, const ffxAllocationCallbacks* mem)
 {
     bool fgSwap = false, fg = false;
@@ -773,6 +872,22 @@ ffxReturnCode_t CriaContexto(ffxContext* ctx, ffxCreateContextDescHeader* desc, 
     t_fgSwapDoJogo = fgSwap;
     const ffxReturnCode_t r = oCriaContexto(ctx, desc, mem);
     t_fgSwapDoJogo = false;
+    if (r == FFX_API_RETURN_OK && fgSwap)
+        for (auto* h = desc; h; h = h->pNext)
+        {
+            // o swapchain de geracao do jogo e a fila dele: no Present dele a imagem sem HUD do quadro e copiada na fila do
+            // jogo (EngancheSwapchainDoJogo)
+            IDXGISwapChain4** sc = nullptr;
+            ID3D12CommandQueue* fila = nullptr;
+            if (h->type == 0x30001u)
+                sc = reinterpret_cast<SwapGeracaoEmbrulha*>(h)->swapchain, fila = reinterpret_cast<SwapGeracaoEmbrulha*>(h)->gameQueue;
+            else if (h->type == 0x30005u)
+                sc = reinterpret_cast<SwapGeracaoNovo*>(h)->swapchain, fila = reinterpret_cast<SwapGeracaoNovo*>(h)->gameQueue;
+            else if (h->type == 0x30006u)
+                sc = reinterpret_cast<SwapGeracaoJanela*>(h)->swapchain, fila = reinterpret_cast<SwapGeracaoJanela*>(h)->gameQueue;
+            if (fila && sc && *sc)
+                EngancheSwapchainDoJogo(*sc, fila);
+        }
     if (r == FFX_API_RETURN_OK && ctx)
         for (auto* h = desc; h; h = h->pNext)
             if (h->type == FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE)
@@ -787,15 +902,18 @@ ffxReturnCode_t CriaContexto(ffxContext* ctx, ffxCreateContextDescHeader* desc, 
     return r;
 }
 
-// a geracao que o painel do overlay pede (sem o overlay conectado, a do lancamento). O batimento do overlay atrasa sob
-// carga (rede grande + geracao a 4K): o pedido dele vale ate 5 s sem batimento -- com o limite de 1 s do OverlayVivo a
-// nossa geracao (e a do jogo, que ela desliga) ligava e desligava
+// a geracao que o painel do overlay pede. Vale o ultimo pedido do painel ate ele mandar outro: o overlay parado (gravacao
+// segurando o laco dele, a rede recriada ao trocar um ajuste, desligado e religado) nao muda a geracao -- antes ela caia
+// para a do lancamento (desligada) por 1-2 s, a do jogo voltava e o HUD e o ritmo pulavam. Antes do primeiro pedido, o do
+// lancamento
 uint32_t GeracaoPedidaPainel()
 {
+    static std::atomic<uint32_t> ultimo{UINT32_MAX};
     dlss5ov::Cabecalho* cab = g_clienteOk ? g_cli.Cab() : nullptr;
-    if (cab && cab->ativo && GetTickCount64() - cab->batimentoOverlay < 5000)
-        return cab->geracaoQuadros;
-    return g_geracaoLancamento;
+    if (cab && cab->ativo && GetTickCount64() - cab->batimentoOverlay < 1000)
+        ultimo = cab->geracaoQuadros;
+    const uint32_t u = ultimo;
+    return u != UINT32_MAX ? u : g_geracaoLancamento;
 }
 
 // A escolha do painel manda. Com 2x-4x pedido no overlay, a geracao FSR 3 do proprio jogo fica desligada: a configuracao
@@ -959,6 +1077,19 @@ ffxReturnCode_t Despacha(ffxContext* ctx, const ffxDispatchDescHeader* desc)
 {
     if (desc && desc->type == FFX_API_DISPATCH_DESC_TYPE_UPSCALE)
         semhud::Fecha(); // o upscaler de um quadro novo: a janela do anterior acabou (mesmo sem Present no meio)
+    if (desc && desc->type == 0x00020004u) // FRAMEGENERATION_PREPARE: o frameID do jogo e a lista do quadro
+    {
+        struct PreparoJogo // ffxDispatchDescFrameGenerationPrepare (ffx_api/ffx_framegeneration.h) ate a lista
+        {
+            ffxDispatchDescHeader header;
+            uint64_t frameID;
+            uint32_t flags;
+            void* commandList;
+        };
+        const auto* pj = reinterpret_cast<const PreparoJogo*>(desc);
+        if (pj->commandList)
+            g_ger.QuadroDoJogo(pj->frameID, static_cast<ID3D12CommandList*>(pj->commandList));
+    }
     const ffxReturnCode_t r = oDespacha(ctx, desc);
     if (r != FFX_API_RETURN_OK || !desc || desc->type != FFX_API_DISPATCH_DESC_TYPE_UPSCALE)
         return r;

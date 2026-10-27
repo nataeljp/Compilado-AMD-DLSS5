@@ -158,6 +158,16 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
     sample da AMD com a geração dele ligada (o mesmo arranjo do TLOU2), câmera girando, a procura desligada: o módulo
     antigo deixava 42% dos pixels da UI diferentes nos gerados; agora 0,1% (callback), 0,1% (textura), 0,0% (imagem sem
     HUD); em 4x 0,4–0,9% (só a UI semitransparente, onde a cena aparece por trás). Sem UI à parte vale a procura.
+    A imagem sem HUD (o modo do TLOU2) é copiada para uma textura nossa no Present do swapchain de geração do jogo, na
+    fila dele — depois do quadro inteiro e antes do seguinte; lida depois, na fila da interpolação, ela já podia ser a
+    do quadro seguinte. E cada uma vai para o quadro dela pelo frameID que o jogo dá ao preparo da geração dele (no
+    TLOU2 a thread de render configura o quadro seguinte antes do Present deste).
+  - **O pedido do painel fica**: o último pedido de geração do painel vale até ele mandar outro. Antes, com o overlay
+    parado (gravação segurando o laço dele, rede recriada ao mudar um ajuste, desligado e religado) a geração caía para
+    a do lançamento por 1–2 s, a do jogo voltava e o HUD e o ritmo pulavam. Medido: overlay desligado 8 s no meio do
+    sample, a geração seguiu em 3x.
+  - **Gravação (Ctrl+Shift+G) com a geração**: o módulo grava junto, na pasta da gravação, um quadro gerado — os
+    gerados, o real, a imagem sem HUD e os quadros como foram para a tela (`tela_*`, com a UI composta).
   - **N que desce por prova**: preso num N alto (no TLOU2 a rede a 4K deixou o jogo a 13 q/s, o N foi a 4 e o
     limitador o segurou em 29 q/s depois de ele poder fazer ~50 — mais atraso de entrada à toa), um N a menos é tentado
     quando o trabalho do jogo diz que ele enche a tela com 5% de folga; em 3 s a tela cheia confirma, senão volta e a

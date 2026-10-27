@@ -2164,6 +2164,22 @@ RWTexture2D<float4> saida : register(u0);
                     }
                 }
             });
+        // captura de buffer com a geracao: o modulo do jogo grava um quadro gerado na mesma pasta (os gerados, o real, a
+        // imagem sem HUD e os quadros como foram para a tela) -- o pedido e um arquivo em %TEMP% com o pid do jogo
+        if (buffer && pidBuffer)
+        {
+            wchar_t tmp[MAX_PATH], arq[MAX_PATH + 40];
+            GetTempPathW(MAX_PATH, tmp);
+            swprintf(arq, MAX_PATH + 40, L"%sDLSS5Ov.despejo.%lu", tmp, (unsigned long)pidBuffer);
+            FILE* f = nullptr;
+            _wfopen_s(&f, arq, L"wb");
+            if (f)
+            {
+                const std::string u = Utf8(pastaGravacao);
+                fwrite(u.data(), 1, u.size(), f);
+                fclose(f);
+            }
+        }
         MessageBeep(MB_OK);
         Log("gravacao", Fmt("gravando %d quadros (rede %ux%u) em %s", gravando, fed.w, fed.h, Utf8(pastaGravacao).c_str()));
     }

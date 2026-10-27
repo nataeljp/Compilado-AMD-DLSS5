@@ -54,11 +54,6 @@ enum
 
 D3D12_RESOURCE_STATES D3D(FfxResourceStates s); // abaixo
 
-bool Despejando() // teste: DLSS5_GERACAO_DUMP (Impl::Despejo)
-{
-    static const bool sim = std::getenv("DLSS5_GERACAO_DUMP") != nullptr;
-    return sim;
-}
 
 bool SemLimite() // testes de ritmo: sem o limite pela taxa do monitor nem o limitador
 {
@@ -132,9 +127,56 @@ struct Geracao::Impl
         uint64_t enviado;          // ordem de envio a GPU (0 = ainda nao)
         bool semHud;               // a imagem sem HUD deste quadro esta em semHud[id % kJogos]
         uint32_t passeHud;         // de qual passe do jogo ela veio
-        ID3D12Resource* semHudJogo = nullptr; // a imagem sem HUD que o proprio jogo entrega (HUDLessColor), se houver
+        ID3D12Resource* semHudJogo = nullptr; // a imagem sem HUD que o jogo entregou para ESTE quadro (HUDLessColor)
         uint32_t semHudJogoEstado = 0;
     };
+    // o frameID que o jogo da a geracao FSR 3 dele -> o nosso quadro (o preparo dele vem logo depois do despacho do FSR
+    // do mesmo quadro, na thread de render): a imagem sem HUD da configuracao dele vai para o quadro certo mesmo com a
+    // thread de render configurando o seguinte antes do Present deste (TLOU2)
+    struct
+    {
+        uint64_t jogo, nosso;
+    } mapaIds[8] = {};
+    uint64_t preparosJogo = 0;
+    struct
+    {
+        uint64_t jogo;
+        ID3D12Resource* r;
+        uint32_t estado;
+    } semHudPendente{}; // configurada antes do preparo do mesmo frameID
+    // escolhe na fila o preparado deste Present (Gera e AntesDoPresent, com filaMx): com os envios, o mais novo ja
+    // enviado a GPU; sem, o mais antigo gravado
+    size_t EscolhePreparado() const
+    {
+        size_t k = fila.size();
+        if (comEnvio)
+        {
+            for (size_t i = 0; i < fila.size(); ++i)
+                if (fila[i].enviado && (k == fila.size() || fila[i].id > fila[k].id))
+                    k = i;
+        }
+        else if (!fila.empty())
+            k = 0;
+        return k;
+    }
+    void PoeSemHudJogo(uint64_t nosso, ID3D12Resource* r, uint32_t estado) // com filaMx
+    {
+        for (auto& f : fila)
+            if (f.id == nosso)
+                f.semHudJogo = r, f.semHudJogoEstado = estado;
+    }
+    struct
+    {
+        uint64_t jogo;
+        ID3D12CommandList* lista;
+    } preparoAntes{}; // o preparo do jogo gravado antes do nosso (do FSR) na mesma lista
+    void LigaIdJogo(uint64_t jogo, uint64_t nosso) // com filaMx
+    {
+        ++preparosJogo;
+        mapaIds[preparosJogo % 8] = {jogo, nosso};
+        if (semHudPendente.r && semHudPendente.jogo == jogo)
+            PoeSemHudJogo(nosso, semHudPendente.r, semHudPendente.estado), semHudPendente = {};
+    }
     uint64_t ordemEnvio = 0;
     bool comEnvio = false; // o gancho de ExecuteCommandLists informa os envios
     std::mutex filaMx; // so a fila (nunca segurado em chamada da AMD: o Present dela segura as travas dela e chama Gera)
@@ -156,6 +198,18 @@ struct Geracao::Impl
     } uiIds[8] = {};                   // o frameID do jogo de cada quadro nosso (o callback recebe o do jogo)
     bool uiTexturaNossa = false;       // a textura de UI do jogo esta registrada no nosso swapchain
     std::atomic<bool> uiEmUso{false};
+    // a copia da imagem sem HUD do jogo (HUDLessColor) feita no Present dele, na fila dele (AntesDoPresent)
+    Microsoft::WRL::ComPtr<ID3D12CommandQueue> filaJogo;
+    static constexpr int kCopias = 4;
+    Microsoft::WRL::ComPtr<ID3D12Resource> copiaSemHud[kCopias];
+    D3D12_RESOURCE_STATES copiaEstado[kCopias] = {};
+    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> copiaAl[kCopias];
+    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> copiaLista;
+    Microsoft::WRL::ComPtr<ID3D12Fence> copiaCerca;
+    uint64_t copiaValor[kCopias] = {}, copiaN = 0, copiaUltimo = 0;
+    std::atomic<int> copiaPronta{-1}; // a copia do Present em curso (Gera a consome)
+    uint64_t copiaQuadro = 0;         // de qual quadro nosso ela e (Gera so a usa no mesmo)
+    uint64_t copiasFeitas = 0, copiasUsadas = 0;
     static FfxErrorCode UiCallback(const FfxPresentCallbackDescription* d, void* ctx);
     std::atomic<uint64_t> encontros{0}; // vezes em que um esperou o outro em fiMx (sem a trava, os dois juntos no backend)
     std::deque<Preparado> fila;
@@ -265,6 +319,11 @@ struct Geracao::Impl
     uint64_t despejoQuadro = 0;
     std::atomic<uint64_t> despejoId{0}; // o quadro (frameID nosso) despejado
     int despejoTelaK = 0;               // gerados dele ja copiados na composicao
+    // para onde e em qual apresentacao (chamadas): DLSS5_GERACAO_DUMP(_QUADRO) no lancamento ou pedido em DespejaEm
+    std::mutex despejoMx;
+    std::string despejoPedido, despejoPasta;
+    uint64_t despejoAlvo = 0;
+    std::atomic<bool> despejoAtivo{false};
     UINT despejoW = 0, despejoH = 0, despejoPitch = 0;
     DXGI_FORMAT despejoFmt = DXGI_FORMAT_UNKNOWN;
 };
@@ -699,15 +758,7 @@ FfxErrorCode Geracao::Impl::Gera(const FfxFrameGenerationDispatchDescription* d,
         std::lock_guard<std::mutex> lk(p->filaMx);
         // com os envios: o preparo mais novo ja enviado a GPU (a imagem deste Present saiu das listas enviadas antes
         // dele); os mais velhos que ele saem (quadros que nunca foram apresentados). Sem: o mais antigo gravado
-        size_t k = p->fila.size();
-        if (p->comEnvio)
-        {
-            for (size_t i = 0; i < p->fila.size(); ++i)
-                if (p->fila[i].enviado && (k == p->fila.size() || p->fila[i].id > p->fila[k].id))
-                    k = i;
-        }
-        else if (!p->fila.empty())
-            k = 0;
+        const size_t k = p->EscolhePreparado();
         if (p->rastroLinhas < 120)
         {
             const auto agora = std::chrono::steady_clock::now();
@@ -773,9 +824,13 @@ FfxErrorCode Geracao::Impl::Gera(const FfxFrameGenerationDispatchDescription* d,
     if (p->faseHud == 2 && p->pausaHud && --p->pausaHud == 0)
         p->Procura();
     ID3D12Resource* semHud = nullptr;
-    FfxResourceStates estadoSemHud = FFX_RESOURCE_STATE_COMPUTE_READ;
-    if (pr.semHudJogo) // a do proprio jogo (HUDLessColor): a mesma que a geracao dele usaria
-        semHud = pr.semHudJogo, estadoSemHud = FfxResourceStates(pr.semHudJogoEstado);
+    // a do proprio jogo (HUDLessColor), copiada no Present dele (AntesDoPresent): a deste quadro
+    const int copia = p->copiaPronta.exchange(-1);
+    if (p->uiEmUso && copia >= 0 && p->copiaQuadro == pr.id)
+    {
+        semHud = p->copiaSemHud[copia].Get();
+        ++p->copiasUsadas;
+    }
     else if (pr.semHud)
     {
         ID3D12Resource* copia = p->semHud[pr.id % kJogos].Get();
@@ -785,10 +840,11 @@ FfxErrorCode Geracao::Impl::Gera(const FfxFrameGenerationDispatchDescription* d,
     }
     else if (!p->uiEmUso) // com a UI do jogo (textura ou callback) o quadro ja chega sem ela: nada a procurar
         p->Falta();
-    p->semHudApresentado = pr.semHud ? p->semHud[pr.id % kJogos].Get() : nullptr;
+    p->semHudApresentado = semHud ? semHud : pr.semHud ? p->semHud[pr.id % kJogos].Get() : nullptr;
     FfxResource corSemHud{};
     if (semHud)
-        corSemHud = ffxGetResourceDX12(semHud, ffxGetResourceDescriptionDX12(semHud), L"imagem sem HUD", estadoSemHud);
+        corSemHud = ffxGetResourceDX12(semHud, ffxGetResourceDescriptionDX12(semHud), L"imagem sem HUD",
+                                       FFX_RESOURCE_STATE_COMPUTE_READ);
     FfxOpticalflowDispatchDescription o{};
     o.commandList = d->commandList;
     o.color = semHud ? corSemHud : d->presentColor;
@@ -900,9 +956,23 @@ bool Geracao::Impl::CopiaParaLeitura(ID3D12GraphicsCommandList* c, const FfxReso
 
 void Geracao::Impl::Despejo(const FfxFrameGenerationDispatchDescription* d, uint64_t id)
 {
-    static const char* pasta = std::getenv("DLSS5_GERACAO_DUMP");
-    if (!pasta)
+    {
+        std::lock_guard<std::mutex> lk(despejoMx);
+        if (!despejoPedido.empty()) // a gravacao do overlay (DespejaEm): um quadro daqui a 30 apresentacoes
+        {
+            despejoPasta = std::move(despejoPedido);
+            despejoPedido.clear();
+            despejoAlvo = chamadas + 30;
+            despejoQuadro = 0;
+            despejoId = 0;
+            for (auto& r : despejoLeitura)
+                r = nullptr;
+            despejoAtivo = true;
+        }
+    }
+    if (!despejoAtivo)
         return;
+    const char* pasta = despejoPasta.c_str();
     auto* c = reinterpret_cast<ID3D12GraphicsCommandList*>(d->commandList);
     if (despejoQuadro && chamadas == despejoQuadro + 8)
     {
@@ -925,10 +995,10 @@ void Geracao::Impl::Despejo(const FfxFrameGenerationDispatchDescription* d, uint
         }
         for (auto& r : despejoLeitura)
             r = nullptr;
+        despejoAtivo = false; // um quadro por pedido
+        return;
     }
-    static const uint64_t alvo = std::max<uint64_t>(2, std::getenv("DLSS5_GERACAO_DUMP_QUADRO")
-                                                           ? uint64_t(_atoi64(std::getenv("DLSS5_GERACAO_DUMP_QUADRO")))
-                                                           : 60);
+    const uint64_t alvo = despejoAlvo;
     if (chamadas == alvo - 1)
         CopiaParaLeitura(c, d->presentColor, 4);
     if (chamadas != alvo || despejoQuadro)
@@ -946,7 +1016,22 @@ void Geracao::Impl::Despejo(const FfxFrameGenerationDispatchDescription* d, uint
                                                L"imagem sem HUD", FFX_RESOURCE_STATE_COMPUTE_READ), 5);
 }
 
-Geracao::Geracao() : p(new Impl) {}
+Geracao::Geracao() : p(new Impl)
+{
+    if (const char* e = std::getenv("DLSS5_GERACAO_DUMP"))
+    {
+        const char* q = std::getenv("DLSS5_GERACAO_DUMP_QUADRO");
+        p->despejoPasta = e;
+        p->despejoAlvo = std::max<uint64_t>(2, q ? uint64_t(_atoi64(q)) : 60);
+        p->despejoAtivo = true;
+    }
+}
+
+void Geracao::DespejaEm(const char* pasta)
+{
+    std::lock_guard<std::mutex> lk(p->despejoMx);
+    p->despejoPedido = pasta ? pasta : "";
+}
 
 Geracao::~Geracao()
 {
@@ -1230,6 +1315,8 @@ bool Geracao::Quadro(ID3D12GraphicsCommandList* c, const QuadroGeracao& q, uint3
         std::lock_guard<std::mutex> lk(p->filaMx);
         ++p->despachosRastro;
         p->fila.push_back({p->quadro, pd, ListaNativa(c), 0, false, 0});
+        if (p->preparoAntes.lista && p->preparoAntes.lista == p->fila.back().lista) // o preparo do jogo veio antes
+            p->LigaIdJogo(p->preparoAntes.jogo, p->quadro), p->preparoAntes = {};
         while (p->fila.size() > size_t(kJogos)) // mais preparados que apresentacoes (o jogo pulou um Present): o velho sai
             p->fila.pop_front();
     }
@@ -1248,7 +1335,7 @@ bool Geracao::Quadro(ID3D12GraphicsCommandList* c, const QuadroGeracao& q, uint3
         // a UI do jogo desenhada pelo callback dele em cada quadro (real e gerado); sem ele, a composicao da AMD (a
         // textura de UI do jogo, se registrada no nosso, ou so a copia)
         std::lock_guard<std::mutex> lu(p->uiMx);
-        if (p->uiCb || Despejando()) // no teste, sempre: o despejo copia o quadro composto
+        if (p->uiCb || p->despejoAtivo) // despejando, sempre: o despejo copia o quadro composto
             cfg.presentCallback = &Impl::UiCallback, cfg.presentCallbackContext = p;
     }
     if ((e = p->shared.fpSwapChainConfigureFrameGeneration(&cfg)) != FFX_OK)
@@ -1285,10 +1372,145 @@ void Geracao::UiJogo(const UiDoJogo& u, bool nossa)
         ffxRegisterFrameinterpolationUiResourceDX12(p->ffxSc, FfxResource{}, 0);
         p->uiTexturaNossa = false;
     }
+    // a imagem sem HUD vai para o quadro dela (o frameID da configuracao -> o nosso quadro do preparo do jogo) e e
+    // copiada no Present dele (AntesDoPresent). Sem o preparo do jogo visto, a do quadro mais novo (a configuracao vem
+    // depois do despacho do FSR do mesmo quadro)
     std::lock_guard<std::mutex> lf(p->filaMx);
-    for (auto& f : p->fila)
-        if (f.id == p->quadro)
-            f.semHudJogo = nossa ? u.semHud : nullptr, f.semHudJogoEstado = u.semHudEstado;
+    ID3D12Resource* r = nossa ? u.semHud : nullptr;
+    if (!p->preparosJogo)
+    {
+        p->PoeSemHudJogo(p->quadro, r, u.semHudEstado);
+        return;
+    }
+    for (const auto& m : p->mapaIds)
+        if (m.nosso && m.jogo == u.frameId)
+        {
+            p->PoeSemHudJogo(m.nosso, r, u.semHudEstado);
+            return;
+        }
+    p->semHudPendente = {u.frameId, r, u.semHudEstado}; // o preparo deste frameID ainda vem
+}
+
+// o preparo da geracao do jogo (frameID dele) na lista `c`: o nosso quadro e o preparado na mesma lista (o despacho do
+// FSR do mesmo quadro); com o preparo do jogo antes do FSR, o proximo preparado nela (Quadro)
+void Geracao::QuadroDoJogo(uint64_t idJogo, ID3D12CommandList* c)
+{
+    std::lock_guard<std::mutex> lk(p->mx);
+    std::lock_guard<std::mutex> lf(p->filaMx);
+    ID3D12CommandList* nativa = ListaNativa(c);
+    if (!p->fila.empty() && p->fila.back().lista == nativa)
+        p->LigaIdJogo(idJogo, p->fila.back().id);
+    else
+        p->preparoAntes = {idJogo, nativa};
+}
+
+void Geracao::CopiasSemHud(uint64_t& feitas, uint64_t& usadas) const
+{
+    feitas = p->copiasFeitas, usadas = p->copiasUsadas;
+}
+
+void Geracao::FilaDoJogo(ID3D12CommandQueue* q)
+{
+    std::lock_guard<std::mutex> lk(p->mx);
+    p->filaJogo = q;
+}
+
+// No Present do swapchain de geracao do jogo (gancho do modulo), antes dele: a imagem sem HUD do quadro copiada para uma
+// das nossas, na fila do jogo -- depois de tudo o que o jogo enviou para este quadro e antes do seguinte. A interpolacao
+// (na fila dela, depois) le a copia: a mesma imagem que a geracao do jogo leria no Present
+void Geracao::AntesDoPresent()
+{
+    std::lock_guard<std::mutex> lk(p->mx);
+    p->copiaPronta = -1;
+    if (!p->uiEmUso || !p->filaJogo || !p->dev || p->estado != 2)
+        return;
+    // o quadro deste Present (a mesma escolha de Gera, que vem logo depois dentro dele) e a imagem sem HUD dele
+    ID3D12Resource* fonte = nullptr;
+    uint32_t estadoFonte = 0;
+    uint64_t quadroFonte = 0;
+    {
+        std::lock_guard<std::mutex> lf(p->filaMx);
+        const size_t k = p->EscolhePreparado();
+        if (k < p->fila.size())
+            fonte = p->fila[k].semHudJogo, estadoFonte = p->fila[k].semHudJogoEstado, quadroFonte = p->fila[k].id;
+    }
+    if (!fonte)
+        return;
+    const D3D12_RESOURCE_DESC fd = fonte->GetDesc();
+    if (fd.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || fd.Width != p->telaW || fd.Height != p->telaH ||
+        fd.SampleDesc.Count != 1)
+        return; // a interpolacao quer a imagem no tamanho da tela
+    if (!p->copiaCerca)
+    {
+        if (FAILED(p->dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&p->copiaCerca))))
+            return;
+        for (auto& a : p->copiaAl)
+            if (FAILED(p->dev->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&a))))
+                return;
+        if (FAILED(p->dev->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, p->copiaAl[0].Get(), nullptr,
+                                             IID_PPV_ARGS(&p->copiaLista))))
+            return;
+        p->copiaLista->Close();
+    }
+    const int k = int(p->copiaN++ % Impl::kCopias);
+    if (p->copiaCerca->GetCompletedValue() < p->copiaValor[k]) // a copia de 4 Presents atras (e a leitura dela) acabou
+        p->copiaCerca->SetEventOnCompletion(p->copiaValor[k], nullptr);
+    auto& alvo = p->copiaSemHud[k];
+    if (alvo)
+    {
+        const D3D12_RESOURCE_DESC ad = alvo->GetDesc();
+        if (ad.Width != fd.Width || ad.Height != fd.Height || ad.Format != Tipado(fd.Format))
+            alvo = nullptr;
+    }
+    if (!alvo)
+    {
+        D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+        D3D12_RESOURCE_DESC d{};
+        d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        d.Width = fd.Width;
+        d.Height = fd.Height;
+        d.DepthOrArraySize = d.MipLevels = 1;
+        d.Format = Tipado(fd.Format);
+        d.SampleDesc.Count = 1;
+        if (FAILED(p->dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                   IID_PPV_ARGS(&alvo))))
+            return;
+        alvo->SetName(L"geracao: imagem sem HUD do jogo (copia do Present)");
+        p->copiaEstado[k] = D3D12_RESOURCE_STATE_COPY_DEST;
+    }
+    if (FAILED(p->copiaAl[k]->Reset()) || FAILED(p->copiaLista->Reset(p->copiaAl[k].Get(), nullptr)))
+        return;
+    auto* c = p->copiaLista.Get();
+    const D3D12_RESOURCE_STATES estadoJogo = D3D(FfxResourceStates(estadoFonte));
+    auto transicao = [](ID3D12Resource* r, D3D12_RESOURCE_STATES de, D3D12_RESOURCE_STATES para) {
+        D3D12_RESOURCE_BARRIER b{};
+        b.Transition = {r, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, de, para};
+        return b;
+    };
+    D3D12_RESOURCE_BARRIER b[2];
+    UINT nb = 0;
+    if (estadoJogo != D3D12_RESOURCE_STATE_COPY_SOURCE)
+        b[nb++] = transicao(fonte, estadoJogo, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    if (p->copiaEstado[k] != D3D12_RESOURCE_STATE_COPY_DEST)
+        b[nb++] = transicao(alvo.Get(), p->copiaEstado[k], D3D12_RESOURCE_STATE_COPY_DEST);
+    if (nb)
+        c->ResourceBarrier(nb, b);
+    c->CopyResource(alvo.Get(), fonte);
+    nb = 0;
+    if (estadoJogo != D3D12_RESOURCE_STATE_COPY_SOURCE)
+        b[nb++] = transicao(fonte, D3D12_RESOURCE_STATE_COPY_SOURCE, estadoJogo);
+    b[nb++] = transicao(alvo.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    c->ResourceBarrier(nb, b);
+    p->copiaEstado[k] = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    if (FAILED(c->Close()))
+        return;
+    ID3D12CommandList* l[] = {c};
+    p->filaJogo->ExecuteCommandLists(1, l);
+    p->filaJogo->Signal(p->copiaCerca.Get(), ++p->copiaUltimo);
+    p->copiaValor[k] = p->copiaUltimo;
+    p->copiaQuadro = quadroFonte;
+    p->copiaPronta = k;
+    ++p->copiasFeitas;
 }
 
 bool Geracao::UiDoJogoEmUso() const
@@ -1354,7 +1576,7 @@ FfxErrorCode Geracao::Impl::UiCallback(const FfxPresentCallbackDescription* d, v
         e = reinterpret_cast<Fn>(cb)(&a, cbCtx) == 0 ? FFX_OK : FFX_ERROR_BACKEND_API_ERROR;
     }
     // teste (DLSS5_GERACAO_DUMP): o quadro despejado como foi para a tela, gerados em ordem e o real, com a UI
-    if (Despejando() && p->despejoId && d->frameID == p->despejoId)
+    if (p->despejoAtivo && p->despejoId && d->frameID == p->despejoId)
     {
         auto* c = reinterpret_cast<ID3D12GraphicsCommandList*>(d->commandList);
         if (!d->isInterpolatedFrame)
