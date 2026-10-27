@@ -36,6 +36,23 @@ struct QuadroGeracao
     bool invertida = true, infinita = true, hdr = false, reset = false;
 };
 
+// A UI que o jogo entrega a geracao FSR 3 dele (ffxConfigure): HUD e legendas fora da imagem -- numa textura que o
+// swapchain compoe, ou num callback que a desenha em cada quadro -- ou a imagem sem HUD. Com a nossa gerando no lugar da
+// do jogo, ela vem para o nosso swapchain: a interpolacao parte da imagem sem UI e a UI entra parada em cada quadro, real
+// e gerado (o swapchain do jogo, por fora do nosso, compunha a UI antes: ela era interpolada com a cena)
+struct UiDoJogo
+{
+    ID3D12Resource* textura = nullptr; // FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_REGISTERUIRESOURCE_DX12
+    uint32_t texturaEstado = 0;        // FFX_API_RESOURCE_STATE_* (os mesmos valores do SDK)
+    uint32_t texturaFlags = 0;         // FFX_FRAMEGENERATION_UI_COMPOSITION_FLAG_*
+    void* callback = nullptr;          // ffxConfigureDescFrameGeneration.presentCallback (FfxApiPresentCallbackFunc)
+    void* callbackCtx = nullptr;
+    ID3D12Resource* semHud = nullptr;  // ffxConfigureDescFrameGeneration.HUDLessColor
+    uint32_t semHudEstado = 0;
+    uint64_t frameId = 0;              // o frameID do jogo (o callback dele pode escolher os recursos por ele)
+    bool Tem() const { return textura || callback || semHud; }
+};
+
 class Geracao
 {
   public:
@@ -55,6 +72,10 @@ class Geracao
     // A tela nunca recebe mais quadros por segundo que a taxa do monitor (acima dela cada atualizacao mostra pedacos de
     // varios quadros: rasgo + fantasma): o N em uso (EmUso) cai ate caber
     bool Quadro(ID3D12GraphicsCommandList* c, const QuadroGeracao& q, uint32_t n);
+    // a cada configuracao da geracao FSR 3 do jogo (depois do despacho do FSR do quadro): a UI dele. nossa = a nossa gera
+    // no lugar da dele (o modulo tira a UI do swapchain do jogo); sem isso a UI volta a ser do jogo
+    void UiJogo(const UiDoJogo& u, bool nossa);
+    bool UiDoJogoEmUso() const; // a UI vem do jogo: a procura da imagem sem HUD fica parada
     // ExecuteCommandLists do jogo (gancho do modulo): a lista com o preparo de um quadro foi para a GPU. A apresentacao
     // usa o preparo mais novo ja enviado -- o motor pode gravar o quadro seguinte antes do Present deste, mas so o envia
     // depois. Sem esta informacao (jogo de teste direto), a ordem de gravacao

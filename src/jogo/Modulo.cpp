@@ -80,7 +80,7 @@ PfnFfxConfigure oConfigura = nullptr;
 // (mesmo com a geracao desligada no menu) e o nosso fica dentro dele: so a configuracao diz se a deles esta ligada
 std::atomic<bool> g_fgDoJogo{false};
 thread_local bool t_fgSwapDoJogo = false; // dentro da criacao do swapchain de geracao do jogo
-struct ConfiguraGeracaoJogo               // ffxConfigureDescFrameGeneration (ffx_api/ffx_framegeneration.h) ate o campo usado
+struct ConfiguraGeracaoJogo               // ffxConfigureDescFrameGeneration (ffx_api/ffx_framegeneration.h)
 {
     ffxConfigureDescHeader header;
     void* swapChain;
@@ -89,7 +89,26 @@ struct ConfiguraGeracaoJogo               // ffxConfigureDescFrameGeneration (ff
     void* frameGenerationCallback;
     void* frameGenerationCallbackUserContext;
     bool frameGenerationEnabled;
+    bool allowAsyncWorkloads;
+    FfxApiResource HUDLessColor;
+    uint32_t flags;
+    bool onlyPresentGenerated;
+    FfxApiRect2D generationRect;
+    uint64_t frameID;
 };
+struct RegistraUiJogo // ffxConfigureDescFrameGenerationSwapChainRegisterUiResourceDX12 (ffx_api/dx12/ffx_api_dx12.h)
+{
+    ffxConfigureDescHeader header;
+    FfxApiResource uiResource;
+    uint32_t flags;
+};
+PfnFfxDestroyContext oDestroiContexto = nullptr;
+// a UI que o jogo entrega a geracao FSR 3 dele: vai para o nosso swapchain enquanto a nossa gera no lugar (Configura)
+std::mutex g_mxUi;
+dlss5ov::UiDoJogo g_ui;
+uint64_t g_uiTexturaQuadro = 0;  // o quadro da ultima textura de UI registrada pelo jogo
+ffxContext g_ctxUi = nullptr;    // o contexto do swapchain de geracao do jogo em que ela foi registrada
+RegistraUiJogo g_registroUi{};   // o ultimo registro (devolvido ao swapchain do jogo quando a nossa para)
 using PfnExecuta = void(STDMETHODCALLTYPE*)(ID3D12CommandQueue*, UINT, ID3D12CommandList* const*);
 PfnExecuta oExecuta = nullptr;
 using PfnRawData = UINT(WINAPI*)(HRAWINPUT, UINT, LPVOID, PUINT, UINT);
@@ -659,7 +678,8 @@ void GeracaoQuadro(ffxContext* ctx, const ffxDispatchDescUpscale* u, ID3D12Graph
         cab->geracaoPronta = 1;
     static int estadoDito = 0;
     g_ger.Quadro(lista, g, std::min<uint32_t>(pedida, 4));
-    g_querSemHud = SemHudLigado() && pedida >= 2 && g_ger.EmUso() >= 2;
+    // a procura da imagem sem HUD so quando o jogo nao entrega a UI dele (Configura): com ela, o quadro ja chega sem UI
+    g_querSemHud = SemHudLigado() && pedida >= 2 && g_ger.EmUso() >= 2 && !g_ger.UiDoJogoEmUso();
     ++g_quadrosGeracao;
     if (cab)
     {
@@ -782,18 +802,10 @@ uint32_t GeracaoPedidaPainel()
 // que o jogo manda a AMD a cada quadro vai com frameGenerationEnabled = false (o swapchain de geracao dele so repassa os
 // quadros ao nosso, que gera). Com 1x, a do jogo segue como o jogo quiser e a nossa fica desligada (duas geracoes
 // empilhadas: travada e fantasma). No TLOU2 com a geracao dele ligada no menu, a nossa ficava desligada sem aviso
-ffxReturnCode_t Configura(ffxContext* ctx, const ffxConfigureDescHeader* desc)
+// o pedido do painel, valendo so depois de 1 s igual: no TLOU2 ele alternava entre 0x e 4x varias vezes por segundo (o
+// overlay religando) e a geracao do jogo ligava e desligava junto
+uint32_t PedidoEstavel()
 {
-    ConfiguraGeracaoJogo* fg = nullptr;
-    for (auto* h = desc; h; h = h->pNext)
-        if (h->type == 0x00020002u) // FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION
-            fg = reinterpret_cast<ConfiguraGeracaoJogo*>(const_cast<ffxConfigureDescHeader*>(h));
-    if (!fg)
-        return oConfigura(ctx, desc);
-    // So desliga a do jogo quando a nossa pode gerar: o swapchain da AMD e o nosso (o modulo entrou antes do DirectX) e o
-    // contexto esta pronto. Injetado com o jogo ja aberto a nossa nao gera, e desligar a do jogo o deixava sem nenhuma.
-    // E o pedido do painel so muda a decisao depois de 1 s igual: no TLOU2 ele alternava entre 0x e 4x varias vezes por
-    // segundo (o overlay religando) e a geracao do jogo ligava e desligava junto
     static uint32_t estavel = 0, visto = 0;
     static ULONGLONG desde = 0;
     const uint32_t painel = GeracaoPedidaPainel();
@@ -802,8 +814,114 @@ ffxReturnCode_t Configura(ffxContext* ctx, const ffxConfigureDescHeader* desc)
         visto = painel, desde = agoraMs;
     if (agoraMs - desde >= 1000)
         estavel = visto;
+    return estavel;
+}
+
+// o que o jogo entrega como UI ao FSR 3 dele, no log quando muda (o HUD e as legendas dos gerados dependem disso)
+void DizUi(const dlss5ov::UiDoJogo& u, bool nossa)
+{
+    static int dito = -1;
+    const int modo = (u.textura ? 1 : 0) | (u.callback ? 2 : 0) | (u.semHud ? 4 : 0) | (nossa ? 8 : 0);
+    if (modo == dito)
+        return;
+    dito = modo;
+    Log("UI do jogo (HUD e legendas) para a geracao FSR 3 dele: %s%s%s%s -- %s", u.textura ? "textura de UI " : "",
+        u.callback ? "callback que desenha a UI " : "", u.semHud ? "imagem sem HUD " : "",
+        u.Tem() ? "" : "nenhuma (a UI esta na imagem: o modulo procura a imagem sem HUD)",
+        !u.Tem() ? "" : nossa ? "vai para o nosso swapchain (composta parada em cada quadro, real e gerado)"
+                              : "fica com o swapchain do jogo");
+}
+
+// A nossa gera no lugar da do jogo: o painel pede 2x-4x (estavel) e a nossa pode gerar -- o swapchain da AMD e o nosso
+// (o modulo entrou antes do DirectX) e o contexto esta pronto. Injetado com o jogo ja aberto a nossa nao gera
+bool NossaNoLugar()
+{
+    return PedidoEstavel() >= 2 && g_ger.TemSwapchain() && g_ger.EstadoContexto() == 2;
+}
+
+// a textura de UI do jogo de volta ao swapchain dele (nossa = false) ou tirada dele (true), quando a decisao muda e o
+// jogo nao a registra a cada quadro (o registro dele, quando vem, ja passa por Configura)
+void UiNoSwapchainDoJogo(bool nossa)
+{
+    static bool antes = false;
+    if (nossa == antes)
+        return;
+    antes = nossa;
+    std::lock_guard<std::mutex> lk(g_mxUi);
+    if (!g_ctxUi || !g_ui.textura || g_quadrosGeracao - g_uiTexturaQuadro <= 2)
+        return;
+    RegistraUiJogo r = g_registroUi;
+    if (nossa)
+        r.uiResource.resource = nullptr;
+    ffxContext c = g_ctxUi;
+    oConfigura(&c, &r.header);
+}
+
+ffxReturnCode_t DestroiContexto(ffxContext* ctx, const ffxAllocationCallbacks* memCb)
+{
+    if (ctx)
+    {
+        std::lock_guard<std::mutex> lk(g_mxUi);
+        if (*ctx == g_ctxUi) // o swapchain de geracao do jogo saindo: o registro de UI dele sai junto
+            g_ctxUi = nullptr, g_ui.textura = nullptr;
+    }
+    return oDestroiContexto(ctx, memCb);
+}
+
+ffxReturnCode_t Configura(ffxContext* ctx, const ffxConfigureDescHeader* desc)
+{
+    ConfiguraGeracaoJogo* fg = nullptr;
+    RegistraUiJogo* reg = nullptr;
+    for (auto* h = desc; h; h = h->pNext)
+        if (h->type == 0x00020002u) // FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION
+            fg = reinterpret_cast<ConfiguraGeracaoJogo*>(const_cast<ffxConfigureDescHeader*>(h));
+        else if (h->type == 0x00030002u) // FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_REGISTERUIRESOURCE_DX12
+            reg = reinterpret_cast<RegistraUiJogo*>(const_cast<ffxConfigureDescHeader*>(h));
+    if (!fg && !reg)
+        return oConfigura(ctx, desc);
+    const bool nossa = NossaNoLugar();
+    UiNoSwapchainDoJogo(nossa);
+    // A UI do jogo (HUD, legendas): com a nossa no lugar, o swapchain do jogo -- por fora do nosso -- nao a compoe mais
+    // (ela chegava ao nosso ja na imagem e era interpolada com a cena: HUD e legendas tremendo nos gerados); vai para o
+    // nosso, que a compoe parada em cada quadro, como a geracao do jogo faria
+    dlss5ov::UiDoJogo ui;
+    {
+        std::lock_guard<std::mutex> lk(g_mxUi);
+        if (reg)
+        {
+            g_ui.textura = static_cast<ID3D12Resource*>(reg->uiResource.resource);
+            g_ui.texturaEstado = reg->uiResource.state;
+            g_ui.texturaFlags = reg->flags;
+            g_uiTexturaQuadro = g_quadrosGeracao;
+            g_ctxUi = ctx ? *ctx : nullptr;
+            g_registroUi = *reg;
+            g_registroUi.header.pNext = nullptr;
+        }
+        if (fg)
+        {
+            g_ui.callback = fg->presentCallback;
+            g_ui.callbackCtx = fg->presentCallbackUserContext;
+            g_ui.semHud = static_cast<ID3D12Resource*>(fg->HUDLessColor.resource);
+            g_ui.semHudEstado = fg->HUDLessColor.state;
+            g_ui.frameId = fg->frameID;
+        }
+        ui = g_ui;
+    }
+    g_ger.UiJogo(ui, nossa);
+    DizUi(ui, nossa);
+    if (!fg)
+    {
+        if (!nossa || !reg->uiResource.resource)
+            return oConfigura(ctx, desc);
+        void* r = reg->uiResource.resource; // so durante a chamada: o jogo nao ve a troca
+        reg->uiResource.resource = nullptr;
+        const ffxReturnCode_t rc = oConfigura(ctx, desc);
+        reg->uiResource.resource = r;
+        return rc;
+    }
+    const uint32_t estavel = PedidoEstavel();
     const bool nossaPode = g_ger.TemSwapchain() && g_ger.EstadoContexto() == 2;
-    const bool jogoQuer = fg->frameGenerationEnabled, tira = jogoQuer && nossaPode && estavel >= 2;
+    const bool jogoQuer = fg->frameGenerationEnabled, tira = jogoQuer && nossa;
     g_fgDoJogo = jogoQuer && !tira;
     // 0 a do jogo desligada, 1 ligada, 2 pedida pelo jogo e desligada pelo painel, 3 ligada com o painel pedindo a nossa
     // (que nao pode gerar)
@@ -816,11 +934,24 @@ ffxReturnCode_t Configura(ffxContext* ctx, const ffxConfigureDescHeader* desc)
             : agora == 1 ? "o jogo ligou a geracao FSR 3 dele e o painel pede %ux: a nossa fica desligada"
                          : "a geracao FSR 3 do jogo esta desligada (painel: %ux)",
             estavel);
-    if (!tira)
+    if (!nossa)
         return oConfigura(ctx, desc);
-    fg->frameGenerationEnabled = false; // so durante a chamada: o jogo nao ve a troca
+    // so durante a chamada (o jogo nao ve a troca): a geracao dele desligada, e sem a UI (o callback dele desenharia o HUD
+    // na imagem antes do nosso swapchain; a imagem sem HUD so serve a geracao)
+    const ConfiguraGeracaoJogo antes = *fg;
+    void* texturaAntes = reg ? reg->uiResource.resource : nullptr;
+    fg->frameGenerationEnabled = false;
+    fg->presentCallback = fg->presentCallbackUserContext = nullptr;
+    fg->HUDLessColor.resource = nullptr;
+    if (reg)
+        reg->uiResource.resource = nullptr;
     const ffxReturnCode_t r = oConfigura(ctx, desc);
-    fg->frameGenerationEnabled = true;
+    fg->frameGenerationEnabled = antes.frameGenerationEnabled;
+    fg->presentCallback = antes.presentCallback;
+    fg->presentCallbackUserContext = antes.presentCallbackUserContext;
+    fg->HUDLessColor.resource = antes.HUDLessColor.resource;
+    if (reg)
+        reg->uiResource.resource = texturaAntes;
     return r;
 }
 
@@ -1411,6 +1542,7 @@ DWORD WINAPI Instala(void*)
                 oCriaContexto = reinterpret_cast<PfnFfxCreateContext>(GetProcAddress(m, "ffxCreateContext"));
                 oDespacha = reinterpret_cast<PfnFfxDispatch>(GetProcAddress(m, "ffxDispatch"));
                 oConfigura = reinterpret_cast<PfnFfxConfigure>(GetProcAddress(m, "ffxConfigure"));
+                oDestroiContexto = reinterpret_cast<PfnFfxDestroyContext>(GetProcAddress(m, "ffxDestroyContext"));
                 if (!oCriaContexto || !oDespacha)
                     continue;
                 DetourTransactionBegin();
@@ -1419,6 +1551,8 @@ DWORD WINAPI Instala(void*)
                 DetourAttach(reinterpret_cast<PVOID*>(&oDespacha), reinterpret_cast<PVOID>(&Despacha));
                 if (oConfigura)
                     DetourAttach(reinterpret_cast<PVOID*>(&oConfigura), reinterpret_cast<PVOID>(&Configura));
+                if (oDestroiContexto)
+                    DetourAttach(reinterpret_cast<PVOID*>(&oDestroiContexto), reinterpret_cast<PVOID>(&DestroiContexto));
                 const LONG r = DetourTransactionCommit();
                 char nome[MAX_PATH];
                 WideCharToMultiByte(CP_UTF8, 0, n, -1, nome, MAX_PATH, nullptr, nullptr);

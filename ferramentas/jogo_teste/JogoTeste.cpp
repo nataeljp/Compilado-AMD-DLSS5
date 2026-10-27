@@ -163,6 +163,9 @@ int wmain(int argc, wchar_t** argv)
     int pos = 0; // --pos: 0 nenhum, 1 grao, 2 nitidez (com --hud)
     uint32_t multi = 2;
     UINT64 recria = 0, trava = 0;
+    // --fps-depois Q F: a partir do quadro Q o jogo passa a F quadros/s (o N da geracao tem de acompanhar o ritmo novo)
+    UINT64 fpsDepoisQ = 0;
+    int fpsDepois = 0;
     // --invalida Q (com --como-jogo): no quadro Q envia a lista do jogo sem fechar -- o runtime remove o dispositivo por
     // chamada invalida (DXGI_ERROR_INVALID_CALL), como no TLOU2: testa o relato do modulo
     UINT64 invalida = 0;
@@ -178,6 +181,8 @@ int wmain(int argc, wchar_t** argv)
             multi = uint32_t(std::clamp(_wtoi(argv[i + 1]), 2, 4));
         if (!wcscmp(argv[i], L"--voltas"))
             voltas = _wtoi(argv[i + 1]);
+        if (!wcscmp(argv[i], L"--fps-depois") && i + 2 < argc)
+            fpsDepoisQ = UINT64(_wtoi64(argv[i + 1])), fpsDepois = _wtoi(argv[i + 2]);
         if (!wcscmp(argv[i], L"--fps"))
             fps = _wtoi(argv[i + 1]);
         if (!wcscmp(argv[i], L"--modulo"))
@@ -721,7 +726,7 @@ int wmain(int argc, wchar_t** argv)
     uint64_t aplicados = 0, gravados = 0;
     FILE* mapa = nullptr; // quadro do jogo -> quadro da sequencia (alinha a gravacao do overlay)
     _wfopen_s(&mapa, (saida + L"\\mapa.jsonl").c_str(), L"w");
-    const auto passo = std::chrono::microseconds(1000000 / std::max(fps, 1));
+    auto passo = std::chrono::microseconds(1000000 / std::max(fps, 1));
     // --apresenta-em-thread: a thread de apresentacao recebe o pedido e faz o Present; a de render so espera por ele antes
     // de tocar no backbuffer seguinte
     HANDLE pedeApresentar = CreateEventW(nullptr, FALSE, FALSE, nullptr), apresentou = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -883,6 +888,8 @@ int wmain(int argc, wchar_t** argv)
                     Ck(fila->Signal(cerca.Get(), ++valor), "signal");
                     cerca->SetEventOnCompletion(valor, ev);
                     WaitForSingleObject(ev, INFINITE);
+                    if (fpsDepoisQ && UINT64(v) * N + i + 1 == fpsDepoisQ)
+                        passo = std::chrono::microseconds(1000000 / std::max(fpsDepois, 1));
                     proximo += passo;
                     std::this_thread::sleep_until(proximo);
                     continue;
@@ -994,6 +1001,8 @@ int wmain(int argc, wchar_t** argv)
                     printf("swapchain recriado no quadro %llu\n", (unsigned long long)recria);
                     fflush(stdout);
                 }
+                if (fpsDepoisQ && UINT64(v) * N + i + 1 == fpsDepoisQ)
+                    passo = std::chrono::microseconds(1000000 / std::max(fpsDepois, 1));
                 proximo += passo;
                 std::this_thread::sleep_until(proximo);
                 continue;
@@ -1081,6 +1090,8 @@ int wmain(int argc, wchar_t** argv)
                 D3D12_RANGE nada{0, 0};
                 le->Unmap(0, &nada);
             }
+            if (fpsDepoisQ && UINT64(v) * N + i + 1 == fpsDepoisQ)
+                passo = std::chrono::microseconds(1000000 / std::max(fpsDepois, 1));
             proximo += passo;
             std::this_thread::sleep_until(proximo);
         }

@@ -149,6 +149,20 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
     FSR, com os passes do módulo — e quem enviou), com o DRED; as listas que o runtime recusa ao fechar também.
     Reproduzido no jogo de teste `--invalida Q` (envia uma lista sem fechar): o mesmo `0x887a0001`, e o log aponta a
     lista e quem a enviou.
+  - **HUD e legendas que o jogo entrega ao FSR 3 dele**: um jogo com geração FSR 3 manda a UI à parte — numa textura
+    que o swapchain compõe, num callback que a desenha em cada quadro, ou como a imagem sem HUD. O swapchain de geração
+    do jogo fica por fora do nosso e compunha essa UI antes de passar o quadro: ela chegava na imagem e era interpolada
+    com a cena (no TLOU2, HUD e legendas tremendo nos gerados; a nossa procura da imagem sem HUD não acha passe nenhum
+    nele). Com a nossa gerando, o módulo tira a UI do swapchain do jogo e a entrega ao nosso, que a compõe parada em cada
+    quadro, real e gerado, como a geração do jogo faria — automático, o log diz qual dos três o jogo usa. Medido no
+    sample da AMD com a geração dele ligada (o mesmo arranjo do TLOU2), câmera girando, a procura desligada: o módulo
+    antigo deixava 42% dos pixels da UI diferentes nos gerados; agora 0,1% (callback), 0,1% (textura), 0,0% (imagem sem
+    HUD); em 4x 0,4–0,9% (só a UI semitransparente, onde a cena aparece por trás). Sem UI à parte vale a procura.
+  - **N que desce por prova**: preso num N alto (no TLOU2 a rede a 4K deixou o jogo a 13 q/s, o N foi a 4 e o
+    limitador o segurou em 29 q/s depois de ele poder fazer ~50 — mais atraso de entrada à toa), um N a menos é tentado
+    quando o trabalho do jogo diz que ele enche a tela com 5% de folga; em 3 s a tela cheia confirma, senão volta e a
+    próxima prova espera o dobro (10 s a 160 s). Medido no jogo de teste `--fps 20 --fps-depois 300 50`: 4x → 3x (jogo
+    de 20 a 39 q/s); a prova de 2x não encheu e voltou em 1 s.
   - **A geração FSR 3 do próprio jogo**: com a do jogo ligada e o painel pedindo 2x–4x, a dele é desligada e a nossa
     liga — só quando a nossa pode gerar (o swapchain da AMD é o nosso: a DLL entrou antes do DirectX; e o contexto está
     pronto). Injetado com o jogo já aberto a nossa não gera, e desligar a do jogo o deixava sem nenhuma; agora a do jogo

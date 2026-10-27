@@ -18,6 +18,8 @@
 // o swapchain da AMD com externo\ffx_multiquadro.py: o ritmo das apresentacoes (le e zera) e o aviso de destruicao
 extern "C" void ffxDlss5RitmoDX12(double* mediaMs, double* desvioMs, double* maxMs, uint32_t* n, double* p99Ms);
 extern "C" FfxErrorCode ffxDlss5AoDestruirDX12(FfxSwapchain gameSwapChain, void (*aviso)(void*), void* ctx);
+// a composicao de UI padrao do swapchain da AMD (FrameInterpolationSwapchainDX12_UiComposition.h, fora do include)
+FfxErrorCode ffxFrameInterpolationUiComposition(const FfxPresentCallbackDescription* params, void* unusedUserCtx);
 #pragma comment(lib, "d3dcompiler.lib")
 
 namespace dlss5ov {
@@ -51,6 +53,12 @@ enum
 };
 
 D3D12_RESOURCE_STATES D3D(FfxResourceStates s); // abaixo
+
+bool Despejando() // teste: DLSS5_GERACAO_DUMP (Impl::Despejo)
+{
+    static const bool sim = std::getenv("DLSS5_GERACAO_DUMP") != nullptr;
+    return sim;
+}
 
 bool SemLimite() // testes de ritmo: sem o limite pela taxa do monitor nem o limitador
 {
@@ -124,6 +132,8 @@ struct Geracao::Impl
         uint64_t enviado;          // ordem de envio a GPU (0 = ainda nao)
         bool semHud;               // a imagem sem HUD deste quadro esta em semHud[id % kJogos]
         uint32_t passeHud;         // de qual passe do jogo ela veio
+        ID3D12Resource* semHudJogo = nullptr; // a imagem sem HUD que o proprio jogo entrega (HUDLessColor), se houver
+        uint32_t semHudJogoEstado = 0;
     };
     uint64_t ordemEnvio = 0;
     bool comEnvio = false; // o gancho de ExecuteCommandLists informa os envios
@@ -136,6 +146,17 @@ struct Geracao::Impl
     std::mutex fiMx;
     std::atomic<DWORD> threadPreparo{0};
     bool threadsDitas = false; // o rastro diz uma vez as threads do preparo e da geracao
+    // a UI do jogo (UiJogo): o callback dele e chamado pela thread de apresentacao da AMD em cada quadro
+    std::mutex uiMx;
+    void* uiCb = nullptr;
+    void* uiCbCtx = nullptr;
+    struct
+    {
+        uint64_t nosso, jogo;
+    } uiIds[8] = {};                   // o frameID do jogo de cada quadro nosso (o callback recebe o do jogo)
+    bool uiTexturaNossa = false;       // a textura de UI do jogo esta registrada no nosso swapchain
+    std::atomic<bool> uiEmUso{false};
+    static FfxErrorCode UiCallback(const FfxPresentCallbackDescription* d, void* ctx);
     std::atomic<uint64_t> encontros{0}; // vezes em que um esperou o outro em fiMx (sem a trava, os dois juntos no backend)
     std::deque<Preparado> fila;
     uint64_t aFrenteSoma = 0, aFrenteN = 0, aFrenteMax = 0, semPreparo = 0;
@@ -194,6 +215,10 @@ struct Geracao::Impl
     // a tela nunca recebe mais quadros por segundo que a taxa do monitor: o N em uso cai ate caber e so sobe com folga
     // (trocar entre 1 e 2 liga e desliga o swapchain da AMD: nada de ficar trocando)
     std::chrono::steady_clock::time_point tAnt{}, trocaDesde{};
+    // prova de um N a menos (NEmUso): de qual N, desde quando, e quando pode a proxima (a espera dobra a cada falha)
+    uint32_t provaDe = 0;
+    int provaEspera = 10;
+    std::chrono::steady_clock::time_point provaDesde{}, provaProxima{};
     double msJogo = 0, msAtual = 0;
     std::atomic<uint32_t> trocasN{0};
     std::atomic<uint32_t> hz{0}, hzMax{0}; // DefineTaxa (outra thread)
@@ -232,11 +257,14 @@ struct Geracao::Impl
     void Adota(FfxSwapchain s, ID3D12CommandQueue* fila);
 
     // teste: um quadro gerado e o real ao lado (DLSS5_GERACAO_DUMP)
-    void Despejo(const FfxFrameGenerationDispatchDescription* d);
+    void Despejo(const FfxFrameGenerationDispatchDescription* d, uint64_t id);
     bool CopiaParaLeitura(ID3D12GraphicsCommandList* c, const FfxResource& fonte, int slot);
-    // os gerados (ate 3), o real, o real anterior e a imagem sem HUD do real
-    Microsoft::WRL::ComPtr<ID3D12Resource> despejoLeitura[6];
+    // os gerados (ate 3), o real, o real anterior e a imagem sem HUD do real; e, como foram para a tela (com a UI
+    // composta pelo swapchain, UiCallback), os gerados e o real do mesmo quadro
+    Microsoft::WRL::ComPtr<ID3D12Resource> despejoLeitura[10];
     uint64_t despejoQuadro = 0;
+    std::atomic<uint64_t> despejoId{0}; // o quadro (frameID nosso) despejado
+    int despejoTelaK = 0;               // gerados dele ja copiados na composicao
     UINT despejoW = 0, despejoH = 0, despejoPitch = 0;
     DXGI_FORMAT despejoFmt = DXGI_FORMAT_UNKNOWN;
 };
@@ -745,20 +773,22 @@ FfxErrorCode Geracao::Impl::Gera(const FfxFrameGenerationDispatchDescription* d,
     if (p->faseHud == 2 && p->pausaHud && --p->pausaHud == 0)
         p->Procura();
     ID3D12Resource* semHud = nullptr;
-    if (pr.semHud)
+    FfxResourceStates estadoSemHud = FFX_RESOURCE_STATE_COMPUTE_READ;
+    if (pr.semHudJogo) // a do proprio jogo (HUDLessColor): a mesma que a geracao dele usaria
+        semHud = pr.semHudJogo, estadoSemHud = FfxResourceStates(pr.semHudJogoEstado);
+    else if (pr.semHud)
     {
         ID3D12Resource* copia = p->semHud[pr.id % kJogos].Get();
         p->Confere(reinterpret_cast<ID3D12GraphicsCommandList*>(d->commandList), copia, d->presentColor, pr.passeHud);
         if (p->faseHud == 1 && pr.passeHud == p->passeHud)
             semHud = copia;
     }
-    else
+    else if (!p->uiEmUso) // com a UI do jogo (textura ou callback) o quadro ja chega sem ela: nada a procurar
         p->Falta();
     p->semHudApresentado = pr.semHud ? p->semHud[pr.id % kJogos].Get() : nullptr;
     FfxResource corSemHud{};
     if (semHud)
-        corSemHud = ffxGetResourceDX12(semHud, ffxGetResourceDescriptionDX12(semHud), L"imagem sem HUD",
-                                       FFX_RESOURCE_STATE_COMPUTE_READ);
+        corSemHud = ffxGetResourceDX12(semHud, ffxGetResourceDescriptionDX12(semHud), L"imagem sem HUD", estadoSemHud);
     FfxOpticalflowDispatchDescription o{};
     o.commandList = d->commandList;
     o.color = semHud ? corSemHud : d->presentColor;
@@ -807,7 +837,7 @@ FfxErrorCode Geracao::Impl::Gera(const FfxFrameGenerationDispatchDescription* d,
         ++p->gerados;
     }
     ++p->chamadas;
-    p->Despejo(d);
+    p->Despejo(d, pr.id);
     return e;
 }
 
@@ -868,7 +898,7 @@ bool Geracao::Impl::CopiaParaLeitura(ID3D12GraphicsCommandList* c, const FfxReso
     return true;
 }
 
-void Geracao::Impl::Despejo(const FfxFrameGenerationDispatchDescription* d)
+void Geracao::Impl::Despejo(const FfxFrameGenerationDispatchDescription* d, uint64_t id)
 {
     static const char* pasta = std::getenv("DLSS5_GERACAO_DUMP");
     if (!pasta)
@@ -876,8 +906,9 @@ void Geracao::Impl::Despejo(const FfxFrameGenerationDispatchDescription* d)
     auto* c = reinterpret_cast<ID3D12GraphicsCommandList*>(d->commandList);
     if (despejoQuadro && chamadas == despejoQuadro + 8)
     {
-        const char* nomes[6] = {"gerado1", "gerado2", "gerado3", "real", "anterior", "semhud"};
-        for (int k = 0; k < 6; ++k)
+        const char* nomes[10] = {"gerado1", "gerado2", "gerado3", "real", "anterior", "semhud",
+                                 "tela_gerado1", "tela_gerado2", "tela_gerado3", "tela_real"};
+        for (int k = 0; k < 10; ++k)
         {
             void* m = nullptr;
             if (!despejoLeitura[k] || FAILED(despejoLeitura[k]->Map(0, nullptr, &m)))
@@ -903,6 +934,8 @@ void Geracao::Impl::Despejo(const FfxFrameGenerationDispatchDescription* d)
     if (chamadas != alvo || despejoQuadro)
         return;
     despejoQuadro = chamadas;
+    despejoTelaK = 0;
+    despejoId = id;
     const uint32_t m = std::clamp<uint32_t>(d->numInterpolatedFrames, 1, 3);
     for (uint32_t k = 0; k < m; ++k)
         if (!CopiaParaLeitura(c, d->outputs[k], int(k)))
@@ -988,6 +1021,7 @@ void Geracao::Impl::AoDestruir(void* ctx)
     p->estado = 0;
     p->quadro = 0;
     p->nEmUso = 0;
+    p->provaDe = 0;
 }
 
 // com a geracao ligada o jogo nao passa de 97% da taxa / N -- acima disso a tela recebe mais do que mostra, e com o ritmo
@@ -1045,8 +1079,11 @@ uint32_t Geracao::Impl::NEmUso(uint32_t pedido)
     {
         nEmUso = 1;
         trocaDesde = {};
+        provaDe = 0;
         return 1;
     }
+    if (pedido < provaDe) // o pedido mudou no painel durante uma prova: vale o pedido
+        provaDe = 0;
     const uint32_t hzAgora = hz;
     if (SemLimite() || !hzAgora)
         return nEmUso = pedido;
@@ -1074,11 +1111,39 @@ uint32_t Geracao::Impl::NEmUso(uint32_t pedido)
         // (sem isso, com o jogo a 48 q/s o N ia e voltava entre 2 e 3 a cada 2 s -- cada troca muda o ritmo da tela)
         // So sobe: segurado pelo limitador o jogo parece mais rapido do que e (a GPU folga e o tempo de CPU cai -- em 3x
         // ele media 75 q/s de trabalho e em 2x so fazia 43), entao descer sozinho voltava a subir a cada poucos segundos.
-        // Desce quando o pedido muda no painel (ou a geracao desliga e liga)
+        // Desce quando o pedido muda no painel (ou a geracao desliga e liga) -- e por prova: preso num N alto (o jogo lento
+        // por um tempo: no TLOU2 a rede a 4K o deixou a 13 q/s, o N foi a 4 e o limitador o segurou em 29 q/s depois de
+        // ele poder fazer ~50; mais atraso de entrada sem precisar), um a menos e tentado quando o trabalho diz que ele
+        // enche a tela com 5% de folga. Depois de 3 s a tela cheia confirma; se nao encher, volta e a proxima prova espera
+        // o dobro (10 s .. 160 s): a medida enganosa do limitador custa so umas provas espacadas, nao o vai e volta
         const double fps = 1000.0 / msJogo;
+        const auto agora = std::chrono::steady_clock::now();
         novo = nEmUso;
+        if (provaDe)
+        {
+            const double entregue = 1000.0 / msAtual; // com a espera do limitador: o que a tela recebe de fato
+            const auto dur = agora - provaDesde;
+            if (dur >= std::chrono::seconds(1) && entregue * nEmUso < taxa * 0.85) // nao enche: volta e espera mais
+            {
+                provaEspera = std::min(provaEspera * 2, 160);
+                provaProxima = agora + std::chrono::seconds(provaEspera);
+                trocaDesde = {};
+                ++trocasN;
+                nEmUso = provaDe, provaDe = 0;
+                return nEmUso;
+            }
+            if (dur >= std::chrono::seconds(3)) // encheu: fica, e pode tentar mais um abaixo depois
+                provaDe = 0, provaEspera = 10, provaProxima = agora + std::chrono::seconds(10);
+            return nEmUso;
+        }
         if (fps * nEmUso < taxa * 0.90)
             novo = std::max(nEmUso, menorN(fps));
+        else if (nEmUso > 2 && fps * (nEmUso - 1) >= taxa * 1.05 && agora >= provaProxima)
+        {
+            ++trocasN;
+            provaDe = nEmUso, provaDesde = agora, trocaDesde = {};
+            return --nEmUso;
+        }
         novo = std::min(novo, pedido);
     }
     if (!nEmUso || nEmUso > pedido) // o primeiro quadro, ou o pedido baixou no painel: ja
@@ -1179,9 +1244,125 @@ bool Geracao::Quadro(ID3D12GraphicsCommandList* c, const QuadroGeracao& q, uint3
     cfg.interpolationRect = {0, 0, int32_t(p->telaW), int32_t(p->telaH)};
     cfg.frameID = p->quadro;
     cfg.numInterpolatedFrames = ligada ? std::min<uint32_t>(n, 4) - 1 : 1;
+    {
+        // a UI do jogo desenhada pelo callback dele em cada quadro (real e gerado); sem ele, a composicao da AMD (a
+        // textura de UI do jogo, se registrada no nosso, ou so a copia)
+        std::lock_guard<std::mutex> lu(p->uiMx);
+        if (p->uiCb || Despejando()) // no teste, sempre: o despejo copia o quadro composto
+            cfg.presentCallback = &Impl::UiCallback, cfg.presentCallbackContext = p;
+    }
     if ((e = p->shared.fpSwapChainConfigureFrameGeneration(&cfg)) != FFX_OK)
         return p->Erro("configuracao do swapchain", e), false;
     return true;
+}
+
+// a UI do jogo vem para o nosso swapchain (ou volta para o dele): chamada pelo modulo a cada configuracao da geracao do
+// jogo, na thread de render, depois do despacho do FSR deste quadro (o preparado mais novo da fila e o deste quadro)
+void Geracao::UiJogo(const UiDoJogo& u, bool nossa)
+{
+    std::lock_guard<std::mutex> lk(p->mx);
+    if (!p->ffxSc)
+        return;
+    p->uiEmUso = nossa && u.Tem();
+    {
+        std::lock_guard<std::mutex> lu(p->uiMx);
+        p->uiCb = nossa ? u.callback : nullptr;
+        p->uiCbCtx = nossa ? u.callbackCtx : nullptr;
+        p->uiIds[p->quadro % 8] = {p->quadro, u.frameId};
+    }
+    // a textura: registrada no nosso a cada quadro (a copia interna dela, a cada Present, solta o registro), com a copia
+    // ligada (os gerados deste quadro sao compostos depois de o jogo comecar a UI do proximo); fora, tirada uma vez
+    if (nossa && u.textura)
+    {
+        const FfxResource r = ffxGetResourceDX12(u.textura, ffxGetResourceDescriptionDX12(u.textura), L"UI do jogo",
+                                                 FfxResourceStates(u.texturaEstado));
+        ffxRegisterFrameinterpolationUiResourceDX12(p->ffxSc, r,
+                                                    u.texturaFlags | FFX_UI_COMPOSITION_FLAG_ENABLE_INTERNAL_UI_DOUBLE_BUFFERING);
+        p->uiTexturaNossa = true;
+    }
+    else if (p->uiTexturaNossa)
+    {
+        ffxRegisterFrameinterpolationUiResourceDX12(p->ffxSc, FfxResource{}, 0);
+        p->uiTexturaNossa = false;
+    }
+    std::lock_guard<std::mutex> lf(p->filaMx);
+    for (auto& f : p->fila)
+        if (f.id == p->quadro)
+            f.semHudJogo = nossa ? u.semHud : nullptr, f.semHudJogoEstado = u.semHudEstado;
+}
+
+bool Geracao::UiDoJogoEmUso() const
+{
+    return p->uiEmUso;
+}
+
+// o callback de UI do jogo (FfxApiPresentCallbackFunc, ffx_api/ffx_framegeneration.h) chamado pelo nosso swapchain, na
+// thread de apresentacao da AMD, em cada quadro: a descricao do SDK vira a da API (os mesmos campos e enums, como no
+// provedor da AMD, ffx_provider_framegeneration.cpp) e o frameID volta a ser o do jogo
+namespace {
+struct ApiRecurso
+{
+    void* resource;
+    uint32_t type, format, width, height, depth, mipCount, flags, usage;
+    uint32_t state;
+};
+struct ApiPresenta // ffxCallbackDescFrameGenerationPresent
+{
+    uint64_t type;
+    void* pNext;
+    void* device;
+    void* commandList;
+    ApiRecurso currentBackBuffer, currentUI, outputSwapChainBuffer;
+    bool isGeneratedFrame;
+    uint64_t frameID;
+};
+ApiRecurso Api(const FfxResource& r)
+{
+    return {r.resource, uint32_t(r.description.type), uint32_t(r.description.format), r.description.width,
+            r.description.height, r.description.depth, r.description.mipCount, uint32_t(r.description.flags),
+            uint32_t(r.description.usage), uint32_t(r.state)};
+}
+} // namespace
+
+FfxErrorCode Geracao::Impl::UiCallback(const FfxPresentCallbackDescription* d, void* ctx)
+{
+    Impl* p = static_cast<Impl*>(ctx);
+    void* cb;
+    void* cbCtx;
+    uint64_t idJogo = d->frameID;
+    {
+        std::lock_guard<std::mutex> lu(p->uiMx);
+        cb = p->uiCb, cbCtx = p->uiCbCtx;
+        if (p->uiIds[d->frameID % 8].nosso == d->frameID)
+            idJogo = p->uiIds[d->frameID % 8].jogo;
+    }
+    FfxErrorCode e;
+    if (!cb) // sem o do jogo (ou ele deixou de mandar): a composicao da AMD (a textura de UI registrada, ou so a copia)
+        e = ffxFrameInterpolationUiComposition(d, nullptr);
+    else
+    {
+        ApiPresenta a{};
+        a.type = 0x00020005u; // FFX_API_CALLBACK_DESC_TYPE_FRAMEGENERATION_PRESENT
+        a.device = d->device;
+        a.commandList = d->commandList;
+        a.currentBackBuffer = Api(d->currentBackBuffer);
+        a.currentUI = Api(d->currentUI);
+        a.outputSwapChainBuffer = Api(d->outputSwapChainBuffer);
+        a.isGeneratedFrame = d->isInterpolatedFrame;
+        a.frameID = idJogo;
+        using Fn = uint32_t (*)(ApiPresenta*, void*);
+        e = reinterpret_cast<Fn>(cb)(&a, cbCtx) == 0 ? FFX_OK : FFX_ERROR_BACKEND_API_ERROR;
+    }
+    // teste (DLSS5_GERACAO_DUMP): o quadro despejado como foi para a tela, gerados em ordem e o real, com a UI
+    if (Despejando() && p->despejoId && d->frameID == p->despejoId)
+    {
+        auto* c = reinterpret_cast<ID3D12GraphicsCommandList*>(d->commandList);
+        if (!d->isInterpolatedFrame)
+            p->CopiaParaLeitura(c, d->outputSwapChainBuffer, 9);
+        else if (p->despejoTelaK < 3)
+            p->CopiaParaLeitura(c, d->outputSwapChainBuffer, 6 + p->despejoTelaK++);
+    }
+    return e;
 }
 
 const char* Geracao::UltimoErro() const

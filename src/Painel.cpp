@@ -912,8 +912,7 @@ void Painel::SecaoPerfil(const EstadoPainel& e, AcoesPainel& a, float lc)
         }
         ImGui::EndCombo();
     }
-    Dica("Traz os ajustes de qualquer perfil (de qualquer jogo) ou do padrao do programa. Salvar grava sempre no perfil\n"
-         "deste jogo: carregar o perfil de outro jogo nao mexe no arquivo dele.");
+    Dica("Carrega o perfil de qualquer jogo ou o padrao. Salvar grava so no perfil deste jogo.");
     // para onde vai o Salvar (o "alterado" numa linha propria: ao lado de uma linha que quebra ele ficava uma letra por linha)
     ImGui::PushTextWrapPos(0.f);
     if (comJogo)
@@ -925,8 +924,8 @@ void Painel::SecaoPerfil(const EstadoPainel& e, AcoesPainel& a, float lc)
         ImGui::TextColored(amarelo, "Alterado (não salvo)");
     if (Botao("Salvar", b3, e.perfilAlterado))
         a.perfilSalvar = true;
-    Dica(comJogo ? "Grava os ajustes no perfil deste jogo. Ao sair do programa ou trocar de jogo eles tambem vao para la."
-                 : "Grava os ajustes no padrao do programa (config.json), o ponto de partida de um jogo sem perfil.");
+    Dica(comJogo ? "Grava no perfil deste jogo; ao sair ou trocar de jogo, os ajustes tambem vao para la."
+                 : "Grava no padrao do programa (config.json), o ponto de partida de um jogo sem perfil.");
     ImGui::SameLine(0, 8 * g_e);
     ImGui::BeginDisabled(!comJogo);
     if (Botao("Renomear", b3))
@@ -934,7 +933,7 @@ void Painel::SecaoPerfil(const EstadoPainel& e, AcoesPainel& a, float lc)
         renomeando = !renomeando;
         snprintf(nomeNovo, sizeof nomeNovo, "%s", e.perfilJogo.c_str());
     }
-    Dica("Outro nome para o perfil deste jogo (o exe nem sempre tem o nome do jogo). O jogo continua ligado a ele.");
+    Dica("Outro nome para o perfil deste jogo (o exe nem sempre tem o nome); o jogo segue ligado.");
     ImGui::EndDisabled();
     ImGui::SameLine(0, 8 * g_e);
     const std::string apagavel = !e.perfilBase.empty() ? e.perfilBase : std::string();
@@ -1279,10 +1278,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                 cfg.profundidade = 0; // os 71 blocos
                 mc = true;
             }
-            Dica("Os padroes da NVIDIA (Model A, tons e estruturas em 1, sem protecao de luz, sem ajustes antes da\n"
-                 "rede, sem nitidez CAS, branco de papel do Windows, rede na resolucao da janela). Medido contra a\n"
-                 "saida real da NVIDIA para a mesma imagem: 45,8 dB em 1080p e 47,4 dB em 4K, SDR e HDR (sem rede: 26-29 dB).\n"
-                 "A rede pequena e outro modelo (o rapido da NVIDIA): 36 dB em 4K, nao chega a 47 com nenhum ajuste.");
+            Dica("Padroes da NVIDIA (Model A, sem CAS): 45,8 dB em 1080p e 47,4 dB em 4K contra a saida real.");
             ImGui::SameLine(0, 8 * g_e);
             if (Botao("Visual Zorah", b2))
             {
@@ -1303,13 +1299,10 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                 cfg.temporal.exposicao = 1.f;
                 mc = true;
             }
-            Dica("Model C, tom 0, ponte 'Curva do jogo', luzes 0,5 antes da rede: imita a foto Zorah do jogo (o DLSS 5\n"
-                 "dentro do jogo, antes do tonemap). Se afasta do que a rede da NVIDIA faz numa imagem capturada\n"
-                 "(24 dB contra a saida real da NVIDIA; o 'Padrao NVIDIA' da 45-47 dB).");
+            Dica("Imita a foto Zorah do jogo (Model C, ponte Curva do jogo); fica em 24 dB contra a NVIDIA.");
             if (Botao("Redefinir tudo", lc))
                 a.redefinir = true;
-            Dica("Volta todos os ajustes aos padroes de fabrica do programa (nada e gravado ate salvar, sair ou trocar\n"
-                 "de jogo).");
+            Dica("Volta tudo aos padroes de fabrica; nada e gravado ate salvar, sair ou trocar de jogo.");
         }
 
         // ---- controles globais (os da NVIDIA) ----
@@ -1319,24 +1312,18 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         mc |= Deslizador("Estrutura", &cfg.ngx.estruturaLocal, -1.f, 2.f, "%.3f",
                          "DLSSNR.LocalStructureStrength: detalhe e forma locais (faixa da NVIDIA, -1 a 2).", 1.f);
         mc |= Deslizador("Tom", &cfg.ngx.tomLocal, 0.f, 1.f, "%.3f",
-                         "DLSSNR.LocalToneStrength: luz e cor em grande escala; tambem escala a gradacao do modelo\n"
-                         "(faixa da NVIDIA, 0 a 1).", 1.f);
+                         "DLSSNR.LocalToneStrength: luz e cor em escala grande e gradacao do modelo (NVIDIA, 0 a 1).", 1.f);
         Deslizador("Intensidade", &cfg.ngx.intensidade, 0.f, 2.f, "%.3f",
-                   "DLSSNR.Intensity: quanto da resposta da rede entra; acima de 1 reforca a luz (faixa da NVIDIA, 0 a 2;\n"
-                   "vale na composicao de referencia NVIDIA/RenoDX, a do Padrao NVIDIA).", 1.f);
+                   "DLSSNR.Intensity: quanto da resposta da rede entra; acima de 1 reforca a luz (0 a 2).", 1.f);
         Deslizador("Força da edição", &cfg.forca, 0.f, 2.f, "%.3f", "Quanto da mudanca da rede entra no quadro (1 = a da rede).", 1.f);
         Deslizador("Nitidez (CAS)", &cfg.nitidez, 0.f, 1.f, "%.2f",
-                   "Nitidez adaptativa ao contraste (o algoritmo do CAS da AMD FidelityFX) na imagem final, so no lado da\n"
-                   "rede: reforca o detalhe fraco e quase nao mexe nas bordas fortes (sem halo). 0 = desligada (padrao),\n"
-                   "1 = o maximo do CAS. Em HDR age acima do branco sem saturar. Na captura de buffer vai junto com a\n"
-                   "edicao que volta ao jogo. Original, a metade original da comparacao e os modos de diagnostico ficam\n"
-                   "sem nitidez. Custo: um passe 3x3 na resolucao da tela.", 0.f);
+                   "Nitidez CAS so no lado da rede; 0 = desligada (padrao), 1 = maximo. Custa um passe 3x3.", 0.f);
 
         {
             const char* modelos[] = {"Model A", "Model B", "Model C"};
             if (Segmentos("modelo", modelos, 3, &cfg.ngx.modelo))
                 mc = true;
-            Dica("A: o padrao da NVIDIA. B: natural (-0,1 EV, contraste -25%, saturacao x0,90). C: cinematico (saturacao x0,85).");
+            Dica("A: NVIDIA. B: natural (-0,1 EV, contraste -25%, sat x0,90). C: cinematico (sat x0,85).");
             Marca("Gradação do modelo (B/C)", &cfg.ngx.gradacao, "A gradacao final do kernel da NVIDIA para os Models B e C.");
         }
 
@@ -1344,13 +1331,10 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         Secao("PELE (NVIDIA)");
         {
             mc |= Marca("Pele separada pela rede", &cfg.ngx.mascara,
-                        "DLSSNR.UseAutoMask: liga o canal de pele da rede (com a Estrutura da pele). Desligada, o canal fica\n"
-                        "no padrao da NVIDIA; o resto da cena nao muda. Padrao: ligada.");
+                        "DLSSNR.UseAutoMask: canal de pele da rede; desligado, volta ao padrao. Padrao: ligada.");
             ImGui::BeginDisabled(!cfg.ngx.mascara);
             mc |= Deslizador("Estrutura da pele", &cfg.ngx.estruturaPele, -1.f, 2.f, "%.3f",
-                             "DLSSNR.SkinStructureStrength (faixa da NVIDIA, -1 a 2). Efeito pequeno: medido canal por canal,\n"
-                             "a rede nao separa a pele sozinha (o canal muda pele e cena quase igual). A NVIDIA separa a pele\n"
-                             "com um modelo de mascara proprio, que nao existe neste runtime.", 1.f);
+                             "DLSSNR.SkinStructureStrength (-1 a 2): efeito pequeno, a rede nao separa a pele sozinha.", 1.f);
             ImGui::EndDisabled();
         }
 
@@ -1360,10 +1344,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             int f = cfg.fonte == 1 ? 1 : 0;
             if (Segmentos("fonte", fontes, 2, &f, 32 * g_e))
                 cfg.fonte = f;
-            Dica("Video: le a janela como o OBS (qualquer jogo, inclusive online); a rede ve o HUD e o movimento e estimado.\n"
-                 "Buffer: o overlay coloca uma DLL no jogo aberto (nada e gravado na pasta dele) e pega o que o jogo entrega\n"
-                 "ao FSR/XeSS: a cor sem HUD, a profundidade e o movimento exato; o resultado volta para o proprio jogo.\n"
-                 "So jogos DirectX 12 com FSR ou XeSS ligado no menu grafico. Jogo com anti-cheat e recusado (banimento).");
+            Dica("Video: como o OBS, qualquer jogo. Buffer: DLL no jogo (DX12 + FSR/XeSS); anti-cheat recusa.");
             if (cfg.fonte == 1)
             {
                 const std::string& s = e.estadoBuffer;
@@ -1380,19 +1361,8 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                 int ig = cfg.geracao >= 2 ? std::min(cfg.geracao, 4) - 1 : 0;
                 if (Segmentos("geracao", geracoes, 4, &ig, 30 * g_e))
                     cfg.geracao = ig ? ig + 1 : 0;
-                Dica("A geracao de quadros do FidelityFX da AMD (Frame Interpolation + Optical Flow + o swapchain dela)\n"
-                     "dentro do jogo: quadros novos de verdade entre os do jogo, com o movimento e a profundidade que ele\n"
-                     "manda ao FSR. Os gerados ja levam a edicao da rede (ela esta no quadro do jogo).\n"
-                     "2x: 1 gerado no meio (o da AMD). 3x e 4x: 2 ou 3 gerados em 1/3, 2/3 ou 1/4, 2/4, 3/4 do caminho\n"
-                     "(a interpolacao da AMD com o instante do quadro no lugar do meio fixo), apresentados com o intervalo\n"
-                     "do jogo dividido por 3 ou 4. Muda a qualquer momento, sem reabrir o jogo.\n"
-                     "A DLL tem de entrar no jogo antes do DirectX: ao ligar a geracao com o jogo conectado, o overlay a\n"
-                     "copia para a pasta do jogo como version.dll (ou dxgi.dll; nada mais muda la) e pede para reabrir o\n"
-                     "jogo UMA vez. Dai em\n"
-                     "diante o jogo ja abre com ela (pela Steam ou como for), o overlay conecta sozinho e a geracao liga,\n"
-                     "desliga e muda so por aqui. A DLL de outro programa (Cyber Engine Tweaks, ReShade, OptiScaler) nunca\n"
-                     "e substituida.\n"
-                     "Desligue a geracao de quadros do proprio jogo (FSR Frame Generation / DLSS FG) e o AFMF do driver.");
+                Dica("Geracao de quadros da AMD no jogo (2x a 4x), muda a qualquer momento. Na 1a vez pede reabrir o "
+                     "jogo. Desligue o AFMF do driver.");
                 if (e.instaladoNoJogo && Botao("Remover do jogo"))
                     a.removerDoJogo = true;
                 if (!e.estadoGeracao.empty())
@@ -1411,9 +1381,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                                    "Saída crua da rede (sem movimento)"};
             ImGui::SetNextItemWidth(lc);
             ImGui::Combo("##modo", &cfg.modo, modos, 6);
-            Dica("Ctrl+Shift+N troca o modo.\n"
-                 "Saida crua: a ultima resposta como a rede a deu, no quadro que ela viu, sem a composicao nem a\n"
-                 "gradacao. Se um defeito aparece aqui, e da rede.");
+            Dica("Ctrl+Shift+N troca o modo. Saida crua: resposta da rede sem composicao; defeito aqui e dela.");
             if (cfg.modo == 2)
                 Deslizador("Divisão", &cfg.divisao, 0.f, 1.f, "%.2f", nullptr, 0.5f);
         }
@@ -1431,11 +1399,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                 int il = cfg.temporal.luzLog ? 1 : 0;
                 if (Segmentos("luz", luzes, 2, &il, 30 * g_e))
                     cfg.temporal.luzLog = il == 1;
-                Dica("Como a edicao da rede chega ao quadro. Linear: a diferenca de luz e somada. Logaritmica: a razao\n"
-                     "de luz (log2) e multiplicada, entao um realce (olho, labio, quina) cresce na proporcao do proprio\n"
-                     "brilho. Na mesma resolucao e com forca 1 dao o mesmo resultado; diferem quando a rede roda menor\n"
-                     "que a tela (a edicao e ampliada), com outra forca e na captura de buffer (o jogo leva a edicao ao\n"
-                     "quadro seguinte).");
+                Dica("Linear soma a luz; logaritmica multiplica a razao. Iguais em resolucao igual e forca 1.");
             }
             const char* comps[] = {"Crua (resposta - proxy)", "Referencia NVIDIA/RenoDX"};
             ImGui::SetNextItemWidth(lc);
@@ -1443,8 +1407,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             ImGui::BeginDisabled(cfg.temporal.composicao == 0);
             Deslizador("Cor", &cfg.temporal.cor, 0.f, 1.f, "%.3f", "0 = cores do jogo na luz da rede, 1 = cores da rede (padrao).", 1.f);
             Deslizador("Proteção de luz", &cfg.temporal.guarda, 1.f, 16.f, "%.1fx",
-                       "A luz de cada ponto muda no maximo esse fator. 16 = desligada (padrao): medido contra a NVIDIA,\n"
-                       "2,0 afastava 1,5-2 dB.", 16.f);
+                       "Limita a mudanca de luz por ponto. 16 = desligada (padrao); 2,0 afastou 1,5-2 dB da NVIDIA.", 16.f);
             ImGui::EndDisabled();
 
             Secao("COR POR MATIZ (DEPOIS DA REDE)");
@@ -1458,8 +1421,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                     Deslizador((std::string(matizes[i]) + ": saturação").c_str(), &cfg.matiz.sat[i], -1.f, 1.f, "%+.3f",
                                "Saturacao desta faixa de cor no resultado: -1 = cinza, 0 = igual, +1 = o dobro.", 0.f, cores[i]);
                     Deslizador((std::string(matizes[i]) + ": brilho").c_str(), &cfg.matiz.luz[i], -1.f, 1.f, "%+.3f",
-                               "Brilho desta faixa de cor no resultado: -1 = apaga, +1 = o dobro. Cinza e branco nao\n"
-                               "mudam (o efeito pesa pela saturacao do pixel).", 0.f, cores[i]);
+                               "Brilho desta faixa: -1 apaga, +1 dobra. Cinza e branco nao mudam (pesa a saturacao).", 0.f, cores[i]);
                     ImGui::PopID();
                 }
                 if (Botao("Zerar cores"))
@@ -1476,11 +1438,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                 cfg.ponte = ip - 1;
                 mc = true;
             }
-            Dica("Como o quadro vira o proxy SDR que a rede ve; em HDR a cadeia trabalha nele e so a saida volta ao HDR.\n"
-                 "Curva do jogo: a curva filmica e desfeita na entrada (a rede ve luz de cena) e refeita na saida.\n"
-                 "Luz direta sem joelho: a luz vai sem corte e so o ombro do codificador da NVIDIA comprime os realces (o\n"
-                 "contrato do modo 1 dela). So na captura de buffer (cor antes do tonemap): na captura de video o quadro ja\n"
-                 "passou pelo tonemap do jogo e ela vira a Automatica.");
+            Dica("Proxy SDR da rede: 'Curva do jogo' desfaz a filmica; 'Luz direta' so na captura de buffer.");
             Deslizador("Branco (nits)", &cfg.brancoNits, 0.f, 400.f, cfg.brancoNits > 0.f ? "%.0f" : "Windows",
                        "Branco de papel do jogo em HDR (0 = o branco SDR do Windows, o certo para a rede).", 0.f);
 
@@ -1501,9 +1459,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                 int ir = cfg.redePequena ? 1 : 0;
                 if (Segmentos("rede", redes, 2, &ir, 32 * g_e))
                     cfg.redePequena = ir == 1;
-                Dica("Grande: a do DLSS 5 (71 blocos), a mais fiel a NVIDIA. Pequena: a rapida que a NVIDIA traz no DLSS\n"
-                     "310.9.16 (31 blocos): mais leve, mais diferente (36 dB contra 47 da grande em 4K). Vale ao religar:\n"
-                     "a troca recarrega os pesos com a GPU parada.");
+                Dica("Grande (71 blocos): fiel a NVIDIA. Pequena (31): 36 dB contra 47 em 4K. Vale ao religar.");
                 const int alturas[] = {540, 600, 720, 900, 1080, 1440, 2160};
                 const char* nomes[] = {"540p", "600p", "720p", "900p", "1080p", "1440p", "2160p (nativa até 4K)"};
                 int ia = 4;
@@ -1513,18 +1469,14 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                 ImGui::SetNextItemWidth(lc);
                 if (ImGui::Combo("##altura", &ia, nomes, 7))
                     cfg.alturaRede = alturas[ia];
-                Dica("Altura em que a rede roda (limitada pela janela). Menor = mais rapido e a resposta chega antes; a\n"
-                     "edicao e ampliada sobre o quadro nativo. A da janela (ate 2160) e a mais fiel a NVIDIA. Vale ao\n"
-                     "religar: cada tamanho novo prende memoria de video que o driver so devolve ao fechar o overlay.");
+                Dica("Menor = mais rapido; a da janela (ate 2160) e a mais fiel. Vale ao religar (prende VRAM).");
                 ImGui::BeginDisabled(cfg.redePequena);
                 Marca("Rede completa (71 blocos)", &cfg.rede.redeCompleta,
                       "Desligado pula 3 blocos (42, 43, 46): ~1 ms mais rapido. So na rede grande.");
                 ImGui::EndDisabled();
                 ImGui::BeginDisabled(e.historicoAtivo);
                 DeslizadorInt("Passes", &cfg.rede.passes, 1, 3, "%d",
-                              "Quantas vezes a rede inteira roda por resposta (1 = normal); mais = estilo mais forte e mais caro.\n"
-                              "Vale ao religar, como a rede completa e o tamanho. Com o historico da propria rede ligado o\n"
-                              "runtime so roda 1 passe.", 1.f);
+                              "Passes da rede por resposta (1 = normal); mais = mais forte e mais caro. Vale ao religar.", 1.f);
                 ImGui::EndDisabled();
                 if (!e.alvo.empty() && (cfg.redePequena != e.pequenaSessao || cfg.alturaRede != e.alturaSessao ||
                                         (cfg.rede.passes != e.passesSessao && !e.historicoAtivo) ||
@@ -1542,55 +1494,33 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                 if (cfg.fonte != 1)
                 {
                 DeslizadorInt("Quadros gerados", &cfg.ritmo, 1, 4, "x%.0f",
-                              "Como o AMD Fluid Motion Frames, mas ate 4x: a rede edita 1 de cada N quadros e os N-1\n"
-                              "quadros seguintes sao gerados a partir dos processados -- sempre com a rede aplicada, nunca\n"
-                              "um quadro novo com a edicao velha (o rastro). 1 = todo quadro processado.", 1.f);
+                              "Como o AMD Fluid Motion Frames (ate 4x): a rede edita 1 de cada N; 1 = todos os quadros.", 1.f);
                 ImGui::BeginDisabled(cfg.ritmo < 2);
                 const char* gerados[] = {"Quadro repetido", "Quadro mesclado"};
                 Segmentos("gerado", gerados, 2, &cfg.gerado, 30 * g_e);
-                Dica("Quadro repetido: o processado se repete nos quadros gerados (sem atraso extra: na captura de\n"
-                     "buffer ele aparece 1 quadro depois de feito).\n"
-                     "Quadro mesclado: os N quadros de cada ciclo misturam so 2 processados, o atual e o proximo, em\n"
-                     "passos iguais (do proximo: 2x 50/50; 3x 25%, 50% e 75%; 4x 20%, 40%, 60% e 80%). A mistura\n"
-                     "comeca no quadro em que o proximo fica pronto: sempre 1 quadro de atraso, em qualquer N.");
+                Dica("Repetido: repete o processado. Mesclado: mistura o atual e o proximo, sempre 1 quadro de atraso.");
                 ImGui::EndDisabled();
                 }
             }
 
             Secao("MOVIMENTO");
             if (Marca("Movimento simulado (fluxo óptico)", &cfg.movimento,
-                      "Vetores de movimento estimados entre os quadros capturados, sem buffer do jogo: as guias do\n"
-                      "historico da propria rede."))
+                      "Vetores de movimento estimados entre quadros capturados (sem buffer); guiam o historico."))
                 mc = true;
             ImGui::BeginDisabled(e.historicoAtivo);
             Marca("Reuso adaptativo do ViT (ao reabrir)", &cfg.reusoVit,
-                  "Do runtime do lmxxf: quando o quadro muda pouco, os blocos ViT reaproveitam o ultimo calculo.\n"
-                  "Vale na proxima vez que o programa abrir. Fica de fora enquanto o historico da propria rede estiver\n"
-                  "ligado (os dois nao combinam).");
+                  "Blocos ViT reusam o calculo se o quadro muda pouco. Vale ao reabrir; nao vai com historico.");
             ImGui::EndDisabled();
             {
                 bool hist = cfg.temporalRede == 1;
                 if (Marca("Histórico da própria rede (ao reabrir)", &hist,
-                          "A rede tem uma entrada de historico (a resposta anterior dela) e decide sozinha quanto dela\n"
-                          "mistura (a cabeca de historico do bloco 70). Sem isto essa entrada recebe o quadro atual de novo.\n"
-                          "Ligado: a resposta anterior chega trazida pelo movimento ate o quadro atual -- na captura de\n"
-                          "buffer o movimento e a profundidade do jogo, na de video o fluxo optico. Onde o caminho sai da\n"
-                          "imagem ou a cor nao confere, o runtime descarta o historico.\n"
-                          "Vale ao reabrir o programa. Forca 1 passe e desliga o reuso do ViT. Precisa do runtime\n"
-                          "compilado deste branch (runtime\\lmxxf\\compilar.ps1 e runtime\\adaptador\\compilar.ps1)."))
+                          "Reusa a resposta anterior da rede pelo movimento. Vale ao reabrir; exige runtime compilado."))
                     cfg.temporalRede = hist ? 1 : 0;
                 ImGui::BeginDisabled(!e.historicoAtivo);
                 Deslizador("Força do histórico", &cfg.forcaHistorico, 0.f, 2.f, "%.3f",
-                           "Escala do peso que a propria rede da a resposta anterior (forca x 0,74 x a decisao da cabeca de\n"
-                           "historico, teto 0,95). 1 = o da rede; 2 = a decisao dela dobrada (padrao: -9% de cintilacao na\n"
-                           "saida da rede no TLOU2 parado, sem rastro a mais em movimento); menor = menos rastro e mais\n"
-                           "cintilacao; 0 = sem historico.", 2.f);
+                           "Peso da resposta anterior: 2 = padrao (-9% de cintilacao); 1 = o da rede; 0 = sem historico.", 2.f);
                 Deslizador("Limite do histórico", &cfg.recorteHistorico, 0.f, 4.f, "%.2f",
-                           "Nosso, nao da NVIDIA: a resposta anterior da rede so entra dentro da faixa que a propria rede\n"
-                           "da AGORA em volta do pixel (media +- este numero de desvios da saida crua no 3x3, o recorte por\n"
-                           "variancia do TAA). Foi feito contra o rastro da resposta atrasada (modo removido); sem ela so\n"
-                           "piora: cintilacao 0,237 -> 0,256, rastro e fantasma tambem (jogo de teste). 0 = sem limite\n"
-                           "(padrao, como a NVIDIA).", 0.f);
+                           "Nosso (nao NVIDIA): limita o historico a faixa da saida atual; 0 = sem limite (padrao).", 0.f);
                 ImGui::EndDisabled();
                 if (!e.historicoRede.empty())
                 {
