@@ -1614,13 +1614,22 @@ RWTexture2D<float4> saida : register(u0);
             float preLuz, preSombra, preLimiar, preLimiarSombra, preCor;
             UINT pad2, pad3, pad4;
             float satMatiz[6], luzMatiz[6];
-            UINT usaMatiz, temCrua, luzLog, padA1;
-        } kc{inteiro.w,      inteiro.h,      fed.w, fed.h, edicao ? std::clamp(cfg.forca, 0.f, 2.f) : 0.f, (UINT)cfg.modo, cfg.divisao,
+            UINT usaMatiz, temCrua, luzLog;
+            float reforco;
+        } kc{inteiro.w,      inteiro.h,      fed.w, fed.h, 0.f, (UINT)cfg.modo, cfg.divisao,
              edicao ? 1u : 0u, hdr ? 1u : 0u, escalaUsada, kExp, kCon, kSat, grada ? 1u : 0u,
              pontePassada == 3 ? 1u : 0u, (hdr && pontePassada == 1) ? 1u : 0u, cfg.preLuz, cfg.preSombra, cfg.preLimiar, cfg.preLimiarSombra, cfg.preCor,
              0, 0, 0, {}, {}, cfg.matiz.Ativa() ? 1u : 0u, (cfg.modo == 5 && crua) ? 1u : 0u,
              cfg.temporal.luzLog ? 1u : 0u, 0};
         static_assert(sizeof(kc) == 40 * 4, "constantes: o mesmo layout do cbuffer do CSCompoe");
+        {
+            // a forca e a intensidade acima de 1 (k = forca x intensidade): a edicao de cada pixel entra com no maximo 1 e
+            // o que passa disso vai sobre a edicao da vizinhanca (CSCompoe, reforco); a intensidade nao entra mais na
+            // edicao (Temporal, ate 1)
+            const float k = std::clamp(cfg.forca, 0.f, 2.f) * std::max(std::clamp(cfg.ngx.intensidade, 0.f, 2.f), 1.f);
+            kc.forca = edicao ? std::min(k, 1.f) : 0.f;
+            kc.reforco = edicao ? std::max(k - 1.f, 0.f) : 0.f;
+        }
         for (int i = 0; i < 6; ++i)
         {
             kc.satMatiz[i] = std::clamp(cfg.matiz.sat[i], -1.f, 1.f);

@@ -80,10 +80,13 @@ Tex* Temporal::Edicao(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Dev
     resp.Para(c, SRV);
     u0.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     linear.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    // a intensidade acima de 1 nao entra aqui (pixel a pixel ela elevava a razao de luz de cada pixel a potencia: na
+    // borda cabelo/ceu do TLOU2, fio a fio, virava pintas claras e escuras): a composicao a aplica sobre a edicao da
+    // vizinhanca (Reforco, CSCompoe) -- a luz a mais se espalha em volta, como a aura da NVIDIA
     KEdicao k{linear.w,
               linear.h,
               (UINT)std::clamp(p.composicao, 0, 1),
-              std::clamp(p.intensidade, 0.f, 2.f), // as faixas da NVIDIA: acima de 2 a luz se inverte (medido)
+              std::clamp(p.intensidade, 0.f, 1.f),
               std::clamp(p.cor, 0.f, 1.f),
               std::clamp(p.guarda, 1.f, 16.f),
               std::max(p.exposicao, 1e-3f),

@@ -269,7 +269,7 @@ Os parâmetros do DLSS 5 seguem os nomes que a NVIDIA expõe no NGX (os mesmos d
 | Chave | Faixa | NGX / o que faz |
 |---|---|---|
 | `modelo` | 0/1/2 | `DLSSNR.Style`: Model A (padrão), B (natural), C (cinemático) — controle de estilo da rede + gradação final da NVIDIA |
-| `intensidade` | 0..2 | `DLSSNR.Intensity`: quanto da resposta entra (acima de 1 reforça a luz; na composição de referência) |
+| `intensidade` | 0..2 | `DLSSNR.Intensity`: quanto da resposta entra (acima de 1 reforça a luz; na composição de referência). O reforço (intensidade × força acima de 1) vai sobre a edição da vizinhança (~1/270 da altura em volta), não pixel a pixel: pixel a pixel ele elevava a razão de luz de cada pixel à potência (2 × 2 = razão⁴) e, na borda cabelo/céu do TLOU2, os fios soltos viravam pintas claras e escuras em vez da aura de luz (medido no resultado: 2,5% → 0,4% da faixa da borda, a mesma luz média). Com intensidade e força até 1 nada muda |
 | `tomLocal` | 0..1 | `DLSSNR.LocalToneStrength`: luz e cor em grande escala; também escala a gradação do modelo |
 | `estruturaLocal` | −1..2 | `DLSSNR.LocalStructureStrength` |
 | `estruturaPele` | −1..2 | `DLSSNR.SkinStructureStrength` (com a pele separada pela rede) |
