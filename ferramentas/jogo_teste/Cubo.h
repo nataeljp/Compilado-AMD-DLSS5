@@ -1,7 +1,10 @@
-// Cena 3D do jogo de teste (--cubo): tres cubos girando e andando sobre um piso xadrez e na frente de uma parede, com a
-// camera balancando -- profundidade de verdade (Z invertido e infinito, como o contexto do FSR do jogo de teste) e o
-// movimento de cada pixel pela posicao anterior do objeto e da camera (o que um motor entrega ao FSR: anterior - atual,
-// em uv). O tempo vem do numero do quadro, entao qualquer instante pode ser desenhado de novo: a verdade dos gerados.
+// Cena 3D do jogo de teste (--cubo), com movimento de jogo: uma sala xadrez fechada (piso, teto e 4 paredes: toda
+// direcao tem geometria com movimento certo), a camera girando sem parar (--giro, padrao 120 graus/s: uma virada rapida
+// de mouse, ~126 px por quadro a 20 q/s), 6 cubos em roda girando rapido e 2 cubos cruzando na frente deles no sentido
+// contrario (o que fica escondido e aparece de repente: onde a geracao faz fantasma). Profundidade de verdade (Z
+// invertido e infinito, como o contexto do FSR do jogo de teste) e o movimento de cada pixel pela posicao anterior do
+// objeto e da camera (o que um motor entrega ao FSR: anterior - atual, em uv). O tempo vem do numero do quadro, entao
+// qualquer instante pode ser desenhado de novo: a verdade dos gerados.
 #pragma once
 #include <d3d12.h>
 #include <d3dcompiler.h>
@@ -14,6 +17,8 @@ class CenaCubo
 {
   public:
     static constexpr DXGI_FORMAT kCor = DXGI_FORMAT_R16G16B16A16_FLOAT, kMov = DXGI_FORMAT_R32G32_FLOAT;
+    static constexpr int kObjetos = 14; // 6 da sala, 6 cubos em roda, 2 cruzando
+    float giro = 120.f;                 // graus por segundo da camera
 
     bool Cria(ID3D12Device* d)
     {
@@ -94,7 +99,7 @@ class CenaCubo
         c->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         const float aspecto = float(w) / float(h);
         const M4 vpAtual = Camera(t, aspecto), vpAnt = Camera(tAnt, aspecto);
-        for (int o = 0; o < 5; ++o)
+        for (int o = 0; o < kObjetos; ++o)
         {
             float cor[4];
             const M4 m = Objeto(o, t, cor), mAnt = Objeto(o, tAnt, cor);
@@ -104,7 +109,7 @@ class CenaCubo
                 float cor[4];
             } k{Mul(vpAtual, m), Mul(vpAnt, mAnt), m, {cor[0], cor[1], cor[2], cor[3]}};
             c->SetGraphicsRoot32BitConstants(0, 52, &k, 0);
-            c->DrawInstanced(o < 2 ? 6 : 36, 1, 0, 0);
+            c->DrawInstanced(o < 6 ? 6 : 36, 1, 0, 0);
         }
     }
 
@@ -153,15 +158,13 @@ class CenaCubo
         r.m[0][0] = std::cos(a), r.m[0][2] = std::sin(a), r.m[2][0] = -std::sin(a), r.m[2][2] = std::cos(a);
         return r;
     }
-    // a camera balanca (+-17 graus) olhando a parede; projecao com Z invertido e infinito (perto 0,1, 60 graus)
-    static M4 Camera(double t, float aspecto)
+    // a camera no meio da sala girando sem parar (giro graus/s), um pouco para baixo e balancando de leve; projecao com Z
+    // invertido e infinito (perto 0,1, 60 graus)
+    M4 Camera(double t, float aspecto) const
     {
-        const float a = 0.3f * float(std::sin(0.4 * t)), ex = 8.f * std::sin(a), ez = -8.f * std::cos(a);
-        const float ey = 3.f, tx = 0.f, ty = 0.7f, tz = 0.f;
-        float z[3] = {tx - ex, ty - ey, tz - ez};
-        const float nz = std::sqrt(z[0] * z[0] + z[1] * z[1] + z[2] * z[2]);
-        for (float& v : z)
-            v /= nz;
+        const double a = double(giro) * 3.14159265358979 / 180.0 * t, inc = -0.18;
+        const float ex = 0.6f * float(std::sin(0.9 * t)), ey = 2.2f + 0.15f * float(std::sin(1.7 * t)), ez = 0.f;
+        float z[3] = {float(std::sin(a) * std::cos(inc)), float(std::sin(inc)), float(std::cos(a) * std::cos(inc))};
         float x[3] = {z[2], 0.f, -z[0]}; // cima (0,1,0) x z
         const float nx = std::sqrt(x[0] * x[0] + x[2] * x[2]);
         x[0] /= nx, x[2] /= nx;
@@ -177,28 +180,49 @@ class CenaCubo
         p.m[0][0] = f / aspecto, p.m[1][1] = f, p.m[2][3] = perto, p.m[3][2] = 1.f;
         return Mul(p, v);
     }
-    // 0 piso, 1 parede (quadrados [-1,1] no plano xy, normal -z), 2..4 cubos ([-0,5; 0,5]); cor[3] = 0 plano, 1 cubo
+    // 0..5 a sala (quadrados [-1,1] no plano xy, normal -z virada para dentro): piso, teto, paredes +z, -z, +x, -x;
+    // 6..11 cubos em roda (raio 7) girando rapido; 12..13 cubos cruzando na roda de dentro (raio 4) no sentido contrario
+    // ao da camera. cor[3] = 0 plano, 1 cubo
     static M4 Objeto(int o, double t, float* cor)
     {
-        const float s = float(t);
+        const float s = float(t), q = 1.5707963f, L = 30.f, A = 6.f;
+        cor[3] = o < 6 ? 0.f : 1.f;
         switch (o)
         {
         case 0:
-            cor[0] = 0.8f, cor[1] = 0.75f, cor[2] = 0.6f, cor[3] = 0;
-            return Mul(Desloca(0, 0, -10), Mul(GiraX(1.5707963f), Escala(80, 80, 1)));
+            cor[0] = 0.8f, cor[1] = 0.75f, cor[2] = 0.6f;
+            return Mul(GiraX(q), Escala(L, L, 1));
         case 1:
-            cor[0] = 0.6f, cor[1] = 0.65f, cor[2] = 0.8f, cor[3] = 0;
-            return Mul(Desloca(0, 40, 15), Escala(80, 40, 1));
+            cor[0] = 0.7f, cor[1] = 0.7f, cor[2] = 0.7f;
+            return Mul(Desloca(0, 2 * A, 0), Mul(GiraX(-q), Escala(L, L, 1)));
         case 2:
-            cor[0] = 1.0f, cor[1] = 0.3f, cor[2] = 0.2f, cor[3] = 1;
-            return Mul(Desloca(0, 1.2f, 0), Mul(GiraY(1.5f * s), Mul(GiraX(0.7f * s), Escala(1.4f, 1.4f, 1.4f))));
+            cor[0] = 0.6f, cor[1] = 0.65f, cor[2] = 0.85f;
+            return Mul(Desloca(0, A, L), Escala(L, A, 1));
         case 3:
-            cor[0] = 0.2f, cor[1] = 0.9f, cor[2] = 0.3f, cor[3] = 1;
-            return Mul(Desloca(3.f * std::sin(1.1f * s), 0.8f, 2.f), Mul(GiraY(-2.f * s), Escala(1, 1, 1)));
+            cor[0] = 0.85f, cor[1] = 0.6f, cor[2] = 0.6f;
+            return Mul(Desloca(0, A, -L), Mul(GiraY(2 * q), Escala(L, A, 1)));
+        case 4:
+            cor[0] = 0.6f, cor[1] = 0.85f, cor[2] = 0.6f;
+            return Mul(Desloca(L, A, 0), Mul(GiraY(q), Escala(L, A, 1)));
+        case 5:
+            cor[0] = 0.85f, cor[1] = 0.8f, cor[2] = 0.5f;
+            return Mul(Desloca(-L, A, 0), Mul(GiraY(-q), Escala(L, A, 1)));
         default:
-            cor[0] = 0.3f, cor[1] = 0.4f, cor[2] = 1.0f, cor[3] = 1;
-            return Mul(Desloca(-2.5f, 0.9f + 0.5f * std::sin(2.f * s), -1.5f), Mul(GiraX(2.5f * s), Escala(0.9f, 0.9f, 0.9f)));
+            break;
         }
+        static const float kCores[8][3] = {{1, 0.3f, 0.2f}, {0.2f, 0.9f, 0.3f}, {0.3f, 0.4f, 1},   {1, 0.85f, 0.2f},
+                                           {0.8f, 0.3f, 1}, {0.2f, 0.9f, 0.9f}, {1, 1, 1}, {1, 0.5f, 0.1f}};
+        const int i = o - 6;
+        for (int k = 0; k < 3; ++k)
+            cor[k] = kCores[i][k];
+        if (i < 6) // em roda, girando e quicando
+        {
+            const float ang = float(i) * 1.0471976f;
+            return Mul(Desloca(7.f * std::sin(ang), 1.1f + 0.6f * std::sin(3.f * s + float(i)), 7.f * std::cos(ang)),
+                       Mul(GiraY(4.f * s + float(i)), Mul(GiraX(3.f * s), Escala(1.3f, 1.3f, 1.3f))));
+        }
+        const float ang = -3.f * s + float(i) * 3.14159265f; // contra o giro da camera
+        return Mul(Desloca(4.f * std::sin(ang), 1.f, 4.f * std::cos(ang)), Mul(GiraY(-6.f * s), Escala(0.9f, 0.9f, 0.9f)));
     }
 
     D3D12_CPU_DESCRIPTOR_HANDLE Rtv(int vaga, int i) const

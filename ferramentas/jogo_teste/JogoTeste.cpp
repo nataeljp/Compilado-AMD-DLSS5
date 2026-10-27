@@ -188,12 +188,15 @@ int wmain(int argc, wchar_t** argv)
     }
     bool hud = false, cubo = false;
     UINT64 verdade = 0; // --verdade Q (com --cubo --hud): grava a verdade dos instantes Q-1 + k/N (k = 0..N) e sai
+    float giro = 120.f; // --giro G (com --cubo): graus por segundo da camera
     for (int i = 3; i < argc; ++i)
     {
         hud |= !wcscmp(argv[i], L"--hud");
         cubo |= !wcscmp(argv[i], L"--cubo");
         if (!wcscmp(argv[i], L"--verdade") && i + 1 < argc)
             verdade = UINT64(_wtoi64(argv[i + 1]));
+        if (!wcscmp(argv[i], L"--giro") && i + 1 < argc)
+            giro = float(_wtof(argv[i + 1]));
     }
     for (int i = 3; i < argc; ++i)
     {
@@ -336,8 +339,10 @@ int wmain(int argc, wchar_t** argv)
     {
         if (!cena.Cria(dev.Get()))
             return 10;
+        cena.giro = giro;
         cena.Alvos(0, cor.r.Get(), mov.r.Get(), prof.r.Get());
-        printf("cena 3D: cubos girando sobre piso e parede, camera balancando (profundidade e movimento de verdade)\n");
+        printf("cena 3D: sala fechada, camera girando %.0f graus/s, cubos girando e cruzando (profundidade e movimento de "
+               "verdade)\n", giro);
     }
     // um buffer de upload para os tres e um de leitura para a saida
     const UINT64 tc = UINT64(cor.fp.Footprint.RowPitch) * H, tm = UINT64(mov.fp.Footprint.RowPitch) * RH,
