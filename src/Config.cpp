@@ -27,7 +27,7 @@ ParamsRede Config::Rede() const
     // a decodificacao da NVIDIA no runtime: a resposta inteira (a forca e a cor ficam nos controles globais)
     r.detalhe = 1.f;
     r.cor = 1.f;
-    r.forcaHistorico = std::clamp(forcaHistorico, 0.f, 1.f);
+    r.forcaHistorico = std::clamp(forcaHistorico, 0.f, 2.f);
     r.recorteHistorico = std::clamp(recorteHistorico, 0.f, 4.f);
     return r;
 }

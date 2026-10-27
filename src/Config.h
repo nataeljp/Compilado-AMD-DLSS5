@@ -69,7 +69,10 @@ struct Config
     int temporalRede = 1;   // historico da propria rede (runtime lmxxf DLSS5_TEMPORAL_MODE): 0 desligado, 1 historico (com as
                             // guias de movimento e profundidade do overlay), 2 baixa freq., 3 realce; vale ao reabrir
     float realceTemporal = 1.f; // forca do modo 3 (0..2)
-    float forcaHistorico = 1.f; // modo 1: escala do peso que a cabeca de historico da rede decide (0..1; 1 = o da rede)
+    // modo 1: escala do peso que a cabeca de historico da rede decide (0..2, teto 0,95 no runtime; 1 = o da rede). 2 =
+    // a decisao dela dobrada: nos quadros do TLOU2 com a camera parada, -9% de cintilacao na saida da rede (-5% na
+    // edicao), com a regua de movimento igual (sem rastro a mais)
+    float forcaHistorico = 2.f;
     float recorteHistorico = 0.f; // modo 1: recorte do historico pela vizinhanca da saida crua, desvios (0 = sem recorte;
                                   // sem a resposta atrasada ele so piorava: cintilacao 0,237 -> 0,256, rastro e fantasma
                                   // tambem, medido no jogo de teste)

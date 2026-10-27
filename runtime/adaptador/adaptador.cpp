@@ -354,10 +354,11 @@ __declspec(dllexport) int32_t LmxxfNrSetHistoryGuides(void *ctx, void *motion, v
     }
     return LMXXF_NR_OK;
 }
-// [overlay] forca do historico da propria rede (0..1); repassada ao upstream no proximo PrepareFrame
+// [overlay] forca do historico da propria rede (0..2: acima de 1 o peso que a cabeca de historico decide sobe, teto
+// 0,95 no upstream); repassada ao upstream no proximo PrepareFrame
 __declspec(dllexport) int32_t LmxxfNrSetHistoryStrength(void *ctx, float strength) {
     auto *c = (Ctx *)ctx;
-    if (!c || !(strength >= 0.f && strength <= 1.f)) return LMXXF_NR_INVALID_ARGUMENT;
+    if (!c || !(strength >= 0.f && strength <= 2.f)) return LMXXF_NR_INVALID_ARGUMENT;
     if (!g_setForcaHist) return LMXXF_NR_NOT_IMPLEMENTED;
     if (strength != c->forcaHist) { c->forcaHist = strength; c->forcaSuja = true; }
     return LMXXF_NR_OK;

@@ -1580,9 +1580,11 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                           "compilado deste branch (runtime\\lmxxf\\compilar.ps1 e runtime\\adaptador\\compilar.ps1)."))
                     cfg.temporalRede = hist ? 1 : 0;
                 ImGui::BeginDisabled(!e.historicoAtivo);
-                Deslizador("Força do histórico", &cfg.forcaHistorico, 0.f, 1.f, "%.3f",
+                Deslizador("Força do histórico", &cfg.forcaHistorico, 0.f, 2.f, "%.3f",
                            "Escala do peso que a propria rede da a resposta anterior (forca x 0,74 x a decisao da cabeca de\n"
-                           "historico). 1 = o da rede; menor = menos rastro e mais cintilacao; 0 = sem historico.", 1.f);
+                           "historico, teto 0,95). 1 = o da rede; 2 = a decisao dela dobrada (padrao: -9% de cintilacao na\n"
+                           "saida da rede no TLOU2 parado, sem rastro a mais em movimento); menor = menos rastro e mais\n"
+                           "cintilacao; 0 = sem historico.", 2.f);
                 Deslizador("Limite do histórico", &cfg.recorteHistorico, 0.f, 4.f, "%.2f",
                            "Nosso, nao da NVIDIA: a resposta anterior da rede so entra dentro da faixa que a propria rede\n"
                            "da AGORA em volta do pixel (media +- este numero de desvios da saida crua no 3x3, o recorte por\n"

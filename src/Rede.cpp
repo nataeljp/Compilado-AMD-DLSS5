@@ -251,7 +251,7 @@ bool Rede::Envia(ID3D12Fence* cercaOverlay, UINT64 valorOverlay, const ParamsRed
     // forca do historico (o adaptador so repassa quando muda)
     if (setForcaHist)
     {
-        const int32_t r = setForcaHist(ctx, std::clamp(p.forcaHistorico, 0.f, 1.f));
+        const int32_t r = setForcaHist(ctx, std::clamp(p.forcaHistorico, 0.f, 2.f));
         if (r == LMXXF_NR_NOT_IMPLEMENTED)
         {
             Log("rede", "lmxxf_upstream.dll sem LmxxfNrSetHistoryStrength: forca do historico fixa em 1");
