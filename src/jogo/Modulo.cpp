@@ -10,15 +10,18 @@
 //     jogo carrega a DLL sozinho em toda abertura; as funcoes da dxgi do Windows vao para ela por ProxyDxgi.asm) ou
 //     aberto pelo overlay (Protocolo.h Lancamento): nas fabricas DXGI, CreateSwapChainForHwnd/CreateSwapChain -- o jogo
 //     recebe o swapchain da AMD (buffer/Geracao.h), e a cada despacho do FSR a profundidade, o movimento e a camera vao
-//     para a geracao.
+//     para a geracao; depois do despacho, a imagem sem HUD (SemHud.h) tambem, para o HUD ficar parado nos gerados.
 // Registro em DLSS5Buffer.log ao lado da DLL.
 #include "../buffer/ClienteBuffer.h"
 #include "../buffer/Geracao.h"
+#include "SemHud.h"
 #include "ffx_api.h"
 #include "ffx_upscale.h"
 #include <detours.h>
 #include <tlhelp32.h>
 #include <winternl.h>
+#include <dwmapi.h>
+#pragma comment(lib, "dwmapi.lib")
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -44,6 +47,14 @@ std::unordered_map<ffxContext, uint32_t> g_flags; // flags de criacao de cada co
 std::unordered_map<ffxContext, std::pair<uint32_t, uint32_t>> g_maxRender;
 FILE* g_log = nullptr;
 HMODULE g_eu = nullptr;
+// dispositivo removido (o DRED, junto do vigia): o dispositivo do swapchain do jogo (segurado: nunca solto) e a lista do
+// ultimo despacho do FSR (com os passes do modulo)
+std::atomic<ID3D12Device*> g_devVigia{nullptr};
+std::atomic<ID3D12CommandList*> g_listaFsrNativa{nullptr};
+void LigaDred();
+void ListaRecusada(ID3D12GraphicsCommandList* l, HRESULT r);
+void RelataEnvio(ID3D12CommandQueue* q, UINT n, ID3D12CommandList* const* l);
+void ConfereDispositivo();
 
 void Log(const char* f, ...)
 {
@@ -62,6 +73,22 @@ void Log(const char* f, ...)
 
 PfnFfxCreateContext oCriaContexto = nullptr;
 PfnFfxDispatch oDespacha = nullptr;
+PfnFfxConfigure oConfigura = nullptr;
+// A geracao FSR 3 do proprio jogo (o swapchain de geracao da AMD dele e a configuracao dela): com ela ligada a nossa fica
+// desligada -- duas geracoes empilhadas sao travada e fantasma. Muitos jogos criam o swapchain de geracao deles sempre
+// (mesmo com a geracao desligada no menu) e o nosso fica dentro dele: so a configuracao diz se a deles esta ligada
+std::atomic<bool> g_fgDoJogo{false};
+thread_local bool t_fgSwapDoJogo = false; // dentro da criacao do swapchain de geracao do jogo
+struct ConfiguraGeracaoJogo               // ffxConfigureDescFrameGeneration (ffx_api/ffx_framegeneration.h) ate o campo usado
+{
+    ffxConfigureDescHeader header;
+    void* swapChain;
+    void* presentCallback;
+    void* presentCallbackUserContext;
+    void* frameGenerationCallback;
+    void* frameGenerationCallbackUserContext;
+    bool frameGenerationEnabled;
+};
 using PfnExecuta = void(STDMETHODCALLTYPE*)(ID3D12CommandQueue*, UINT, ID3D12CommandList* const*);
 PfnExecuta oExecuta = nullptr;
 using PfnRawData = UINT(WINAPI*)(HRAWINPUT, UINT, LPVOID, PUINT, UINT);
@@ -286,12 +313,19 @@ bool Float(DXGI_FORMAT f)
 void STDMETHODCALLTYPE Executa(ID3D12CommandQueue* q, UINT n, ID3D12CommandList* const* l)
 {
     oExecuta(q, n, l);
+    // o envio que derrubou o dispositivo (uma lista sem fechar ou recusada ao fechar: o runtime remove na hora, antes de
+    // a GPU fazer qualquer coisa, e o DRED nao mostra): quem enviou, o que e de onde
+    static std::atomic<bool> removido{false};
+    if (ID3D12Device* d = g_devVigia.load(); d && !removido.load(std::memory_order_relaxed) &&
+                                             d->GetDeviceRemovedReason() != S_OK && !removido.exchange(true))
+        RelataEnvio(q, n, l);
     g_ger.Submetido(l, n); // a geracao casa cada Present com o preparo ja enviado
     std::lock_guard<std::mutex> lk(g_mx);
     if (!g_lista)
         return;
+    ID3D12CommandList* nativa = dlss5ov::ListaNativa(g_lista); // com o Streamline no meio (Geracao.h)
     for (UINT i = 0; i < n; ++i)
-        if (l[i] == g_lista)
+        if (dlss5ov::ListaNativa(l[i]) == nativa)
         {
             g_cli.Submetido(q); // a lista que tem os passes deste quadro foi para a fila: sinaliza a cerca do jogo
             g_lista = nullptr;
@@ -326,12 +360,54 @@ bool LiberaParaCriar()
     return !g_ger.TemSwapchain();
 }
 
+// a imagem sem HUD (SemHud.h) vai para a geracao do quadro; DLSS5_SEM_HUD=0 desliga (teste A/B)
+bool g_querSemHud = false; // a geracao esta em uso: abre a janela depois do despacho do upscaler
+bool SemHudLigado()
+{
+    static const bool ligado = !(std::getenv("DLSS5_SEM_HUD") && std::getenv("DLSS5_SEM_HUD")[0] == '0');
+    return ligado;
+}
+
+bool CapturaSemHud(ID3D12GraphicsCommandList* c, ID3D12Resource* r, D3D12_RESOURCE_STATES s, uint32_t passe)
+{
+    return g_ger.SemHud(c, r, s, passe);
+}
+
+void InstalaSemHud(ID3D12CommandQueue* fila, IUnknown* sc)
+{
+    if (!g_devVigia.load())
+    {
+        ID3D12Device* d = nullptr;
+        if (SUCCEEDED(fila->GetDevice(IID_PPV_ARGS(&d))))
+            g_devVigia = d; // o vigia confere se a GPU removeu o dispositivo (segurado: nunca solto)
+        semhud::DefineRecusa(&ListaRecusada);
+    }
+    static bool dito = false;
+    if (!SemHudLigado())
+    {
+        if (!dito)
+            Log("geracao: imagem sem HUD desligada (DLSS5_SEM_HUD=0): o HUD anda com a cena nos gerados");
+        dito = true;
+        return;
+    }
+    Microsoft::WRL::ComPtr<ID3D12Device> d;
+    Microsoft::WRL::ComPtr<IDXGISwapChain> s;
+    if (!sc || FAILED(fila->GetDevice(IID_PPV_ARGS(&d))) || FAILED(sc->QueryInterface(IID_PPV_ARGS(&s))))
+        return;
+    const char* e = semhud::Instala(d.Get(), s.Get(), &CapturaSemHud);
+    if (!dito || e)
+        Log("geracao: imagem sem HUD (o HUD parado nos gerados): %s", e ? e : "ganchos ok");
+    dito = true;
+}
+
 HRESULT STDMETHODCALLTYPE CriaScHwnd(IDXGIFactory2* f, IUnknown* d, HWND h, const DXGI_SWAP_CHAIN_DESC1* sd,
                                      const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* fs, IDXGIOutput* o, IDXGISwapChain1** sc)
 {
     if (h && !t_criandoSc)
         g_janelaJogo = h;
     Microsoft::WRL::ComPtr<ID3D12CommandQueue> fila;
+    if (t_fgSwapDoJogo && !t_criandoSc)
+        Log("geracao: o swapchain de geracao do proprio jogo (FSR 3 dele) cria o da janela: o nosso fica dentro dele");
     if (!t_criandoSc && g_lancado && d && sd && SUCCEEDED(d->QueryInterface(IID_PPV_ARGS(&fila))) && LiberaParaCriar())
     {
         t_criandoSc = true;
@@ -341,6 +417,7 @@ HRESULT STDMETHODCALLTYPE CriaScHwnd(IDXGIFactory2* f, IUnknown* d, HWND h, cons
         {
             Log("geracao: o jogo recebeu o swapchain da AMD (%ux%u fmt %d, %u buffers)", sd->Width, sd->Height,
                 (int)sd->Format, sd->BufferCount);
+            InstalaSemHud(fila.Get(), *sc);
             return r;
         }
         Log("geracao: o swapchain da AMD falhou (%s); o jogo segue sem geracao", g_ger.UltimoErro());
@@ -362,6 +439,7 @@ HRESULT STDMETHODCALLTYPE CriaSc(IDXGIFactory* f, IUnknown* d, DXGI_SWAP_CHAIN_D
         {
             Log("geracao: o jogo recebeu o swapchain da AMD (%ux%u fmt %d, %u buffers)", sd->BufferDesc.Width,
                 sd->BufferDesc.Height, (int)sd->BufferDesc.Format, sd->BufferCount);
+            InstalaSemHud(fila.Get(), *sc);
             return r;
         }
         Log("geracao: o swapchain da AMD falhou (%s); o jogo segue sem geracao", g_ger.UltimoErro());
@@ -389,6 +467,7 @@ void GanchoFabrica(IUnknown* fab)
 
 HRESULT WINAPI CriaFab(REFIID r, void** f)
 {
+    LigaDred();
     const HRESULT h = oCriaFab(r, f);
     if (SUCCEEDED(h) && f && *f)
         GanchoFabrica(static_cast<IUnknown*>(*f));
@@ -396,6 +475,7 @@ HRESULT WINAPI CriaFab(REFIID r, void** f)
 }
 HRESULT WINAPI CriaFab1(REFIID r, void** f)
 {
+    LigaDred();
     const HRESULT h = oCriaFab1(r, f);
     if (SUCCEEDED(h) && f && *f)
         GanchoFabrica(static_cast<IUnknown*>(*f));
@@ -403,6 +483,7 @@ HRESULT WINAPI CriaFab1(REFIID r, void** f)
 }
 HRESULT WINAPI CriaFab2(UINT fl, REFIID r, void** f)
 {
+    LigaDred();
     const HRESULT h = oCriaFab2(fl, r, f);
     if (SUCCEEDED(h) && f && *f)
         GanchoFabrica(static_cast<IUnknown*>(*f));
@@ -571,11 +652,13 @@ void GeracaoQuadro(ffxContext* ctx, const ffxDispatchDescUpscale* u, ID3D12Graph
     g.reset = u->reset;
     // o pedido do overlay conectado; sem ele (ainda nao ligou a captura, ou fechou), o do lancamento
     dlss5ov::Cabecalho* cab = g_clienteOk ? g_cli.Cab() : nullptr;
-    const uint32_t pedida = cab && g_cli.OverlayVivo() ? cab->geracaoQuadros : g_geracaoLancamento;
+    const uint32_t pedida = g_fgDoJogo ? 0u // a do proprio jogo esta ligada
+                            : cab && g_cli.OverlayVivo() ? cab->geracaoQuadros : g_geracaoLancamento;
     if (cab)
         cab->geracaoPronta = 1;
     static int estadoDito = 0;
     g_ger.Quadro(lista, g, std::min<uint32_t>(pedida, 4));
+    g_querSemHud = SemHudLigado() && pedida >= 2 && g_ger.EmUso() >= 2;
     ++g_quadrosGeracao;
     if (cab)
     {
@@ -612,9 +695,36 @@ void GeracaoQuadro(ffxContext* ctx, const ffxDispatchDescUpscale* u, ID3D12Graph
                 aFrente, (unsigned long long)aFrenteMax, (unsigned long long)semPreparo);
         Log("geracao: pedida %ux, em uso %ux (monitor %u Hz, aceita ate %u), jogo %.0f quadros/s (maior intervalo %.1f ms, "
             "%u engasgos > 2x a media) + %.0f gerados/s = %.0f apresentados/s | ritmo: %u apresentacoes, a cada %.2f ms "
-            "(desvio %.2f, maior %.2f)",
+            "(desvio %.2f, maior %.2f) | N mudou %u vezes",
             pedida >= 2 ? std::min<uint32_t>(pedida, 4) : 1, pedida >= 2 ? g_ger.EmUso() : 1, g_ger.Hz(), g_ger.HzMaximo(),
-            jogo, g_maiorMs, g_engasgos, gerados, jogo + gerados, n, media, desvio, maior);
+            jogo, g_maiorMs, g_engasgos, gerados, jogo + gerados, n, media, desvio, maior, g_ger.TrocasN());
+        // as primeiras apresentacoes com geracao, uma a uma: qual quadro cada uma usou (Geracao::Rastro)
+        const std::string rastro = g_ger.Rastro();
+        for (size_t i = 0, f; i < rastro.size(); i = f + 1)
+        {
+            f = rastro.find('\n', i);
+            if (f == std::string::npos)
+                f = rastro.size();
+            Log("geracao: %s", rastro.substr(i, f - i).c_str());
+        }
+        char hud[200];
+        const uint32_t capturas = semhud::Relato(hud, sizeof hud);
+        if (pedida >= 2 && SemHudLigado())
+        {
+            uint32_t passe = 0, passes = 0;
+            double igual = 0, troca = 0;
+            int fase = 0;
+            g_ger.SemHudEstado(passe, passes, igual, troca, fase);
+            static const char* const kFase[4] = {"procurando o passe", "conferida e em uso",
+                                                 "nenhum passe confere (o HUD anda com a cena; procura de novo)",
+                                                 "em uso (a mascara se confere quando a cena andar)"};
+            Log("geracao: imagem sem HUD %s: passe %u de %u, %.1f%% da tela igual ao quadro final, mascara trocou %.2f%% "
+                "com a cena andando; copiada em %u de %.0f quadros%s%s",
+                kFase[std::clamp(fase, 0, 3)], passe, passes, igual * 100.0, troca * 100.0, capturas, jogo * s,
+                capturas ? ", " : "",
+                capturas ? hud
+                         : " (nenhum passe do jogo escreveu uma textura do tamanho e formato da tela depois do upscaler)");
+        }
         g_maiorMs = 0;
         g_engasgos = 0;
         antes = g_ger.Gerados();
@@ -625,7 +735,17 @@ void GeracaoQuadro(ffxContext* ctx, const ffxDispatchDescUpscale* u, ID3D12Graph
 
 ffxReturnCode_t CriaContexto(ffxContext* ctx, ffxCreateContextDescHeader* desc, const ffxAllocationCallbacks* mem)
 {
+    bool fgSwap = false, fg = false;
+    for (auto* h = desc; h; h = h->pNext)
+    {
+        fgSwap |= h->type == 0x30001u || h->type == 0x30005u || h->type == 0x30006u; // FRAMEGENERATIONSWAPCHAIN_*_DX12
+        fg |= h->type == 0x00020001u;                                                // FRAMEGENERATION
+    }
+    if (fgSwap || fg)
+        Log("o jogo cria %s da AMD dele (FSR 3)", fgSwap ? "o swapchain de geracao" : "a geracao de quadros");
+    t_fgSwapDoJogo = fgSwap;
     const ffxReturnCode_t r = oCriaContexto(ctx, desc, mem);
+    t_fgSwapDoJogo = false;
     if (r == FFX_API_RETURN_OK && ctx)
         for (auto* h = desc; h; h = h->pNext)
             if (h->type == FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE)
@@ -640,8 +760,23 @@ ffxReturnCode_t CriaContexto(ffxContext* ctx, ffxCreateContextDescHeader* desc, 
     return r;
 }
 
+ffxReturnCode_t Configura(ffxContext* ctx, const ffxConfigureDescHeader* desc)
+{
+    for (auto* h = desc; h; h = h->pNext)
+        if (h->type == 0x00020002u) // FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION
+        {
+            const bool liga = reinterpret_cast<const ConfiguraGeracaoJogo*>(h)->frameGenerationEnabled;
+            if (liga != g_fgDoJogo.exchange(liga))
+                Log("o jogo %s a geracao FSR 3 dele%s", liga ? "ligou" : "desligou",
+                    liga ? ": a nossa fica desligada enquanto isso (duas geracoes empilhadas: travada e fantasma)" : "");
+        }
+    return oConfigura(ctx, desc);
+}
+
 ffxReturnCode_t Despacha(ffxContext* ctx, const ffxDispatchDescHeader* desc)
 {
+    if (desc && desc->type == FFX_API_DISPATCH_DESC_TYPE_UPSCALE)
+        semhud::Fecha(); // o upscaler de um quadro novo: a janela do anterior acabou (mesmo sem Present no meio)
     const ffxReturnCode_t r = oDespacha(ctx, desc);
     if (r != FFX_API_RETURN_OK || !desc || desc->type != FFX_API_DISPATCH_DESC_TYPE_UPSCALE)
         return r;
@@ -652,6 +787,18 @@ ffxReturnCode_t Despacha(ffxContext* ctx, const ffxDispatchDescHeader* desc)
     auto* prof = static_cast<ID3D12Resource*>(u->depth.resource);
     if (!lista || !cor || !mov || !prof)
         return r;
+    g_listaFsrNativa = dlss5ov::ListaNativa(lista); // o relato do dispositivo removido aponta se a lista e esta
+    // depois deste despacho e do que o modulo grava nele, o primeiro passe do jogo que monta a cena final da a imagem sem
+    // HUD (SemHud.h); o que o modulo grava aqui nao conta
+    struct AbreNoFim
+    {
+        ~AbreNoFim()
+        {
+            if (g_querSemHud)
+                semhud::Abre();
+        }
+    } abreNoFim;
+    semhud::Proprio eu;
     // o gancho dos envios a GPU ja no primeiro quadro: a geracao casa cada Present com o preparo enviado antes dele (sem
     // isso ela se desalinha na partida e junta a imagem de um quadro com o movimento do seguinte)
     static std::once_flag filaUma;
@@ -950,6 +1097,20 @@ void MedeTaxa(HWND j)
         return;
     const uint32_t sinal = TaxaDoSinal(mi.szDevice);
     const uint32_t hz = sinal ? sinal : dm.dmDisplayFrequency > 1 ? dm.dmDisplayFrequency : 0;
+    // o compositor da area de trabalho (janela comum, sem tela cheia: as apresentacoes com vsync saem no ritmo dele -- com
+    // a taxa dinamica do Windows ele pode estar a 60 com o sinal a 120)
+    DWM_TIMING_INFO ti{};
+    ti.cbSize = sizeof ti;
+    const uint32_t dwm = SUCCEEDED(DwmGetCompositionTimingInfo(nullptr, &ti)) && ti.rateRefresh.uiDenominator
+                             ? uint32_t(double(ti.rateRefresh.uiNumerator) / ti.rateRefresh.uiDenominator + 0.5)
+                             : 0;
+    static uint32_t ditoHz = 0, ditoDwm = 0;
+    if (hz != ditoHz || dwm != ditoDwm)
+    {
+        Log("monitor: sinal %u Hz, compositor da area de trabalho %u Hz", hz, dwm);
+        ditoHz = hz;
+        ditoDwm = dwm;
+    }
     if (monitor != mi.szDevice || w != dm.dmPelsWidth || h != dm.dmPelsHeight)
     {
         monitor = mi.szDevice;
@@ -967,11 +1128,159 @@ void MedeTaxa(HWND j)
 
 // acessos invalidos (o TLOU2 caiu com 0xc0000005 no proprio codigo, com o overlay conectando): onde foi e a pilha, no log.
 // So registra (o jogo pode tratar o dele); no maximo 5
+// ---- dispositivo removido ----
+// O TLOU2 para (de proposito: escreve o codigo em 0x0) com DXGI_ERROR_INVALID_CALL quando GetDeviceRemovedReason diz
+// que a GPU removeu o dispositivo por uma chamada invalida -- um comando invalido numa lista enviada. O DRED da
+// Microsoft (Device Removed Extended Data), ligado antes de o jogo criar o dispositivo, guarda o ultimo comando que cada
+// lista completou e a falha de pagina; o vigia confere o dispositivo a cada 0,5 s (e o acesso invalido tambem) e, se
+// caiu, poe tudo no log. As listas que o runtime recusa ao fechar (um comando invalido gravado nelas) tambem vao para o
+// log: executada, uma delas derruba o dispositivo
+void LigaDred()
+{
+    static std::once_flag uma;
+    std::call_once(uma, [] {
+        Microsoft::WRL::ComPtr<ID3D12DeviceRemovedExtendedDataSettings> s;
+        const bool ok = SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&s)));
+        if (ok)
+        {
+            s->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            s->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+        }
+        Log("DRED (o que a GPU fazia se o dispositivo cair): %s", ok ? "ligado" : "indisponivel");
+    });
+}
+
+const char* NomeOp(D3D12_AUTO_BREADCRUMB_OP op)
+{
+    static const char* const k[] = {
+        "SetMarker", "BeginEvent", "EndEvent", "DrawInstanced", "DrawIndexedInstanced", "ExecuteIndirect", "Dispatch",
+        "CopyBufferRegion", "CopyTextureRegion", "CopyResource", "CopyTiles", "ResolveSubresource", "ClearRenderTargetView",
+        "ClearUnorderedAccessView", "ClearDepthStencilView", "ResourceBarrier", "ExecuteBundle", "Present", "ResolveQueryData",
+        "BeginSubmission", "EndSubmission", "DecodeFrame", "ProcessFrames", "AtomicCopyBufferUINT", "AtomicCopyBufferUINT64",
+        "ResolveSubresourceRegion", "WriteBufferImmediate", "DecodeFrame1", "SetProtectedResourceSession", "DecodeFrame2",
+        "ProcessFrames1", "BuildRaytracingAccelerationStructure", "EmitRaytracingAccelerationStructurePostbuildInfo",
+        "CopyRaytracingAccelerationStructure", "DispatchRays", "InitializeMetaCommand", "ExecuteMetaCommand", "EstimateMotion",
+        "ResolveMotionVectorHeap", "SetPipelineState1", "InitializeExtensionCommand", "ExecuteExtensionCommand",
+        "DispatchMesh", "EncodeFrame", "ResolveEncoderOutputMetadata", "Barrier", "BeginCommandList", "DispatchGraph",
+        "SetProgram"};
+    return unsigned(op) < std::size(k) ? k[op] : "?";
+}
+
+void RelataRemocao(ID3D12Device* d, HRESULT motivo)
+{
+    Log("DISPOSITIVO REMOVIDO pela GPU: motivo 0x%08lx%s", (unsigned long)motivo,
+        motivo == DXGI_ERROR_INVALID_CALL    ? " (chamada invalida)"
+        : motivo == DXGI_ERROR_DEVICE_HUNG   ? " (GPU travada)"
+        : motivo == DXGI_ERROR_DEVICE_RESET  ? " (GPU reiniciada)"
+        : motivo == DXGI_ERROR_DEVICE_REMOVED ? " (removido)"
+                                              : "");
+    Microsoft::WRL::ComPtr<ID3D12DeviceRemovedExtendedData> dred;
+    if (FAILED(d->QueryInterface(IID_PPV_ARGS(&dred))))
+    {
+        Log("DRED: sem dados");
+        return;
+    }
+    ID3D12CommandList* fsr = g_listaFsrNativa.load();
+    D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT bc{};
+    int listas = 0;
+    if (SUCCEEDED(dred->GetAutoBreadcrumbsOutput(&bc)))
+        for (const D3D12_AUTO_BREADCRUMB_NODE* n = bc.pHeadAutoBreadcrumbNode; n && listas < 12; n = n->pNext)
+        {
+            const UINT feitos = n->pLastBreadcrumbValue ? *n->pLastBreadcrumbValue : 0;
+            if (feitos >= n->BreadcrumbCount)
+                continue; // esta terminou
+            ++listas;
+            char ops[1200];
+            int p = 0;
+            for (UINT i = feitos > 4 ? feitos - 4 : 0; i < n->BreadcrumbCount && i < feitos + 10 && p < int(sizeof ops) - 80; ++i)
+                p += snprintf(ops + p, sizeof ops - p, "%s%s", i == feitos ? " >> " : " ", NomeOp(n->pCommandHistory[i]));
+            Log("DRED: lista %p \"%ls\"%s na fila \"%ls\": %u de %u comandos feitos (>> = o que nao terminou):%s",
+                n->pCommandList, n->pCommandListDebugNameW ? n->pCommandListDebugNameW : L"",
+                n->pCommandList && dlss5ov::ListaNativa(n->pCommandList) == fsr ? " (a do FSR, com os passes do modulo)" : "",
+                n->pCommandQueueDebugNameW ? n->pCommandQueueDebugNameW : L"", feitos, n->BreadcrumbCount, ops);
+        }
+    if (!listas)
+        Log("DRED: nenhuma lista pela metade");
+    D3D12_DRED_PAGE_FAULT_OUTPUT pf{};
+    if (SUCCEEDED(dred->GetPageFaultAllocationOutput(&pf)) && pf.PageFaultVA)
+    {
+        Log("DRED: falha de pagina da GPU em 0x%llx", (unsigned long long)pf.PageFaultVA);
+        int k = 0;
+        for (const D3D12_DRED_ALLOCATION_NODE* a = pf.pHeadExistingAllocationNode; a && k < 8; a = a->pNext, ++k)
+            Log("DRED:   ali, existente: \"%ls\" (tipo %d)", a->ObjectNameW ? a->ObjectNameW : L"", int(a->AllocationType));
+        k = 0;
+        for (const D3D12_DRED_ALLOCATION_NODE* a = pf.pHeadRecentFreedAllocationNode; a && k < 8; a = a->pNext, ++k)
+            Log("DRED:   ali, solta ha pouco: \"%ls\" (tipo %d)", a->ObjectNameW ? a->ObjectNameW : L"", int(a->AllocationType));
+    }
+}
+
+void RelataEnvio(ID3D12CommandQueue* q, UINT n, ID3D12CommandList* const* l)
+{
+    auto nome = [](ID3D12Object* o, wchar_t* b, UINT tam) {
+        b[0] = 0;
+        if (o && FAILED(o->GetPrivateData(WKPDID_D3DDebugObjectNameW, &tam, b)))
+            b[0] = 0;
+        return b;
+    };
+    wchar_t nq[64];
+    const D3D12_COMMAND_QUEUE_DESC qd = q->GetDesc();
+    char linha[2048];
+    int p = snprintf(linha, sizeof linha, "O ENVIO QUE DERRUBOU O DISPOSITIVO: fila %p \"%ls\" (tipo %d), %u listas:", q,
+                     nome(q, nq, sizeof nq - 2), int(qd.Type), n);
+    ID3D12CommandList* fsr = g_listaFsrNativa.load();
+    for (UINT i = 0; i < n && i < 16 && p < int(sizeof linha) - 160; ++i)
+    {
+        wchar_t nl[64];
+        p += snprintf(linha + p, sizeof linha - p, " [%p \"%ls\" tipo %d%s]", l[i], nome(l[i], nl, sizeof nl - 2),
+                      l[i] ? int(l[i]->GetType()) : -1,
+                      l[i] && dlss5ov::ListaNativa(l[i]) == fsr ? " a do FSR, com os passes do modulo" : "");
+    }
+    Log("%s", linha);
+    void* pilha[24];
+    const USHORT k = RtlCaptureStackBackTrace(1, 24, pilha, nullptr);
+    p = snprintf(linha, sizeof linha, "  quem enviou:");
+    for (USHORT i = 0; i < k && p < int(sizeof linha) - 100; ++i)
+    {
+        char s[96];
+        NomeEndereco(DWORD64(pilha[i]), s, sizeof s);
+        p += snprintf(linha + p, sizeof linha - p, " %s", s);
+    }
+    Log("%s", linha);
+    ConfereDispositivo();
+}
+
+void ConfereDispositivo()
+{
+    static std::atomic<bool> dito{false};
+    ID3D12Device* d = g_devVigia.load();
+    if (!d || dito)
+        return;
+    const HRESULT r = d->GetDeviceRemovedReason();
+    if (r == S_OK || dito.exchange(true))
+        return;
+    RelataRemocao(d, r);
+}
+
+// uma lista que o runtime recusou ao fechar (SemHud.h): o comando invalido esta nela
+void ListaRecusada(ID3D12GraphicsCommandList* l, HRESULT r)
+{
+    static std::atomic<int> n{0};
+    if (n++ >= 8)
+        return;
+    wchar_t nome[64] = {};
+    UINT tam = sizeof nome - sizeof(wchar_t);
+    if (FAILED(l->GetPrivateData(WKPDID_D3DDebugObjectNameW, &tam, nome)))
+        nome[0] = 0;
+    Log("LISTA RECUSADA ao fechar (0x%08lx): %p \"%ls\"%s -- enviada, ela derruba o dispositivo", (unsigned long)r, l, nome,
+        dlss5ov::ListaNativa(l) == g_listaFsrNativa.load() ? " (a do FSR, com os passes do modulo)" : "");
+}
+
 LONG CALLBACK Excecao(EXCEPTION_POINTERS* e)
 {
     static std::atomic<int> vistos{0};
     if (e->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || vistos++ >= 5)
         return EXCEPTION_CONTINUE_SEARCH;
+    ConfereDispositivo(); // o TLOU2 para assim quando o dispositivo cai: o DRED antes de o processo sair
     DWORD64 pcs[20];
     const int n = Desenrola(*e->ContextRecord, pcs, 20);
     char linha[2048];
@@ -1001,6 +1310,7 @@ DWORD WINAPI Vigia(void*)
         const HWND j = g_janelaJogo.load();
         if (voltas++ % 4 == 0)
             MedeTaxa(j);
+        ConfereDispositivo();
         static bool tinha = false; // o swapchain da AMD saiu (o jogo o soltou: troca de modo de tela ou saida)
         if (tinha && !g_ger.TemSwapchain())
             Log("geracao: o jogo soltou o swapchain da AMD (o contexto saiu junto)");
@@ -1029,6 +1339,7 @@ DWORD WINAPI Vigia(void*)
 
 DWORD WINAPI Instala(void*)
 {
+    LigaDred(); // antes de o jogo criar o dispositivo
     if (HANDLE t = CreateThread(nullptr, 0, Vigia, nullptr, 0, nullptr))
         CloseHandle(t);
     // os shaders do modulo compilam enquanto o jogo carrega (no primeiro quadro do FSR parariam o jogo por 14-25 s)
@@ -1048,12 +1359,15 @@ DWORD WINAPI Instala(void*)
             {
                 oCriaContexto = reinterpret_cast<PfnFfxCreateContext>(GetProcAddress(m, "ffxCreateContext"));
                 oDespacha = reinterpret_cast<PfnFfxDispatch>(GetProcAddress(m, "ffxDispatch"));
+                oConfigura = reinterpret_cast<PfnFfxConfigure>(GetProcAddress(m, "ffxConfigure"));
                 if (!oCriaContexto || !oDespacha)
                     continue;
                 DetourTransactionBegin();
                 DetourUpdateThread(GetCurrentThread());
                 DetourAttach(reinterpret_cast<PVOID*>(&oCriaContexto), reinterpret_cast<PVOID>(&CriaContexto));
                 DetourAttach(reinterpret_cast<PVOID*>(&oDespacha), reinterpret_cast<PVOID>(&Despacha));
+                if (oConfigura)
+                    DetourAttach(reinterpret_cast<PVOID*>(&oConfigura), reinterpret_cast<PVOID>(&Configura));
                 const LONG r = DetourTransactionCommit();
                 char nome[MAX_PATH];
                 WideCharToMultiByte(CP_UTF8, 0, n, -1, nome, MAX_PATH, nullptr, nullptr);

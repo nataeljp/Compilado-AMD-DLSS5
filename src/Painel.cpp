@@ -1550,10 +1550,9 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                 Segmentos("gerado", gerados, 2, &cfg.gerado, 30 * g_e);
                 Dica("Quadro repetido: o processado se repete nos quadros gerados (sem atraso extra: na captura de\n"
                      "buffer ele aparece 1 quadro depois de feito).\n"
-                     "Quadro mesclado: entre o processado anterior e o novo, os gerados misturam os dois (50/50; em 3x\n"
-                     "50/50 e 40/60; em 4x 50/50, 40/60 e 30/70 do anterior/novo) e o novo vem depois deles. Misturar\n"
-                     "com o proximo exige que ele ja exista: o novo aparece N quadros depois de feito (como no AFMF e\n"
-                     "no FSR Frame Generation, que tambem seguram o quadro novo).");
+                     "Quadro mesclado: os N quadros de cada ciclo misturam so 2 processados, o atual e o proximo, em\n"
+                     "passos iguais (do proximo: 2x 50/50; 3x 25%, 50% e 75%; 4x 20%, 40%, 60% e 80%). A mistura\n"
+                     "comeca no quadro em que o proximo fica pronto: sempre 1 quadro de atraso, em qualquer N.");
                 ImGui::EndDisabled();
                 }
             }

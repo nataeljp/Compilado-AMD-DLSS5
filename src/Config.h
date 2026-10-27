@@ -55,8 +55,8 @@ struct Config
     int fonte = 0;          // Modo de Rede: 0 captura de video (WGC), 1 captura de buffer (cor sem HUD, profundidade e
                             // movimento do upscaler do proprio jogo, pela DLSS5Buffer.dll colocada no jogo aberto)
     // quadros gerados (Ritmo 2..4, como o AMD Fluid Motion Frames): 0 repetido (o quadro processado se repete; sem atraso
-    // extra), 1 mesclado (mistura do processado anterior com o novo: 50/50, 40/60, 30/70; o novo vem depois deles, N
-    // quadros depois de feito)
+    // extra), 1 mesclado (os N quadros do ciclo misturam so o processado atual e o proximo, peso do proximo em passos
+    // iguais: 2x 50/50, 3x 25/50/75%, 4x 20/40/60/80%; comeca no quadro em que o proximo fica pronto: 1 quadro de atraso)
     int gerado = 0;
     // geracao de quadros da AMD na captura de buffer (a DLL na pasta do jogo troca o swapchain na criacao):
     // 0 desligada, 2 = 2x (um quadro gerado por quadro do jogo), 3 = 3x, 4 = 4x

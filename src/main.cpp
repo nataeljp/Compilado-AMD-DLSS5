@@ -1686,8 +1686,8 @@ RWTexture2D<float4> saida : register(u0);
         const bool apresenta = !imagem && !buffer && bb && ov.Largura() == saida.w && ov.Altura() == saida.h;
         if (apresenta)
         {
-            // quadro mesclado (captura de video sem atraso, Ritmo 2..4): na tela vai a mistura do processado anterior com
-            // este (50/50); as outras misturas e este quadro vao nos quadros capturados sem rede que vem a seguir
+            // quadro mesclado (captura de video sem atraso, Ritmo 2..4): na tela vai a primeira mistura do processado
+            // anterior com este; as outras vao nos quadros capturados sem rede que vem a seguir
             const bool mescla = atraso < 0 && cfg.gerado == 1 && cfg.ritmo > 1;
             Tex* tela = &saida;
             geradosPendentes.clear();
@@ -1711,11 +1711,14 @@ RWTexture2D<float4> saida : register(u0);
                 c->CopyResource(geradoAtual.r.Get(), saida.r.Get());
                 if (temGerado)
                 {
-                    static const float kPesos[3] = {0.5f, 0.6f, 0.7f};
-                    for (int i = 1; i < std::clamp(cfg.ritmo, 2, 4) - 1; ++i)
-                        geradosPendentes.push_back(kPesos[i]);
-                    geradosPendentes.push_back(1.f); // e o novo, por ultimo
-                    Mistura(c, kPesos[0]);
+                    // os N quadros do ciclo sao todos misturas so do processado atual com o proximo (este), com o peso
+                    // do proximo em passos iguais: 2x 50/50; 3x 25/50/75%; 4x 20/40/60/80%. O proximo sozinho nao
+                    // aparece: o ciclo seguinte ja o mistura com o que vem depois dele (1 quadro de atraso)
+                    static const float kPesos[3][4] = {{0.5f, 0.5f}, {0.25f, 0.5f, 0.75f}, {0.2f, 0.4f, 0.6f, 0.8f}};
+                    const int n = std::clamp(cfg.ritmo, 2, 4);
+                    for (int i = 1; i < n; ++i)
+                        geradosPendentes.push_back(kPesos[n - 2][i]);
+                    Mistura(c, kPesos[n - 2][0]);
                     tela = &saidaGerada;
                 }
                 temGerado = true;

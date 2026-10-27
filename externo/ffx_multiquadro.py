@@ -17,11 +17,12 @@ SC = 'src/backends/dx12/FrameInterpolationSwapchain/'
 mudou = 0
 
 
-def tr(arq, a, b, n=1):
+def tr(arq, a, b, n=1, depois=None):
+    # depois: o texto de um trecho mais adiante que muda este de novo (ja aplicado tambem)
     global mudou
     p = sdk / arq
     s = p.read_text(encoding='utf-8')
-    if b in s:  # ja aplicado
+    if b in s or (depois and depois in s):  # ja aplicado
         return
     assert s.count(a) == n, (arq, s.count(a), a[:80])
     p.write_text(s.replace(a, b), encoding='utf-8', newline='')
@@ -254,7 +255,7 @@ tr(c, '''        if (desc.numInterpolatedFrames > 0)
             frameInterpolationResetCondition = false;
             for (UINT k = 0; k < desc.numInterpolatedFrames; k++)
                 pInterpolatedFrames[k] = interpolationOutput(k);
-        }''')
+        }''', depois='gerou && desc.numInterpolatedFrames')
 tr(c, '''    FfxResource interpolatedFrame{}, realFrame{};
     dispatchInterpolationCommands(&interpolatedFrame, &realFrame);''', '''    FfxResource interpolatedFrames[''' + M + ''']{}, realFrame{};
     dispatchInterpolationCommands(interpolatedFrames, &realFrame);''')
@@ -377,4 +378,14 @@ tr(c, '''        if (desc.numInterpolatedFrames > 0)
         {
             frameInterpolationResetCondition = false;
             for (UINT k = 0; k < desc.numInterpolatedFrames; k++)''')
+# com a geracao, as apresentacoes saem sem vsync (com ALLOW_TEARING quando o sistema deixa), seja qual for o do jogo: com
+# vsync cada quadro gerado esperava uma atualizacao da tela -- num compositor a 60 Hz (a taxa dinamica do Windows 11 deixa
+# a area de trabalho a 60 com o sinal a 120) o jogo caia de 60 para 30 q/s e a tela seguia em 60 (medido na Sponza 4K do
+# sample da AMD). O ritmo da AMD ja espaca os quadros e o FreeSync sincroniza a tela; sem geracao vale o vsync do jogo
+tr(c, '''    entry.vsync                             = bVsync;''',
+   '''    entry.vsync                             = false; // DLSS5 Overlay: era bVsync (o do jogo)''')
+tr(c, '''    entry.vsync                             = false; // DLSS5 Overlay: era bVsync (o do jogo)
+''', '''    entry.vsync                             = false; // DLSS5 Overlay: era bVsync (o do jogo)
+    (void)bVsync;
+''')
 print(f'ffx_multiquadro: {mudou} trechos aplicados')

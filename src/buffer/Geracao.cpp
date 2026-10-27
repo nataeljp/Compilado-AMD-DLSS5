@@ -3,6 +3,7 @@
 #include <FidelityFX/host/backends/dx12/ffx_dx12.h>
 #include <FidelityFX/host/ffx_frameinterpolation.h>
 #include <FidelityFX/host/ffx_opticalflow.h>
+#include <d3dcompiler.h>
 #include <wrl/client.h>
 #include <algorithm>
 #include <atomic>
@@ -17,8 +18,22 @@
 // o swapchain da AMD com externo\ffx_multiquadro.py: o ritmo das apresentacoes (le e zera) e o aviso de destruicao
 extern "C" void ffxDlss5RitmoDX12(double* mediaMs, double* desvioMs, double* maxMs, uint32_t* n);
 extern "C" FfxErrorCode ffxDlss5AoDestruirDX12(FfxSwapchain gameSwapChain, void (*aviso)(void*), void* ctx);
+#pragma comment(lib, "d3dcompiler.lib")
 
 namespace dlss5ov {
+
+struct DECLSPEC_UUID("ADEC44E2-61F0-45C3-AD9F-1B37379284FF") StreamlineRetrieveBaseInterface : IUnknown
+{
+};
+
+ID3D12CommandList* ListaNativa(ID3D12CommandList* l)
+{
+    IUnknown* base = nullptr;
+    if (!l || FAILED(l->QueryInterface(__uuidof(StreamlineRetrieveBaseInterface), reinterpret_cast<void**>(&base))) || !base)
+        return l;
+    base->Release(); // a embrulhada segura a nativa
+    return reinterpret_cast<ID3D12CommandList*>(base);
+}
 
 namespace {
 // recursos compartilhados entre o fluxo optico e a interpolacao (os do provedor da AMD, sem o upscaler): o vetor e a
@@ -34,6 +49,14 @@ enum
     R_PROF_REC = R_MOV_DIL + kJogos,
     R_N = R_PROF_REC + kJogos
 };
+
+D3D12_RESOURCE_STATES D3D(FfxResourceStates s); // abaixo
+
+bool SemLimite() // testes de ritmo: sem o limite pela taxa do monitor nem o limitador
+{
+    static const bool sem = std::getenv("DLSS5_GERACAO_SEM_LIMITE") != nullptr;
+    return sem;
+}
 
 FfxResourceStates Estado(D3D12_RESOURCE_STATES s)
 {
@@ -99,21 +122,78 @@ struct Geracao::Impl
         FfxFrameInterpolationPrepareDescription pd;
         ID3D12CommandList* lista;  // a lista do jogo em que o preparo foi gravado
         uint64_t enviado;          // ordem de envio a GPU (0 = ainda nao)
+        bool semHud;               // a imagem sem HUD deste quadro esta em semHud[id % kJogos]
+        uint32_t passeHud;         // de qual passe do jogo ela veio
     };
     uint64_t ordemEnvio = 0;
     bool comEnvio = false; // o gancho de ExecuteCommandLists informa os envios
     std::mutex filaMx; // so a fila (nunca segurado em chamada da AMD: o Present dela segura as travas dela e chama Gera)
     std::deque<Preparado> fila;
     uint64_t aFrenteSoma = 0, aFrenteN = 0, aFrenteMax = 0, semPreparo = 0;
+    // diagnostico (Rastro): as primeiras apresentacoes com geracao
+    std::string rastro;
+    uint32_t rastroLinhas = 0;
+    uint64_t despachosRastro = 0; // despachos do FSR (Quadro) desde a ultima apresentacao
+    std::chrono::steady_clock::time_point rastroAnt{};
     uint64_t gerados = 0;
     uint64_t chamadas = 0; // apresentacoes com geracao (cada uma gera n - 1)
+    // a imagem sem HUD de cada quadro preparado (um por jogo de recursos), no formato do backbuffer
+    Microsoft::WRL::ComPtr<ID3D12Resource> semHud[kJogos];
+    D3D12_RESOURCE_STATES semHudEstado[kJogos] = {};
+    ID3D12Resource* semHudApresentado = nullptr; // a da ultima apresentacao (teste: despejo)
+    // Conferencia (na apresentacao, antes da AMD), em 1 de cada 16 pixels: quantos da copia sao iguais, bit a bit, ao
+    // quadro final, e -- contra a conferencia anterior do mesmo passe -- quantos trocaram entre igual e diferente (a
+    // mascara do que difere) e quantos do quadro final mudaram (a cena andou). A certa so difere no HUD, e o HUD fica
+    // parado: a mascara nao muda com a cena andando. A de outro passe difere na tela toda (antes de um pos-efeito como
+    // grao ou cor) ou nas bordas da cena (antes de uma nitidez), e essas andam com a cena
+    static constexpr int kConf = 8; // vagas: o resultado de cada uma e lido quando a marca dela volta da GPU
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> rsConf;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> psoConf;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heapConf;              // 2 SRV por vaga
+    Microsoft::WRL::ComPtr<ID3D12Resource> contaConf, zeroConf, leConf; // por vaga: iguais, marca, trocas, mudancas, base
+    Microsoft::WRL::ComPtr<ID3D12Resource> histConf; // por passe e pixel conferido: difere do final? e o hash do final
+    UINT64 histTam = 0;
+    D3D12_RESOURCE_STATES contaEstado = D3D12_RESOURCE_STATE_COPY_DEST;
+    uint32_t* zeroMapa = nullptr;
+    UINT incConf = 0;
+    struct Conferencia
+    {
+        uint32_t marca, passe, total;
+    } conf[kConf] = {};
+    uint32_t marcaConf = 0;
+    bool CriaConferencia();
+    void Confere(ID3D12GraphicsCommandList* c, ID3D12Resource* copia, const FfxResource& final_, uint32_t passe);
+    void LeConferencias();
+    // a escolha do passe: procura (do primeiro ao ultimo, fica o primeiro que confere), em uso, ou nenhum confere
+    static constexpr double kConfere = 0.7;    // a certa e igual ao quadro final fora do HUD (que cobre menos de 30%)
+    static constexpr double kMovimento = 0.05; // a cena andou: 5% dos pixels do quadro final mudaram
+    static constexpr double kInstavel = 0.003; // a mascara andou com a cena: 0,3% da tela trocou
+    std::atomic<uint32_t> passeHud{0}, passesHud{1};
+    std::atomic<int> faseHud{0}; // 0 procurando, 1 em uso, 2 nenhum confere (espera)
+    std::atomic<bool> conferidaHud{false}; // em uso ja conferida com a cena andando
+    std::atomic<double> igualHud{0.0}, trocaHud{0.0};
+    struct Medida
+    {
+        uint32_t n, nMov;
+        double igual, troca;
+    } medida[8] = {};
+    uint32_t falhasHud = 0, faltasHud = 0, instaveisHud = 0, pausaHud = 0;
+    void Resultado(uint32_t passe, double igual, double troca, bool movimento);
+    void Falta();
+    void Procura(uint32_t desde = 0);
 
     // a tela nunca recebe mais quadros por segundo que a taxa do monitor: o N em uso cai ate caber e so sobe com folga
     // (trocar entre 1 e 2 liga e desliga o swapchain da AMD: nada de ficar trocando)
     std::chrono::steady_clock::time_point tAnt{}, trocaDesde{};
-    double msJogo = 0;
+    double msJogo = 0, msAtual = 0;
+    std::atomic<uint32_t> trocasN{0};
     std::atomic<uint32_t> hz{0}, hzMax{0}; // DefineTaxa (outra thread)
     uint32_t nEmUso = 0;
+    // o limitador: com N gerados o jogo nao passa de 97% da taxa / N (dentro da faixa do FreeSync); a espera dele sai da
+    // medida do ritmo natural do jogo
+    double msSono = 0;
+    HANDLE relogio = nullptr;
+    void Limita();
     void Mede();
     uint32_t NEmUso(uint32_t pedido);
 
@@ -145,7 +225,8 @@ struct Geracao::Impl
     // teste: um quadro gerado e o real ao lado (DLSS5_GERACAO_DUMP)
     void Despejo(const FfxFrameGenerationDispatchDescription* d);
     bool CopiaParaLeitura(ID3D12GraphicsCommandList* c, const FfxResource& fonte, int slot);
-    Microsoft::WRL::ComPtr<ID3D12Resource> despejoLeitura[5]; // os gerados (ate 3), o real e o real anterior
+    // os gerados (ate 3), o real, o real anterior e a imagem sem HUD do real
+    Microsoft::WRL::ComPtr<ID3D12Resource> despejoLeitura[6];
     uint64_t despejoQuadro = 0;
     UINT despejoW = 0, despejoH = 0, despejoPitch = 0;
     DXGI_FORMAT despejoFmt = DXGI_FORMAT_UNKNOWN;
@@ -174,6 +255,8 @@ void Geracao::Impl::Destroi()
 bool Geracao::Impl::Cria()
 {
     Destroi();
+    for (auto& r : semHud) // tela ou formato novos (as apresentacoes em voo ja terminaram: Destroi)
+        r = nullptr;
     // como o provedor da AMD: a interface compartilhada para 1 contexto, a da interpolacao para 2 (fluxo + interpolacao)
     const size_t t1 = ffxGetScratchMemorySizeDX12(1), t2 = ffxGetScratchMemorySizeDX12(2);
     rascunhoShared = calloc(t1, 1);
@@ -224,7 +307,337 @@ bool Geracao::Impl::Cria()
             criado[alvo[k]] = true;
         }
     }
+    if (!CriaConferencia()) // sem ela nenhuma imagem sem HUD vai para a AMD (nao conferida, poderia ser a errada)
+        faseHud = 2;
     return true;
+}
+
+// a conferencia da imagem sem HUD: um compute que, em 1 de cada 16 pixels, conta os iguais (rgb, bit a bit no formato
+// da tela) entre a copia e o quadro final e, contra o historico do passe (a conferencia anterior dele), os que trocaram
+// entre igual e diferente e os do quadro final que mudaram
+bool Geracao::Impl::CriaConferencia()
+{
+    // o historico: 8 passes x os pixels conferidos desta tela (zerado na criacao = sem historico)
+    const UINT64 hist = 8ull * ((telaW + 2) / 4) * ((telaH + 2) / 4) * 4;
+    if (psoConf && histTam >= hist)
+        return true;
+    auto buffer = [&](D3D12_HEAP_TYPE tipo, UINT64 tam, D3D12_RESOURCE_FLAGS fl, D3D12_RESOURCE_STATES est,
+                      Microsoft::WRL::ComPtr<ID3D12Resource>& r) {
+        D3D12_HEAP_PROPERTIES hp{tipo};
+        D3D12_RESOURCE_DESC bd{};
+        bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        bd.Width = tam;
+        bd.Height = bd.DepthOrArraySize = bd.MipLevels = 1;
+        bd.SampleDesc.Count = 1;
+        bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        bd.Flags = fl;
+        r = nullptr;
+        return SUCCEEDED(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd, est, nullptr, IID_PPV_ARGS(&r)));
+    };
+    if (histTam < hist)
+    {
+        histTam = 0;
+        if (!buffer(D3D12_HEAP_TYPE_DEFAULT, hist, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS, histConf))
+            return psoConf = nullptr, false;
+        histConf->SetName(L"geracao: historico da conferencia da imagem sem HUD");
+        histTam = hist;
+    }
+    if (psoConf)
+        return true;
+    static const char kHlsl[] = R"(
+Texture2D<float4> copia : register(t0);
+Texture2D<float4> final_ : register(t1);
+RWByteAddressBuffer conta : register(u0); // por vaga (32 bytes): iguais, marca, trocas, mudancas, com historico
+RWByteAddressBuffer hist : register(u1);  // por passe e pixel conferido: bit 31 tem historico, bits 1-30 hash do final, bit 0 difere
+cbuffer k : register(b0) { uint w, h, vaga, passe, aw, ah, pad0, pad1; };
+groupshared uint gIg, gTroca, gMuda, gBase;
+[numthreads(8, 8, 1)]
+void CSConfere(uint3 id : SV_DispatchThreadID, uint gi : SV_GroupIndex)
+{
+    if (gi == 0)
+    {
+        gIg = 0;
+        gTroca = 0;
+        gMuda = 0;
+        gBase = 0;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    const uint2 p = id.xy * 4 + 1;
+    if (id.x < aw && id.y < ah && p.x < w && p.y < h)
+    {
+        const float3 b = final_[p].rgb;
+        const uint dif = any(copia[p].rgb != b) ? 1u : 0u;
+        const uint3 u = asuint(b);
+        const uint hh = (u.x * 73856093u) ^ (u.y * 19349663u) ^ (u.z * 83492791u);
+        const uint novo = ((hh | 0x80000000u) & ~1u) | dif;
+        const uint end = ((passe * ah + id.y) * aw + id.x) * 4;
+        const uint velho = hist.Load(end);
+        hist.Store(end, novo);
+        if (!dif)
+            InterlockedAdd(gIg, 1);
+        if (velho & 0x80000000u)
+        {
+            InterlockedAdd(gBase, 1);
+            if ((velho & 1u) != dif)
+                InterlockedAdd(gTroca, 1);
+            if ((velho >> 1) != (novo >> 1))
+                InterlockedAdd(gMuda, 1);
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (gi == 0)
+    {
+        const uint b0 = vaga * 32;
+        if (gIg)
+            conta.InterlockedAdd(b0, gIg);
+        if (gTroca)
+            conta.InterlockedAdd(b0 + 8, gTroca);
+        if (gMuda)
+            conta.InterlockedAdd(b0 + 12, gMuda);
+        if (gBase)
+            conta.InterlockedAdd(b0 + 16, gBase);
+    }
+}
+)";
+    Microsoft::WRL::ComPtr<ID3DBlob> cs, err, ser;
+    if (FAILED(D3DCompile(kHlsl, sizeof kHlsl - 1, "dlss5ov_confere", nullptr, nullptr, "CSConfere", "cs_5_1",
+                          D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &cs, &err)))
+        return false;
+    D3D12_DESCRIPTOR_RANGE faixa{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0, 0, 0};
+    D3D12_ROOT_PARAMETER par[4]{};
+    par[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    par[0].Constants.Num32BitValues = 8;
+    par[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    par[1].DescriptorTable = {1, &faixa};
+    par[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+    par[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+    par[3].Descriptor.ShaderRegister = 1;
+    D3D12_ROOT_SIGNATURE_DESC rd{4, par, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE};
+    if (FAILED(D3D12SerializeRootSignature(&rd, D3D_ROOT_SIGNATURE_VERSION_1, &ser, &err)) ||
+        FAILED(dev->CreateRootSignature(0, ser->GetBufferPointer(), ser->GetBufferSize(), IID_PPV_ARGS(&rsConf))))
+        return false;
+    D3D12_COMPUTE_PIPELINE_STATE_DESC pd{};
+    pd.pRootSignature = rsConf.Get();
+    pd.CS = {cs->GetBufferPointer(), cs->GetBufferSize()};
+    D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kConf * 2,
+                                  D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0};
+    if (FAILED(dev->CreateComputePipelineState(&pd, IID_PPV_ARGS(&psoConf))) ||
+        FAILED(dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&heapConf))))
+        return psoConf = nullptr, false;
+    incConf = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    void* m = nullptr;
+    if (!buffer(D3D12_HEAP_TYPE_DEFAULT, kConf * 32, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_COPY_DEST, contaConf) ||
+        !buffer(D3D12_HEAP_TYPE_UPLOAD, kConf * 32, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ, zeroConf) ||
+        !buffer(D3D12_HEAP_TYPE_READBACK, kConf * 32, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST, leConf) ||
+        FAILED(zeroConf->Map(0, nullptr, &m)))
+        return psoConf = nullptr, false;
+    zeroMapa = static_cast<uint32_t*>(m); // mapeado para sempre (upload)
+    contaEstado = D3D12_RESOURCE_STATE_COPY_DEST;
+    return true;
+}
+
+namespace {
+DXGI_FORMAT Tipado(DXGI_FORMAT f)
+{
+    switch (f)
+    {
+    case DXGI_FORMAT_R10G10B10A2_TYPELESS: return DXGI_FORMAT_R10G10B10A2_UNORM;
+    case DXGI_FORMAT_R8G8B8A8_TYPELESS: return DXGI_FORMAT_R8G8B8A8_UNORM;
+    case DXGI_FORMAT_B8G8R8A8_TYPELESS: return DXGI_FORMAT_B8G8R8A8_UNORM;
+    case DXGI_FORMAT_B8G8R8X8_TYPELESS: return DXGI_FORMAT_B8G8R8X8_UNORM;
+    case DXGI_FORMAT_R16G16B16A16_TYPELESS: return DXGI_FORMAT_R16G16B16A16_FLOAT;
+    default: return f;
+    }
+}
+
+D3D12_RESOURCE_BARRIER Transicao(ID3D12Resource* r, D3D12_RESOURCE_STATES de, D3D12_RESOURCE_STATES para)
+{
+    D3D12_RESOURCE_BARRIER b{};
+    b.Transition = {r, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, de, para};
+    return b;
+}
+} // namespace
+
+// grava a conferencia da copia deste quadro na lista da apresentacao (antes da AMD, que liga o heap e a raiz dela)
+void Geracao::Impl::Confere(ID3D12GraphicsCommandList* c, ID3D12Resource* copia, const FfxResource& final_, uint32_t passe)
+{
+    if (!psoConf || !c || !copia || !final_.resource)
+        return;
+    auto* fin = reinterpret_cast<ID3D12Resource*>(final_.resource);
+    const D3D12_RESOURCE_DESC fd = fin->GetDesc();
+    const uint32_t w = uint32_t(fd.Width), h = fd.Height, aw = (w + 2) / 4, ah = (h + 2) / 4;
+    if (passe >= 8 || 8ull * aw * ah * 4 > histTam)
+        return;
+    const uint32_t v = marcaConf % kConf, marca = ++marcaConf;
+    D3D12_SHADER_RESOURCE_VIEW_DESC sv{};
+    sv.Format = Tipado(fmtTela);
+    sv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    sv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    sv.Texture2D.MipLevels = 1;
+    D3D12_CPU_DESCRIPTOR_HANDLE hc = heapConf->GetCPUDescriptorHandleForHeapStart();
+    hc.ptr += SIZE_T(v) * 2 * incConf;
+    dev->CreateShaderResourceView(copia, &sv, hc);
+    hc.ptr += incConf;
+    dev->CreateShaderResourceView(fin, &sv, hc);
+    for (int i = 0; i < 8; ++i)
+        zeroMapa[v * 8 + i] = i == 1 ? marca : 0;
+    conf[v] = {marca, passe, aw * ah};
+    // a copia ja esta em leitura de compute (SemHud); o quadro final, no estado que a AMD deu
+    const D3D12_RESOURCE_STATES finEstado = D3D(final_.state), leitura = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    const bool transFin = !(finEstado & leitura);
+    D3D12_RESOURCE_BARRIER b[2];
+    UINT nb = 0;
+    if (contaEstado != D3D12_RESOURCE_STATE_COPY_DEST)
+        b[nb++] = Transicao(contaConf.Get(), contaEstado, D3D12_RESOURCE_STATE_COPY_DEST);
+    if (transFin)
+        b[nb++] = Transicao(fin, finEstado, leitura);
+    if (nb)
+        c->ResourceBarrier(nb, b);
+    c->CopyBufferRegion(contaConf.Get(), UINT64(v) * 32, zeroConf.Get(), UINT64(v) * 32, 32);
+    b[0] = Transicao(contaConf.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    c->ResourceBarrier(1, b);
+    ID3D12DescriptorHeap* heaps[] = {heapConf.Get()};
+    c->SetDescriptorHeaps(1, heaps);
+    c->SetComputeRootSignature(rsConf.Get());
+    c->SetPipelineState(psoConf.Get());
+    const uint32_t k[8] = {w, h, v, passe, aw, ah, 0, 0};
+    c->SetComputeRoot32BitConstants(0, 8, k, 0);
+    D3D12_GPU_DESCRIPTOR_HANDLE hg = heapConf->GetGPUDescriptorHandleForHeapStart();
+    hg.ptr += UINT64(v) * 2 * incConf;
+    c->SetComputeRootDescriptorTable(1, hg);
+    c->SetComputeRootUnorderedAccessView(2, contaConf->GetGPUVirtualAddress());
+    c->SetComputeRootUnorderedAccessView(3, histConf->GetGPUVirtualAddress());
+    c->Dispatch((aw + 7) / 8, (ah + 7) / 8, 1);
+    nb = 0;
+    b[nb++] = Transicao(contaConf.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    if (transFin)
+        b[nb++] = Transicao(fin, leitura, finEstado);
+    c->ResourceBarrier(nb, b);
+    c->CopyBufferRegion(leConf.Get(), UINT64(v) * 32, contaConf.Get(), UINT64(v) * 32, 32);
+    contaEstado = D3D12_RESOURCE_STATE_COPY_SOURCE;
+}
+
+// os resultados que ja voltaram da GPU (a marca da vaga no buffer de leitura e a desta conferencia)
+void Geracao::Impl::LeConferencias()
+{
+    if (!leConf)
+        return;
+    void* m = nullptr;
+    const D3D12_RANGE tudo{0, kConf * 32};
+    if (FAILED(leConf->Map(0, &tudo, &m)))
+        return;
+    const uint32_t* x = static_cast<const uint32_t*>(m);
+    Conferencia prontas[kConf];
+    uint32_t valores[kConf][8], n = 0;
+    for (int v = 0; v < kConf; ++v)
+        if (conf[v].marca && x[v * 8 + 1] == conf[v].marca)
+        {
+            prontas[n] = conf[v];
+            std::copy(x + v * 8, x + v * 8 + 8, valores[n++]);
+            conf[v].marca = 0;
+        }
+    const D3D12_RANGE nada{0, 0};
+    leConf->Unmap(0, &nada);
+    for (uint32_t i = 0; i < n; ++i)
+    {
+        const uint32_t* r = valores[i]; // iguais, marca, trocas, mudancas, com historico
+        const double total = prontas[i].total ? double(prontas[i].total) : 1.0, base = r[4] ? double(r[4]) : 1.0;
+        Resultado(prontas[i].passe, double(r[0]) / total, double(r[2]) / base, r[4] && double(r[3]) / base >= kMovimento);
+    }
+}
+
+// procura do passe `desde` em diante (sem passes depois dele: nenhum confere, espera)
+void Geracao::Impl::Procura(uint32_t desde)
+{
+    faseHud = 0;
+    conferidaHud = false;
+    falhasHud = faltasHud = instaveisHud = 0;
+    for (auto& m : medida)
+        m = {};
+    if (desde >= std::min<uint32_t>(passesHud, 8))
+    {
+        desde = 0;
+        faseHud = 2;
+        pausaHud = 600;
+    }
+    passeHud = desde;
+}
+
+// uma conferencia (igual: fracao da tela igual ao quadro final; troca: da mascara do que difere, contra a anterior do
+// mesmo passe; movimento: a cena andou desde ela). Procurando, do primeiro passe ao ultimo, fica o PRIMEIRO que:
+//   - e igual ao quadro final em 70% da tela ou mais, mas nao em tudo (antes dos pos-efeitos de cor/grao difere na tela
+//     toda; o proprio quadro final, 100% igual, ja tem o HUD; num menu grande nenhum confere e a procura segue);
+//   - com a cena andando, a mascara do que difere fica parada (o HUD) -- a de antes de uma nitidez anda com as bordas.
+//   Sem a cena andar em 40 conferencias, vale so a igualdade, e a mascara e conferida em uso quando a cena andar.
+// Em uso: um menu nao derruba a escolha (ela continua certa e o menu fica parado); a mascara andando com a cena 8 vezes
+// seguidas (passe de antes de um pos-efeito, aceito sem a cena andar) ou 600 seguidas quase sem nada igual (o jogo mudou
+// os passes) = procura de novo, do primeiro (um efeito de HUD animado passageiro nao empurra a escolha para um passe
+// que ja tem HUD). Nenhum confere: espera 600 apresentacoes e procura de novo
+void Geracao::Impl::Resultado(uint32_t passe, double igual, double troca, bool movimento)
+{
+    if (passe != passeHud || passe >= 8)
+        return; // de uma escolha anterior
+    igualHud = igual;
+    if (movimento)
+        trocaHud = troca;
+    if (faseHud == 1)
+    {
+        faltasHud = 0;
+        falhasHud = igual >= 0.05 ? 0 : falhasHud + 1;
+        if (movimento)
+        {
+            instaveisHud = troca > kInstavel ? instaveisHud + 1 : 0;
+            if (!instaveisHud)
+                conferidaHud = true;
+        }
+        if (instaveisHud >= 8 || falhasHud >= 600)
+            Procura();
+        return;
+    }
+    if (faseHud != 0)
+        return;
+    faltasHud = 0;
+    Medida& m = medida[passe];
+    ++m.n;
+    m.igual += igual;
+    if (movimento)
+        ++m.nMov, m.troca += troca;
+    const double media = m.igual / m.n;
+    bool aceita = false, rejeita = false;
+    if (m.n >= 3 && (media < kConfere || media >= 0.9999))
+        rejeita = true;
+    else if (m.nMov >= 3)
+        (m.troca / m.nMov <= kInstavel ? aceita : rejeita) = true;
+    else if (m.n >= 40)
+        aceita = true;
+    if (aceita)
+    {
+        const bool conferida = m.nMov >= 3;
+        Procura(passe);
+        faseHud = 1;
+        conferidaHud = conferida;
+    }
+    else if (rejeita)
+        Procura(passe + 1);
+}
+
+// a apresentacao veio sem copia do passe escolhido (o quadro teve menos passes): procurando, 6 seguidas = o passe nao
+// existe (conta como nao conferido); em uso, 240 seguidas = o passe sumiu (o jogo mudou os passes)
+void Geracao::Impl::Falta()
+{
+    if (faseHud == 1)
+    {
+        if (++faltasHud >= 240)
+            Procura();
+        return;
+    }
+    if (faseHud != 0 || ++faltasHud < 6)
+        return;
+    faltasHud = 0;
+    for (int i = 0; i < 3; ++i)
+        Resultado(passeHud, 0.0, 0.0, false);
 }
 
 // chamada pelo swapchain da AMD na apresentacao (lista e quadro dele): fluxo optico do backbuffer e interpolacao, com
@@ -248,6 +661,22 @@ FfxErrorCode Geracao::Impl::Gera(const FfxFrameGenerationDispatchDescription* d,
         }
         else if (!p->fila.empty())
             k = 0;
+        if (p->rastroLinhas < 120)
+        {
+            const auto agora = std::chrono::steady_clock::now();
+            char linha[320];
+            int n = snprintf(linha, sizeof linha, "apresentacao %u (+%.1f ms, %llu despachos do FSR desde a anterior): fila",
+                             p->rastroLinhas, p->rastroLinhas ? std::chrono::duration<double, std::milli>(agora - p->rastroAnt).count() : 0.0,
+                             (unsigned long long)p->despachosRastro);
+            for (const auto& f : p->fila)
+                n += snprintf(linha + n, sizeof linha - n, " %llu:%llu", (unsigned long long)f.id, (unsigned long long)f.enviado);
+            snprintf(linha + n, sizeof linha - n, " -> %s%llu\n", k == p->fila.size() ? "nenhum (so o real) " : "quadro ",
+                     k == p->fila.size() ? 0ull : (unsigned long long)p->fila[k].id);
+            p->rastro += linha;
+            ++p->rastroLinhas;
+            p->rastroAnt = agora;
+            p->despachosRastro = 0;
+        }
         if (k == p->fila.size())
         {
             ++p->semPreparo;
@@ -275,9 +704,30 @@ FfxErrorCode Geracao::Impl::Gera(const FfxFrameGenerationDispatchDescription* d,
         p->aFrenteMax = std::max(p->aFrenteMax, aFrente);
     }
     const FfxFrameInterpolationPrepareDescription& pd = pr.pd;
+    // a copia sem HUD deste quadro e conferida contra o quadro final; so a do passe conferido vai para a AMD: o fluxo
+    // optico e a interpolacao partem dela e o HUD vem do quadro final, parado (como o FSR 3 da AMD com HUDLessColor,
+    // ffx_fsr3.cpp)
+    p->LeConferencias();
+    if (p->faseHud == 2 && p->pausaHud && --p->pausaHud == 0)
+        p->Procura();
+    ID3D12Resource* semHud = nullptr;
+    if (pr.semHud)
+    {
+        ID3D12Resource* copia = p->semHud[pr.id % kJogos].Get();
+        p->Confere(reinterpret_cast<ID3D12GraphicsCommandList*>(d->commandList), copia, d->presentColor, pr.passeHud);
+        if (p->faseHud == 1 && pr.passeHud == p->passeHud)
+            semHud = copia;
+    }
+    else
+        p->Falta();
+    p->semHudApresentado = pr.semHud ? p->semHud[pr.id % kJogos].Get() : nullptr;
+    FfxResource corSemHud{};
+    if (semHud)
+        corSemHud = ffxGetResourceDX12(semHud, ffxGetResourceDescriptionDX12(semHud), L"imagem sem HUD",
+                                       FFX_RESOURCE_STATE_COMPUTE_READ);
     FfxOpticalflowDispatchDescription o{};
     o.commandList = d->commandList;
-    o.color = d->presentColor;
+    o.color = semHud ? corSemHud : d->presentColor;
     o.reset = d->reset;
     o.backbufferTransferFunction = d->backBufferTransferFunction;
     o.minMaxLuminance = {d->minMaxLuminance[0], d->minMaxLuminance[1]};
@@ -289,6 +739,8 @@ FfxErrorCode Geracao::Impl::Gera(const FfxFrameGenerationDispatchDescription* d,
     f.commandList = d->commandList;
     f.displaySize = {d->presentColor.description.width, d->presentColor.description.height};
     f.currentBackBuffer = d->presentColor;
+    if (semHud)
+        f.currentBackBuffer_HUDLess = corSemHud;
     f.reset = d->reset;
     f.renderSize = pd.renderSize;
     f.opticalFlowVector = p->Rec(R_FLUXO);
@@ -390,8 +842,8 @@ void Geracao::Impl::Despejo(const FfxFrameGenerationDispatchDescription* d)
     auto* c = reinterpret_cast<ID3D12GraphicsCommandList*>(d->commandList);
     if (despejoQuadro && chamadas == despejoQuadro + 8)
     {
-        const char* nomes[5] = {"gerado1", "gerado2", "gerado3", "real", "anterior"};
-        for (int k = 0; k < 5; ++k)
+        const char* nomes[6] = {"gerado1", "gerado2", "gerado3", "real", "anterior", "semhud"};
+        for (int k = 0; k < 6; ++k)
         {
             void* m = nullptr;
             if (!despejoLeitura[k] || FAILED(despejoLeitura[k]->Map(0, nullptr, &m)))
@@ -409,9 +861,12 @@ void Geracao::Impl::Despejo(const FfxFrameGenerationDispatchDescription* d)
         for (auto& r : despejoLeitura)
             r = nullptr;
     }
-    if (chamadas == 59)
+    static const uint64_t alvo = std::max<uint64_t>(2, std::getenv("DLSS5_GERACAO_DUMP_QUADRO")
+                                                           ? uint64_t(_atoi64(std::getenv("DLSS5_GERACAO_DUMP_QUADRO")))
+                                                           : 60);
+    if (chamadas == alvo - 1)
         CopiaParaLeitura(c, d->presentColor, 4);
-    if (chamadas != 60 || despejoQuadro)
+    if (chamadas != alvo || despejoQuadro)
         return;
     despejoQuadro = chamadas;
     const uint32_t m = std::clamp<uint32_t>(d->numInterpolatedFrames, 1, 3);
@@ -419,6 +874,9 @@ void Geracao::Impl::Despejo(const FfxFrameGenerationDispatchDescription* d)
         if (!CopiaParaLeitura(c, d->outputs[k], int(k)))
             return;
     CopiaParaLeitura(c, d->presentColor, 3);
+    if (semHudApresentado)
+        CopiaParaLeitura(c, ffxGetResourceDX12(semHudApresentado, ffxGetResourceDescriptionDX12(semHudApresentado),
+                                               L"imagem sem HUD", FFX_RESOURCE_STATE_COMPUTE_READ), 5);
 }
 
 Geracao::Geracao() : p(new Impl) {}
@@ -452,10 +910,11 @@ HRESULT Geracao::CriaSwapchain(IDXGIFactory* fabrica, ID3D12CommandQueue* fila, 
     const FfxErrorCode e = ffxCreateFrameinterpolationSwapchainDX12(d, fila, fabrica, s);
     if (e != FFX_OK || !s)
         return p->Erro("ffxCreateFrameinterpolationSwapchainDX12", e), E_FAIL;
-    p->ffxSc = s;
-    p->sc = ffxGetDX12SwapchainPtr(s);
-    fila->GetDevice(IID_PPV_ARGS(&p->dev));
-    return p->sc->QueryInterface(IID_PPV_ARGS(saida));
+    // como o da janela: o swapchain e so do jogo, com o aviso de destruicao (preso aqui, a troca de modo de tela falhava e
+    // a saida caia no driver)
+    const HRESULT h = ffxGetDX12SwapchainPtr(s)->QueryInterface(IID_PPV_ARGS(saida));
+    p->Adota(s, fila);
+    return h;
 }
 
 bool Geracao::TemSwapchain() const
@@ -489,6 +948,7 @@ void Geracao::Impl::AoDestruir(void* ctx)
     {
         std::lock_guard<std::mutex> lf(p->filaMx);
         p->fila.clear();
+        p->rastroLinhas = 0; // o proximo swapchain tem o rastro dele
     }
     p->Destroi();
     p->estado = 0;
@@ -496,7 +956,34 @@ void Geracao::Impl::AoDestruir(void* ctx)
     p->nEmUso = 0;
 }
 
-// o ritmo do jogo (entre as chamadas de Quadro)
+// com a geracao ligada o jogo nao passa de 97% da taxa / N -- acima disso a tela recebe mais do que mostra, e com o ritmo
+// do jogo oscilando em volta do encaixe (o sample da AMD entre 60 e 65 q/s a 120 Hz) a geracao ligava e desligava: engasgo
+void Geracao::Impl::Limita()
+{
+    msSono = 0;
+    const uint32_t taxa = hz;
+    if (!taxa || nEmUso < 2 || SemLimite() || !tAnt.time_since_epoch().count())
+        return;
+    const double alvo = 1000.0 * nEmUso / (taxa * 0.97);
+    const auto inicio = std::chrono::steady_clock::now();
+    const double falta = alvo - std::chrono::duration<double, std::milli>(inicio - tAnt).count();
+    if (falta <= 0.05 || falta > 100.0)
+        return;
+    if (!relogio)
+        relogio = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    if (relogio && falta > 1.0) // o grosso dormindo (relogio de alta resolucao), o resto girando
+    {
+        LARGE_INTEGER t;
+        t.QuadPart = -LONGLONG((falta - 0.6) * 10000.0); // relativo, em 100 ns
+        if (SetWaitableTimer(relogio, &t, 0, nullptr, nullptr, FALSE))
+            WaitForSingleObject(relogio, 200);
+    }
+    while (std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tAnt).count() < alvo)
+        YieldProcessor();
+    msSono = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - inicio).count();
+}
+
+// o ritmo do jogo entre as chamadas de Quadro: o entregue (msAtual) e o de trabalho, sem a espera do limitador (msJogo)
 void Geracao::Impl::Mede()
 {
     const auto agora = std::chrono::steady_clock::now();
@@ -504,7 +991,10 @@ void Geracao::Impl::Mede()
     {
         const double ms = std::chrono::duration<double, std::milli>(agora - tAnt).count();
         if (ms > 0.5 && ms < 250.0)
-            msJogo = msJogo > 0 ? msJogo * 0.9 + ms * 0.1 : ms;
+        {
+            msAtual = msAtual > 0 ? msAtual * 0.9 + ms * 0.1 : ms;
+            msJogo = msJogo > 0 ? msJogo * 0.9 + (ms - msSono) * 0.1 : ms - msSono;
+        }
     }
     tAnt = agora;
 }
@@ -517,24 +1007,46 @@ void Geracao::DefineTaxa(uint32_t hz, uint32_t hzMax)
 
 uint32_t Geracao::Impl::NEmUso(uint32_t pedido)
 {
-    static const bool semLimite = std::getenv("DLSS5_GERACAO_SEM_LIMITE") != nullptr; // testes de ritmo
     if (pedido < 2)
     {
         nEmUso = 1;
         trocaDesde = {};
         return 1;
     }
-    if (semLimite || !hz)
+    const uint32_t hzAgora = hz;
+    if (SemLimite() || !hzAgora)
         return nEmUso = pedido;
     if (msJogo <= 0)
         return 1; // o primeiro quadro: sem gerados ate saber o ritmo do jogo
-    const double fps = 1000.0 / msJogo;
-    uint32_t novo = nEmUso ? std::min(nEmUso, pedido) : pedido;
-    const double taxa = hz;
-    while (novo > 1 && fps * novo > taxa * 1.05) // nao cabe: cai
-        --novo;
-    while (novo < pedido && fps * (novo + 1) <= taxa * 0.97) // cabe com folga: sobe
-        ++novo;
+    const double taxa = hzAgora;
+    // o menor N que enche a tela (mais quadros de verdade: menos atraso e menos artefato; o limitador segura o jogo em
+    // 97% da taxa / N); sem nenhum que encha, o pedido
+    auto menorN = [&](double fps) {
+        for (uint32_t k = 2; k <= pedido; ++k)
+            if (fps * k >= taxa * 0.97)
+                return k;
+        return pedido;
+    };
+    uint32_t novo;
+    if (nEmUso < 2)
+        // desligada: liga com o jogo entregando ate 3/4 da taxa (acima disso trocaria quadros de verdade por gerados
+        // quase sem ganho)
+        novo = 1000.0 / msAtual <= taxa * 0.75 ? menorN(1000.0 / msAtual) : 1;
+    else
+    {
+        // ligada: so ajusta o N pelo ritmo de trabalho (sem a espera do limitador) e nunca desliga sozinha -- o limitador
+        // do proprio jogo (o sample da AMD trava em 60) confunde essa medida e a geracao ficava ligando e desligando. E
+        // so troca com folga clara: sobe se a tela ficar 10% abaixo da taxa, desce se um a menos ainda passar 5% dela
+        // (sem isso, com o jogo a 48 q/s o N ia e voltava entre 2 e 3 a cada 2 s -- cada troca muda o ritmo da tela)
+        // So sobe: segurado pelo limitador o jogo parece mais rapido do que e (a GPU folga e o tempo de CPU cai -- em 3x
+        // ele media 75 q/s de trabalho e em 2x so fazia 43), entao descer sozinho voltava a subir a cada poucos segundos.
+        // Desce quando o pedido muda no painel (ou a geracao desliga e liga)
+        const double fps = 1000.0 / msJogo;
+        novo = nEmUso;
+        if (fps * nEmUso < taxa * 0.90)
+            novo = std::max(nEmUso, menorN(fps));
+        novo = std::min(novo, pedido);
+    }
     if (!nEmUso || nEmUso > pedido) // o primeiro quadro, ou o pedido baixou no painel: ja
     {
         trocaDesde = {};
@@ -545,8 +1057,9 @@ uint32_t Geracao::Impl::NEmUso(uint32_t pedido)
         trocaDesde = {};
     else if (!trocaDesde.time_since_epoch().count())
         trocaDesde = agora;
-    else if (agora - trocaDesde >= std::chrono::milliseconds(novo < nEmUso ? 500 : 1500))
+    else if (agora - trocaDesde >= std::chrono::milliseconds(novo < nEmUso ? (nEmUso > 2 && novo >= 2 ? 3000 : 500) : 1500))
     {
+        ++trocasN; // diagnostico: o log de 5 s mostra quantas vezes o N mudou
         nEmUso = novo;
         trocaDesde = {};
     }
@@ -555,6 +1068,7 @@ uint32_t Geracao::Impl::NEmUso(uint32_t pedido)
 
 bool Geracao::Quadro(ID3D12GraphicsCommandList* c, const QuadroGeracao& q, uint32_t n)
 {
+    p->Limita(); // antes da trava: a espera nao segura o aviso de destruicao
     std::lock_guard<std::mutex> lk(p->mx);
     if (!p->sc || !c || !q.prof || !q.mov || !q.renderW || !q.renderH)
         return false;
@@ -608,7 +1122,8 @@ bool Geracao::Quadro(ID3D12GraphicsCommandList* c, const QuadroGeracao& q, uint3
         return p->Erro("ffxFrameInterpolationPrepare", e), false;
     {
         std::lock_guard<std::mutex> lk(p->filaMx);
-        p->fila.push_back({p->quadro, pd, static_cast<ID3D12CommandList*>(c), 0});
+        ++p->despachosRastro;
+        p->fila.push_back({p->quadro, pd, ListaNativa(c), 0, false, 0});
         while (p->fila.size() > size_t(kJogos)) // mais preparados que apresentacoes (o jogo pulou um Present): o velho sai
             p->fila.pop_front();
     }
@@ -653,12 +1168,81 @@ void Geracao::Submetido(ID3D12CommandList* const* l, UINT n)
     std::lock_guard<std::mutex> lk(p->filaMx);
     p->comEnvio = true;
     for (UINT j = 0; j < n; ++j)
+    {
+        ID3D12CommandList* nativa = ListaNativa(l[j]);
         for (auto& f : p->fila)
-            if (f.lista == l[j] && !f.enviado)
+            if (f.lista == nativa && !f.enviado)
             {
                 f.enviado = ++p->ordemEnvio;
                 break;
             }
+    }
+}
+
+bool Geracao::SemHud(ID3D12GraphicsCommandList* c, ID3D12Resource* fonte, D3D12_RESOURCE_STATES estado, uint32_t passe)
+{
+    std::lock_guard<std::mutex> lk(p->mx);
+    if (passe < 8 && passe + 1 > p->passesHud)
+        p->passesHud = passe + 1; // quantos passes o jogo tem (a procura corre todos)
+    if (!p->sc || p->estado != 2 || !p->quadro || !c || !fonte || p->faseHud == 2 || passe != p->passeHud)
+        return false;
+    const D3D12_RESOURCE_DESC fd = fonte->GetDesc();
+    if (fd.Width != p->telaW || fd.Height != p->telaH)
+        return false;
+    const int jogo = int(p->quadro % kJogos);
+    auto& alvo = p->semHud[jogo];
+    if (!alvo)
+    {
+        D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+        D3D12_RESOURCE_DESC d{};
+        d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        d.Width = p->telaW;
+        d.Height = p->telaH;
+        d.DepthOrArraySize = d.MipLevels = 1;
+        d.Format = p->fmtTela; // a mesma familia da fonte (SemHud.cpp): copia direta
+        d.SampleDesc.Count = 1;
+        if (FAILED(p->dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                   IID_PPV_ARGS(&alvo))))
+            return false;
+        alvo->SetName(L"geracao: imagem sem HUD");
+        p->semHudEstado[jogo] = D3D12_RESOURCE_STATE_COPY_DEST;
+    }
+    auto transicao = [](ID3D12Resource* r, D3D12_RESOURCE_STATES de, D3D12_RESOURCE_STATES para) {
+        D3D12_RESOURCE_BARRIER b{};
+        b.Transition = {r, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, de, para};
+        return b;
+    };
+    D3D12_RESOURCE_BARRIER b[2];
+    UINT nb = 0;
+    if (estado != D3D12_RESOURCE_STATE_COPY_SOURCE)
+        b[nb++] = transicao(fonte, estado, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    if (p->semHudEstado[jogo] != D3D12_RESOURCE_STATE_COPY_DEST)
+        b[nb++] = transicao(alvo.Get(), p->semHudEstado[jogo], D3D12_RESOURCE_STATE_COPY_DEST);
+    if (nb)
+        c->ResourceBarrier(nb, b);
+    D3D12_TEXTURE_COPY_LOCATION para{alvo.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+    D3D12_TEXTURE_COPY_LOCATION de{fonte, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+    c->CopyTextureRegion(&para, 0, 0, 0, &de, nullptr);
+    nb = 0;
+    if (estado != D3D12_RESOURCE_STATE_COPY_SOURCE)
+        b[nb++] = transicao(fonte, D3D12_RESOURCE_STATE_COPY_SOURCE, estado);
+    b[nb++] = transicao(alvo.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    c->ResourceBarrier(nb, b);
+    p->semHudEstado[jogo] = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    std::lock_guard<std::mutex> lf(p->filaMx);
+    for (auto& f : p->fila)
+        if (f.id == p->quadro)
+            f.semHud = true, f.passeHud = passe;
+    return true;
+}
+
+void Geracao::SemHudEstado(uint32_t& passe, uint32_t& passes, double& igual, double& troca, int& fase) const
+{
+    passe = p->passeHud;
+    passes = p->passesHud;
+    igual = p->igualHud.load();
+    troca = p->trocaHud.load();
+    fase = p->faseHud == 1 && !p->conferidaHud ? 3 : int(p->faseHud);
 }
 
 uint32_t Geracao::Fila(double& mediaAFrente, uint64_t& maxAFrente, uint64_t& semPreparo) const
@@ -670,6 +1254,19 @@ uint32_t Geracao::Fila(double& mediaAFrente, uint64_t& maxAFrente, uint64_t& sem
     semPreparo = p->semPreparo;
     p->aFrenteSoma = p->aFrenteN = p->aFrenteMax = p->semPreparo = 0;
     return n;
+}
+
+std::string Geracao::Rastro()
+{
+    std::lock_guard<std::mutex> lk(p->filaMx);
+    std::string r;
+    r.swap(p->rastro);
+    return r;
+}
+
+uint32_t Geracao::TrocasN() const
+{
+    return p->trocasN.exchange(0);
 }
 
 uint32_t Geracao::EmUso() const

@@ -10,8 +10,15 @@
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <cstdint>
+#include <string>
 
 namespace dlss5ov {
+
+// a lista de comandos de verdade por tras de uma do NVIDIA Streamline (sl.interposer embrulha dispositivo, filas e
+// listas; o jogo entrega a nativa ao FSR, como a NVIDIA recomenda, e envia a embrulhada a GPU, ou o contrario): as
+// duas pontas viram a nativa para casar (Streamline sl.api/internal.h: StreamlineRetrieveBaseInterface). Sem Streamline,
+// a propria lista
+ID3D12CommandList* ListaNativa(ID3D12CommandList* l);
 
 // o que o jogo entrega ao FSR neste quadro (estados D3D12 em que cada recurso esta naquele ponto)
 struct QuadroGeracao
@@ -52,6 +59,17 @@ class Geracao
     // usa o preparo mais novo ja enviado -- o motor pode gravar o quadro seguinte antes do Present deste, mas so o envia
     // depois. Sem esta informacao (jogo de teste direto), a ordem de gravacao
     void Submetido(ID3D12CommandList* const* l, UINT n);
+    // a imagem sem HUD do quadro preparado por ultimo: o modulo numera os passes do jogo que escrevem uma textura do
+    // tamanho e formato da tela depois do upscaler (jogo\SemHud.h) e a geracao copia o escolhido aqui, na lista do jogo.
+    // Cada copia e conferida na apresentacao contra o quadro final (a certa so difere dele no HUD): a escolha corre os
+    // passes e fica com o que confere, e so a conferida vai para a AMD como currentBackBuffer_HUDLess (e para o fluxo
+    // optico, como no FSR 3 da AMD) -- o HUD fica parado nos gerados em vez de andar com a cena
+    bool SemHud(ID3D12GraphicsCommandList* c, ID3D12Resource* fonte, D3D12_RESOURCE_STATES estado, uint32_t passe);
+    // a escolha: o passe em uso ou em teste, quantos o jogo tem, a fracao da tela igual ao quadro final e a da mascara
+    // do que difere que trocou com a cena andando (nas ultimas conferencias) e a fase (0 procurando, 1 em uso conferida
+    // com a cena andando, 2 nenhum passe confere: espera e procura de novo, 3 em uso so pela igualdade: a cena ainda nao
+    // andou)
+    void SemHudEstado(uint32_t& passe, uint32_t& passes, double& igual, double& troca, int& fase) const;
     const char* UltimoErro() const;
     uint64_t Gerados() const; // quadros gerados ate aqui (cada chamada da AMD gera um)
     // o contexto da AMD (compilado em segundo plano a partir do primeiro quadro): 0 nada, 1 compilando, 2 pronto,
@@ -64,9 +82,14 @@ class Geracao
     // bloqueio). Sem ela, sem limite
     void DefineTaxa(uint32_t hz, uint32_t hzMax);
     uint32_t EmUso() const;    // quadros apresentados por quadro do jogo de fato (1 = sem geracao)
+    uint32_t TrocasN() const;  // quantas vezes o N em uso mudou desde a ultima leitura (zera)
     // desde a ultima leitura: apresentacoes com geracao, quantos quadros o jogo ja tinha preparado a frente de cada uma
     // (media e maior) e quantas ficaram sem o preparo do proprio quadro
     uint32_t Fila(double& mediaAFrente, uint64_t& maxAFrente, uint64_t& semPreparo) const;
+    // diagnostico: as 120 primeiras apresentacoes com geracao (de cada swapchain), uma linha cada -- quando foi, quantos
+    // despachos do FSR desde a anterior, a fila (quadro:ordem de envio) e qual quadro ela usou. Devolve as linhas novas
+    // desde a ultima leitura (vazio quando nao ha)
+    std::string Rastro();
     uint32_t Hz() const;       // a taxa atual do monitor da janela do jogo (0 = desconhecida)
     uint32_t HzMaximo() const; // a maior que ele aceita nesta resolucao
     double FpsJogo() const;    // quadros do jogo por segundo (entre as chamadas de Quadro)

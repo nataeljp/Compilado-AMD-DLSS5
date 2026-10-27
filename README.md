@@ -94,10 +94,31 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
     movimento indo e voltando). Os preparos ficam numa fila (3 jogos de recursos) e cada Present usa o mais novo já
     **enviado** à GPU (gancho de `ExecuteCommandLists` desde o primeiro quadro). Medido no jogo de teste `--adiantado`
     (grava à frente, envia em ordem): a DLL nova gera o mesmo quadro que o motor normal; a antiga, outro. O log diz
-    quantos quadros o jogo grava à frente.
+    quantos quadros o jogo grava à frente. Com o **NVIDIA Streamline** no jogo (`sl.interposer.dll`, como no TLOU2) as
+    listas de comandos são embrulhadas: o jogo entrega a nativa ao FSR (como a NVIDIA recomenda) e envia a embrulhada,
+    e as duas nunca casavam (no TLOU2: todas as apresentações sem o preparo do próprio quadro). As duas pontas viram a
+    nativa (`QueryInterface` com o `StreamlineRetrieveBaseInterface` do Streamline). As 120 primeiras apresentações com
+    geração vão para o log, uma a uma: os despachos do FSR desde a anterior, a fila e qual quadro cada uma usou.
+  - **HUD parado nos gerados**: interpolado junto com a cena, o HUD andava com ela. A AMD resolve com a imagem sem HUD
+    (`currentBackBuffer_HUDLess`: onde o quadro final difere dela é HUD, e o gerado leva o HUD do quadro final, parado;
+    o fluxo óptico também parte dela, como no FSR 3). O jogo não a entrega: o módulo a acha pelo método do HUDfix do
+    OptiScaler (`src\jogo\SemHud.cpp`) — segue os descritores das texturas do tamanho e do formato da tela, da criação
+    (`Create*View`, `CopyDescriptors*`) ao uso (alvo de desenho + desenho; tabela de compute, pelas faixas de UAV da root
+    signature, + despacho), numera os passes do jogo depois do upscaler e copia o escolhido logo depois dele. A escolha é
+    conferida na GPU a cada apresentação, contra o quadro final, em 1 de cada 16 pixels: a certa é igual a ele bit a bit
+    fora do HUD (≥ 70% da tela, mas não 100% — essa já tem HUD) e, com a cena andando, a máscara do que difere fica
+    parada; a de antes de um pós-efeito difere na tela toda (grão, cor) ou nas bordas, que andam com a cena (nitidez).
+    Fica o primeiro passe que confere; só a conferida vai para a AMD. Medido (o HUD dos gerados contra o do quadro
+    real): sample da AMD a 4K, SDR e HDR10 em tela cheia, passe 0 de 3, 100% igual (sem a imagem: 64%, até 204/255 de
+    diferença); jogo de teste `--hud` (tonemap → HUD; com `--pos grao` ou `--pos nitidez` entre eles): o passe certo nos
+    três casos, 100% igual, instantes 0,333/0,669, nenhuma mensagem da camada de validação do D3D12. `DLSS5_SEM_HUD=0`
+    desliga (teste A/B).
   - **Limite pela taxa do monitor**: a tela nunca recebe mais quadros por segundo que a taxa do monitor (acima dela cada
-    atualização mostra pedaços de vários quadros). O N em uso cai até caber (jogo × N ≤ taxa, 5% de folga) e só sobe com
-    folga. A taxa é a física do sinal (`QueryDisplayConfig` com `QDC_VIRTUAL_REFRESH_RATE_AWARE`): com a taxa dinâmica do
+    atualização mostra pedaços de vários quadros). Desligada, a geração liga quando o jogo entrega até 75% da taxa, com
+    o menor N que enche a tela; ligada, o N só sobe (o jogo caindo) e nunca cai sozinho — o limitador abaixo e o do
+    próprio jogo distorcem a medida, e o N ia e voltava. Com N gerados o jogo é limitado a 97% da taxa ÷ N (relógio de
+    alta resolução + espera ativa, antes da trava). Os gerados ignoram o vsync do jogo: com ele cada um esperava um
+    vblank do compositor a 60 Hz e o jogo caía pela metade. A taxa é a física do sinal (`QueryDisplayConfig` com `QDC_VIRTUAL_REFRESH_RATE_AWARE`): com a taxa dinâmica do
     Windows 11 a área de trabalho fica "virtual" a 60 Hz e a tela segue a 120 — `EnumDisplaySettings` só via os 60 e a
     geração saía desligada num monitor de 120 Hz com FreeSync. Lida pelo vigia, fora da thread de render.
   - **Só no executável do jogo**: na pasta do jogo a DLL é carregada por todo programa dali (o relatório de erros
@@ -113,6 +134,13 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
     (> 2x a média), o ritmo das apresentações e quantos quadros o jogo grava à frente; o **vigia** grava onde cada thread
     está parada se os quadros param por 4 s ou a janela trava (módulo + deslocamento; os da DLL saem pelo
     `DLSS5Buffer.map` gerado na compilação); acessos inválidos (até 5) com a pilha.
+  - **Dispositivo removido**: o TLOU2 para (de propósito: escreve o código em 0x0) com `DXGI_ERROR_INVALID_CALL` quando
+    `GetDeviceRemovedReason` diz que o dispositivo caiu por uma chamada inválida. O módulo liga o DRED da Microsoft
+    antes de o jogo criar o dispositivo (o último comando de cada lista e a falha de página da GPU) e confere o
+    dispositivo depois de cada `ExecuteCommandLists`: o envio que o derrubou vai para o log (fila, listas — se é a do
+    FSR, com os passes do módulo — e quem enviou), com o DRED; as listas que o runtime recusa ao fechar também.
+    Reproduzido no jogo de teste `--invalida Q` (envia uma lista sem fechar): o mesmo `0x887a0001`, e o log aponta a
+    lista e quem a enviou.
   - O jogo espera a edição do quadro anterior (1 quadro, como a NVIDIA roda o DLSS 5: a rede dentro do tempo do quadro)
     e a soma pelo movimento acumulado desde o quadro que a rede viu (nenhum quadro pula sem o movimento dele ser
     contado: era o "liga/desliga"), e só para a
@@ -220,7 +248,7 @@ Os parâmetros do DLSS 5 seguem os nomes que a NVIDIA expõe no NGX (os mesmos d
 | `profundidade` | 0..4 | blocos da rede grande: 0 = 71, 1 = 68 (sem 42/43/46), 2 = 63 (sem 40–47), 3 = 55 (e sem 23–30), 4 = 47 (e sem o ViT 31–38; só com `reusoVit` desligado). Só blocos residuais saem; muda na hora; só no `config.json`. Não se aplica à rede pequena, que é outro modelo |
 | `movimento` | true/false | movimento simulado por fluxo óptico (as guias do histórico da própria rede na captura de vídeo) |
 | `geracaoQuadros` | 0/2/3/4 | captura de buffer: geração de quadros da AMD (0 desligada, 2 = 2x .. 4 = 4x); a DLL vai para a pasta do jogo (version.dll ou dxgi.dll) |
-| `ritmo`, `quadroGerado` | 1..4, 0/1 | só na captura de vídeo: **quadros gerados** — a rede edita 1 de cada N quadros e os N−1 seguintes são gerados dos processados (nunca um quadro novo com edição velha): 0 repetido (na captura de buffer o processado aparece 1 quadro depois), 1 mesclado (50/50, 40/60, 30/70 do anterior/novo; o novo aparece N quadros depois) |
+| `ritmo`, `quadroGerado` | 1..4, 0/1 | só na captura de vídeo: **quadros gerados** — a rede edita 1 de cada N quadros e os N−1 seguintes são gerados dos processados (nunca um quadro novo com edição velha): 0 repetido (na captura de buffer o processado aparece 1 quadro depois), 1 mesclado (os N quadros de cada ciclo misturam só o processado atual e o próximo, peso do próximo em passos iguais: 2x 50/50, 3x 25/50/75%, 4x 20/40/60/80%; sempre 1 quadro de atraso) |
 | `reusoVit` | true/false | reuso adaptativo do ViT do runtime lmxxf (vale ao reabrir) |
 | `temporalRede` | 0..3 | histórico da própria rede (`DLSS5_TEMPORAL_MODE` do runtime; vale ao reabrir, força 1 passe e desliga o `reusoVit`). 1 = a entrada de histórico da rede recebe a resposta anterior trazida pelo movimento (captura de buffer: movimento e profundidade do jogo; captura de vídeo: fluxo óptico) e a cabeça de histórico do bloco 70 decide a mistura; precisa do runtime deste branch (`LmxxfNrSetHistoryGuides`) e do `post70-history-head.f16` que o `monta_runtime.ps1` extrai. 2 e 3 = suavização de baixa frequência / realce na saída do runtime |
 | `forcaHistoricoRede` | 0..1 | com `temporalRede` 1: escala do peso que a própria rede dá à resposta anterior (força × 0,74 × a decisão da cabeça de histórico); 1 = o da rede |

@@ -24,6 +24,8 @@
 #include "../../externo/ffx/dx12/ffx_api_dx12.h"
 #include <d3d12.h>
 #include <d3d12sdklayers.h>
+#include <d3dcompiler.h>
+#pragma comment(lib, "d3dcompiler.lib")
 #include <winver.h>
 #pragma comment(lib, "version.lib")
 #include <dxgi1_6.h>
@@ -81,6 +83,51 @@ struct Tex
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
 };
 
+// --hud (com --como-jogo): depois do FSR, como um jogo -- tonemap (compute) numa textura no formato da tela, um
+// pos-efeito opcional (--pos grao: ruido na tela toda; --pos nitidez: so nas bordas, o resto igual bit a bit) e o HUD
+// desenhado por cima com mistura (painel translucido com linhas, barra e mira); o resultado vai para o backbuffer.
+// Testa a imagem sem HUD do modulo (jogo\SemHud.h): qual passe ele escolhe e se o HUD fica parado nos gerados
+static const char kHud[] = R"(
+cbuffer k : register(b0) { uint quadro, modo, w, h; };
+Texture2D<float4> ent : register(t0);
+RWTexture2D<float4> sai : register(u0);
+[numthreads(8, 8, 1)] void CSTom(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= w || id.y >= h) return;
+    const float3 c = max(ent[id.xy].rgb, 0);
+    sai[id.xy] = float4(c / (1 + c), 1);
+}
+float Ruido(uint2 p, uint q)
+{
+    uint n = p.x * 1973 + p.y * 9277 + q * 26699;
+    n = (n << 13) ^ n;
+    n = n * (n * n * 15731 + 789221) + 1376312589;
+    return float(n & 0xffffff) / 16777216.0;
+}
+[numthreads(8, 8, 1)] void CSPos(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= w || id.y >= h) return;
+    const float4 c = ent[id.xy];
+    if (modo == 1)
+    {
+        sai[id.xy] = float4(saturate(c.rgb + (Ruido(id.xy, quadro) - 0.5) * 0.04), 1);
+        return;
+    }
+    const int2 p = int2(id.xy);
+    const float3 m = (ent[p + int2(1, 0)].rgb + ent[p - int2(1, 0)].rgb + ent[p + int2(0, 1)].rgb + ent[p - int2(0, 1)].rgb) * 0.25;
+    const float3 d = c.rgb - m;
+    sai[id.xy] = max(abs(d.r), max(abs(d.g), abs(d.b))) > 0.02 ? float4(saturate(c.rgb + d), 1) : c;
+}
+cbuffer r : register(b0) { float4 ret; float4 cor; };
+float4 VSHud(uint v : SV_VertexID) : SV_Position
+{
+    const float2 t[6] = { float2(0, 0), float2(1, 0), float2(0, 1), float2(1, 0), float2(1, 1), float2(0, 1) };
+    const float2 p = lerp(ret.xy, ret.zw, t[v]);
+    return float4(p.x * 2 - 1, 1 - p.y * 2, 0, 1);
+}
+float4 PSHud() : SV_Target { return cor; }
+)";
+
 // o Agility SDK em .\D3D12\ (so com a pasta presente; sem ela o D3D12 do Windows)
 extern "C" __declspec(dllexport) extern const UINT D3D12SDKVersion = 614;
 extern "C" __declspec(dllexport) extern const char* D3D12SDKPath = ".\\D3D12\\";
@@ -97,14 +144,20 @@ int wmain(int argc, wchar_t** argv)
     float render = 1.f;
     bool raw = false, laco = false, geracao = false, semOverlay = false, comoJogo = false;
     std::wstring modulo;
+    int pos = 0; // --pos: 0 nenhum, 1 grao, 2 nitidez (com --hud)
     uint32_t multi = 2;
     UINT64 recria = 0, trava = 0;
+    // --invalida Q (com --como-jogo): no quadro Q envia a lista do jogo sem fechar -- o runtime remove o dispositivo por
+    // chamada invalida (DXGI_ERROR_INVALID_CALL), como no TLOU2: testa o relato do modulo
+    UINT64 invalida = 0;
     for (int i = 3; i + 1 < argc; ++i)
     {
         if (!wcscmp(argv[i], L"--trava")) // --trava Q: no quadro Q a thread do jogo para 8 s (o vigia do modulo)
             trava = UINT64(_wtoi64(argv[i + 1]));
         if (!wcscmp(argv[i], L"--recria"))
             recria = UINT64(_wtoi64(argv[i + 1]));
+        if (!wcscmp(argv[i], L"--invalida"))
+            invalida = UINT64(_wtoi64(argv[i + 1]));
         if (!wcscmp(argv[i], L"--multi"))
             multi = uint32_t(std::clamp(_wtoi(argv[i + 1]), 2, 4));
         if (!wcscmp(argv[i], L"--voltas"))
@@ -115,7 +168,12 @@ int wmain(int argc, wchar_t** argv)
             modulo = argv[i + 1];
         if (!wcscmp(argv[i], L"--render"))
             render = std::clamp(float(_wtof(argv[i + 1])), 0.25f, 1.f);
+        if (!wcscmp(argv[i], L"--pos"))
+            pos = !wcscmp(argv[i + 1], L"grao") ? 1 : !wcscmp(argv[i + 1], L"nitidez") ? 2 : 0;
     }
+    bool hud = false;
+    for (int i = 3; i < argc; ++i)
+        hud |= !wcscmp(argv[i], L"--hud");
     for (int i = 3; i < argc; ++i)
     {
         raw |= !wcscmp(argv[i], L"--raw");
@@ -291,6 +349,12 @@ int wmain(int argc, wchar_t** argv)
     // como um jogo: o swapchain pela DXGI (a DLSS5Buffer.dll aberta com a geracao troca pelo da AMD) e o FSR pela DLL
     // da AMD (a DLSS5Buffer.dll engancha ffxCreateContext/ffxDispatch dela)
     DXGI_SWAP_CHAIN_DESC1 sdJogo{};
+    // --hud: o pos e o HUD, criados depois do swapchain (como num jogo: o modulo segue os descritores desde a criacao)
+    Tex hudA, hudB;
+    ComPtr<ID3D12DescriptorHeap> hudDesc, hudRtv;
+    ComPtr<ID3D12RootSignature> hudRaizC, hudRaizG;
+    ComPtr<ID3D12PipelineState> hudTom, hudPos, hudDesenho;
+    UINT hudInc = 0, hudIncRtv = 0;
     PfnFfxCreateContext fsrCria = nullptr;
     PfnFfxDispatch fsrDespacha = nullptr;
     ffxContext fsr = nullptr;
@@ -342,6 +406,113 @@ int wmain(int argc, wchar_t** argv)
         sc1.As(&sc);
         sc->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709);
         printf("como jogo: FSR pela amd_fidelityfx_dx12.dll e swapchain pela DXGI (%ux%u)\n", W, H);
+        if (hud)
+        {
+            auto compila = [&](const char* e, const char* alvo) {
+                ComPtr<ID3DBlob> b, err;
+                if (FAILED(D3DCompile(kHud, sizeof kHud - 1, "hud", nullptr, nullptr, e, alvo, 0, 0, &b, &err)))
+                {
+                    fprintf(stderr, "hud: %s\n", err ? (const char*)err->GetBufferPointer() : e);
+                    ExitProcess(8);
+                }
+                return b;
+            };
+            for (Tex* t : {&hudA, &hudB})
+            {
+                D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+                D3D12_RESOURCE_DESC rd{};
+                rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+                rd.Width = W;
+                rd.Height = H;
+                rd.DepthOrArraySize = rd.MipLevels = 1;
+                rd.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+                rd.SampleDesc.Count = 1;
+                rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+                Ck(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COMMON, nullptr,
+                                                IID_PPV_ARGS(&t->r)),
+                   "hud: textura");
+            }
+            hudA.r->SetName(L"hud: cena (tonemap)");
+            hudB.r->SetName(L"hud: pos-efeito");
+            // compute: [SRV t0, UAV u0] numa tabela so (a faixa de UAV da root signature diz onde ela esta)
+            D3D12_DESCRIPTOR_RANGE fx[2] = {{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, 0},
+                                            {D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND}};
+            D3D12_ROOT_PARAMETER pc[2]{};
+            pc[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+            pc[0].Constants.Num32BitValues = 4;
+            pc[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+            pc[1].DescriptorTable = {2, fx};
+            D3D12_ROOT_PARAMETER pg{};
+            pg.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+            pg.Constants.Num32BitValues = 8;
+            auto raiz = [&](const D3D12_ROOT_SIGNATURE_DESC& d, ComPtr<ID3D12RootSignature>& rs) {
+                ComPtr<ID3DBlob> s, e;
+                Ck(D3D12SerializeRootSignature(&d, D3D_ROOT_SIGNATURE_VERSION_1, &s, &e), "hud: raiz");
+                Ck(dev->CreateRootSignature(0, s->GetBufferPointer(), s->GetBufferSize(), IID_PPV_ARGS(&rs)), "hud: raiz");
+            };
+            raiz({2, pc, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE}, hudRaizC);
+            raiz({1, &pg, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE}, hudRaizG);
+            auto computa = [&](const char* e, ComPtr<ID3D12PipelineState>& pso) {
+                auto b = compila(e, "cs_5_1");
+                D3D12_COMPUTE_PIPELINE_STATE_DESC d{};
+                d.pRootSignature = hudRaizC.Get();
+                d.CS = {b->GetBufferPointer(), b->GetBufferSize()};
+                Ck(dev->CreateComputePipelineState(&d, IID_PPV_ARGS(&pso)), "hud: pso");
+            };
+            computa("CSTom", hudTom);
+            computa("CSPos", hudPos);
+            auto vs = compila("VSHud", "vs_5_1"), ps = compila("PSHud", "ps_5_1");
+            D3D12_GRAPHICS_PIPELINE_STATE_DESC g{};
+            g.pRootSignature = hudRaizG.Get();
+            g.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};
+            g.PS = {ps->GetBufferPointer(), ps->GetBufferSize()};
+            auto& m = g.BlendState.RenderTarget[0]; // o HUD misturado por cima da cena (alfa)
+            m.BlendEnable = TRUE;
+            m.SrcBlend = D3D12_BLEND_SRC_ALPHA;
+            m.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+            m.BlendOp = m.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+            m.SrcBlendAlpha = D3D12_BLEND_ONE;
+            m.DestBlendAlpha = D3D12_BLEND_ZERO;
+            m.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+            g.SampleMask = UINT_MAX;
+            g.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+            g.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+            g.RasterizerState.DepthClipEnable = TRUE;
+            g.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+            g.NumRenderTargets = 1;
+            g.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+            g.SampleDesc.Count = 1;
+            Ck(dev->CreateGraphicsPipelineState(&g, IID_PPV_ARGS(&hudDesenho)), "hud: pso do desenho");
+            // descritores: [0] SRV da saida do FSR, [1] UAV de A, [2] SRV de A, [3] UAV de B; alvos: A, B
+            D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 4, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0};
+            Ck(dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&hudDesc)), "hud: heap");
+            D3D12_DESCRIPTOR_HEAP_DESC hr{D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 2, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 0};
+            Ck(dev->CreateDescriptorHeap(&hr, IID_PPV_ARGS(&hudRtv)), "hud: heap de alvos");
+            hudInc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            hudIncRtv = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+            auto cpu = [&](int i) {
+                D3D12_CPU_DESCRIPTOR_HANDLE h = hudDesc->GetCPUDescriptorHandleForHeapStart();
+                h.ptr += SIZE_T(i) * hudInc;
+                return h;
+            };
+            D3D12_SHADER_RESOURCE_VIEW_DESC sv{};
+            sv.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+            sv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            sv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            sv.Texture2D.MipLevels = 1;
+            D3D12_UNORDERED_ACCESS_VIEW_DESC uv{};
+            uv.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+            uv.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+            dev->CreateShaderResourceView(saidaFsr.r.Get(), &sv, cpu(0));
+            dev->CreateUnorderedAccessView(hudA.r.Get(), nullptr, &uv, cpu(1));
+            dev->CreateShaderResourceView(hudA.r.Get(), &sv, cpu(2));
+            dev->CreateUnorderedAccessView(hudB.r.Get(), nullptr, &uv, cpu(3));
+            D3D12_CPU_DESCRIPTOR_HANDLE rh = hudRtv->GetCPUDescriptorHandleForHeapStart();
+            dev->CreateRenderTargetView(hudA.r.Get(), nullptr, rh);
+            rh.ptr += hudIncRtv;
+            dev->CreateRenderTargetView(hudB.r.Get(), nullptr, rh);
+            printf("hud: tonemap%s e o HUD por cima\n", pos == 1 ? ", grao" : pos == 2 ? ", nitidez" : "");
+        }
     }
 
     dlss5ov::ClienteBuffer cli;
@@ -518,19 +689,97 @@ int wmain(int argc, wchar_t** argv)
                     std::this_thread::sleep_until(proximo);
                     continue;
                 }
-                barreira(saidaTela.r.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                ID3D12Resource* final_ = saidaTela.r.Get(); // o que vai para o backbuffer
+                Tex* alvoHud = nullptr;
+                if (hud)
+                {
+                    // o pos do "jogo" depois do FSR: tonemap -> [pos-efeito] -> HUD por cima
+                    ID3D12DescriptorHeap* hs[] = {hudDesc.Get()};
+                    cl->SetDescriptorHeaps(1, hs);
+                    cl->SetComputeRootSignature(hudRaizC.Get());
+                    const uint32_t k[4] = {uint32_t(q), uint32_t(pos), W, H};
+                    cl->SetComputeRoot32BitConstants(0, 4, k, 0);
+                    auto gpu = [&](int n) {
+                        D3D12_GPU_DESCRIPTOR_HANDLE h = hudDesc->GetGPUDescriptorHandleForHeapStart();
+                        h.ptr += UINT64(n) * hudInc;
+                        return h;
+                    };
+                    barreira(saidaTela.r.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                    barreira(hudA.r.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                    cl->SetPipelineState(hudTom.Get());
+                    cl->SetComputeRootDescriptorTable(1, gpu(0));
+                    cl->Dispatch((W + 7) / 8, (H + 7) / 8, 1);
+                    barreira(saidaTela.r.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+                    alvoHud = &hudA;
+                    if (pos)
+                    {
+                        barreira(hudA.r.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                        barreira(hudB.r.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                        cl->SetPipelineState(hudPos.Get());
+                        cl->SetComputeRootDescriptorTable(1, gpu(2));
+                        cl->Dispatch((W + 7) / 8, (H + 7) / 8, 1);
+                        barreira(hudA.r.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+                        alvoHud = &hudB;
+                    }
+                    barreira(alvoHud->r.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_RENDER_TARGET);
+                    D3D12_CPU_DESCRIPTOR_HANDLE rt = hudRtv->GetCPUDescriptorHandleForHeapStart();
+                    rt.ptr += alvoHud == &hudB ? hudIncRtv : 0;
+                    cl->OMSetRenderTargets(1, &rt, FALSE, nullptr);
+                    const D3D12_VIEWPORT vp{0, 0, float(W), float(H), 0, 1};
+                    const D3D12_RECT sr{0, 0, LONG(W), LONG(H)};
+                    cl->RSSetViewports(1, &vp);
+                    cl->RSSetScissorRects(1, &sr);
+                    cl->SetGraphicsRootSignature(hudRaizG.Get());
+                    cl->SetPipelineState(hudDesenho.Get());
+                    cl->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                    // o HUD, parado na tela: painel translucido com 6 linhas de texto, barra de vida e mira
+                    float ret[10][8] = {{0.02f, 0.03f, 0.32f, 0.40f, 0.10f, 0.15f, 0.25f, 0.60f},
+                                        {0.30f, 0.90f, 0.70f, 0.95f, 0.80f, 0.20f, 0.20f, 0.90f},
+                                        {0.497f, 0.47f, 0.503f, 0.53f, 1, 1, 1, 1},
+                                        {0.48f, 0.497f, 0.52f, 0.503f, 1, 1, 1, 1}};
+                    for (int l = 0; l < 6; ++l)
+                    {
+                        const float y = 0.07f + 0.05f * float(l);
+                        const float linha[8] = {0.04f, y, 0.20f + 0.015f * float(l), y + 0.018f, 0.9f, 0.9f, 0.9f, 1.f};
+                        std::copy(linha, linha + 8, ret[4 + l]);
+                    }
+                    for (const auto& x : ret)
+                    {
+                        cl->SetGraphicsRoot32BitConstants(0, 8, x, 0);
+                        cl->DrawInstanced(6, 1, 0, 0);
+                    }
+                    barreira(alvoHud->r.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                    final_ = alvoHud->r.Get();
+                }
+                else
+                    barreira(saidaTela.r.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE);
                 ComPtr<ID3D12Resource> bb;
                 sc->GetBuffer(sc->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&bb));
                 barreira(bb.Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST);
-                cl->CopyResource(bb.Get(), saidaTela.r.Get());
+                cl->CopyResource(bb.Get(), final_);
                 barreira(bb.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
-                barreira(saidaTela.r.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
+                barreira(final_, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
                 barreira(cor.r.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
                 barreira(mov.r.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
                 barreira(prof.r.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
-                Ck(cl->Close(), "close");
+                // enviar a lista sem fechar: o runtime remove o dispositivo por chamada invalida (sem a camada de validacao,
+                // comandos mal formados como uma copia entre formatos diferentes passam e nao derrubam nada)
+                const bool aqui = invalida && q + 1 == invalida;
+                const HRESULT fechou = aqui ? S_FALSE : cl->Close();
+                if (!aqui)
+                    Ck(fechou, "close");
                 ID3D12CommandList* lj[] = {cl.Get()};
                 fila->ExecuteCommandLists(1, lj);
+                if (aqui)
+                {
+                    printf("invalida: Close 0x%08lx; dispositivo 0x%08lx\n", (unsigned long)fechou,
+                           (unsigned long)dev->GetDeviceRemovedReason());
+                    fflush(stdout);
+                    Sleep(3000); // o vigia do modulo relata
+                    printf("invalida: dispositivo 0x%08lx depois de 3 s\n", (unsigned long)dev->GetDeviceRemovedReason());
+                    fflush(stdout);
+                    ExitProcess(9);
+                }
                 sc->Present(0, 0);
                 Ck(fila->Signal(cerca.Get(), ++valor), "signal");
                 cerca->SetEventOnCompletion(valor, ev);
