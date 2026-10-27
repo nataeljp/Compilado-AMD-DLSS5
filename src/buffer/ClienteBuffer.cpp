@@ -854,6 +854,7 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
                       lixeira.end());
     }
     cab->batimentoJogo = GetTickCount64();
+    GravaDespejo();
     if (!OverlayVivo())
     {
         estavaVivo = false; // as cadeias de movimento param aqui: recomecam quando o overlay voltar
@@ -1057,6 +1058,10 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
          kLe >= 0 ? cab->edicao[kLe].luz : 0u, movValW, movValH, profValW, profValH, iA >= 0 ? 1u : 0u,
          iG >= 0 ? 1u : 0u, iB >= 0 ? peso : 0.f, kB >= 0 ? cab->edicao[kB].luz : 0u};
 
+    // despejo pedido pela gravacao do overlay: a cor do jogo antes da edicao (aqui), depois dela e a edicao (no fim)
+    const bool despeja = !despejoPedido.empty() && !despejoValor && k >= 0 && !repete;
+    if (despeja)
+        CopiaDespejo(c, e.cor, e.corEstado, 0);
     const D3D12_RESOURCE_STATES SRV = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     auto estado = [&](int j, UINT i, D3D12_RESOURCE_STATES para) {
         Barreira(c, acc[j][i].Get(), estadoAcc[j][i], para);
@@ -1152,6 +1157,11 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
     Barreira(c, e.exposicao, SRV, e.expEstado);
     Barreira(c, e.prof, SRV, e.profEstado);
     Barreira(c, e.mov, SRV, e.movEstado);
+    if (despeja)
+    {
+        CopiaDespejo(c, e.cor, e.corEstado, 1);
+        CopiaDespejo(c, edicao[kLe].Get(), D3D12_RESOURCE_STATE_COMMON, 2);
+    }
     pp = novo;
     if (exporta)
     {
@@ -1162,7 +1172,74 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
     if (exporta || kLe >= 0)
         pendente = n; // o overlay espera a cerca do jogo: quadro exportado e leitura do slot de edicao
     pendenteLocal = ++valorLocal; // a fila de descarte sabe quando a GPU terminou este quadro
+    if (despeja)
+    {
+        despejoValor = valorLocal; // GravaDespejo grava quando a GPU passar deste quadro
+        despejoPasta = despejoPedido;
+        despejoPedido.clear();
+    }
     return n;
+}
+
+void ClienteBuffer::DespejaEm(const char* pasta)
+{
+    despejoPedido = pasta ? pasta : "";
+}
+
+// copia `r` (no estado `estado`) para uma leitura no CPU, na lista do jogo
+bool ClienteBuffer::CopiaDespejo(ID3D12GraphicsCommandList* c, ID3D12Resource* r, D3D12_RESOURCE_STATES estado, int i)
+{
+    LeituraDespejo& L = despejo[i];
+    const D3D12_RESOURCE_DESC rd = r->GetDesc();
+    UINT64 total = 0;
+    dev->GetCopyableFootprints(&rd, 0, 1, 0, &L.fp, nullptr, nullptr, &total);
+    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_READBACK};
+    D3D12_RESOURCE_DESC bd{};
+    bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bd.Width = total;
+    bd.Height = bd.DepthOrArraySize = bd.MipLevels = 1;
+    bd.SampleDesc.Count = 1;
+    bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    L.rb = nullptr;
+    if (FAILED(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                            IID_PPV_ARGS(&L.rb))))
+        return false;
+    L.w = UINT(rd.Width), L.h = rd.Height, L.fmt = rd.Format;
+    if (estado != D3D12_RESOURCE_STATE_COPY_SOURCE)
+        Barreira(c, r, estado, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    D3D12_TEXTURE_COPY_LOCATION dst{L.rb.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+    dst.PlacedFootprint = L.fp;
+    D3D12_TEXTURE_COPY_LOCATION src{r, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+    c->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    if (estado != D3D12_RESOURCE_STATE_COPY_SOURCE)
+        Barreira(c, r, D3D12_RESOURCE_STATE_COPY_SOURCE, estado);
+    return true;
+}
+
+// as leituras do despejo, quando a GPU terminou o quadro delas: arquivos crus como os do despejo da geracao
+void ClienteBuffer::GravaDespejo()
+{
+    if (!despejoValor || cercaLocal->GetCompletedValue() < despejoValor)
+        return;
+    const char* nomes[3] = {"jogo_antes", "jogo_depois", "edicao_jogo"};
+    for (int i = 0; i < 3; ++i)
+    {
+        LeituraDespejo& L = despejo[i];
+        void* m = nullptr;
+        if (!L.rb || FAILED(L.rb->Map(0, nullptr, &m)))
+            continue;
+        char arq[600];
+        snprintf(arq, sizeof arq, "%s\\%s_%ux%u_pitch%u_fmt%d.raw", despejoPasta.c_str(), nomes[i], L.w, L.h,
+                 L.fp.Footprint.RowPitch, int(L.fmt));
+        if (FILE* f = fopen(arq, "wb"))
+        {
+            fwrite(static_cast<char*>(m) + L.fp.Offset, 1, size_t(L.fp.Footprint.RowPitch) * L.h, f);
+            fclose(f);
+        }
+        L.rb->Unmap(0, nullptr);
+        L.rb = nullptr;
+    }
+    despejoValor = 0;
 }
 
 void ClienteBuffer::Submetido(ID3D12CommandQueue* q)

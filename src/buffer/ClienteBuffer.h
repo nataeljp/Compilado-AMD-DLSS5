@@ -75,9 +75,24 @@ class ClienteBuffer
     uint64_t Aplicado() const { return cab ? cab->quadroAplicado : 0; } // ultimo quadro com a edicao somada
     Cabecalho* Cab() const { return cab; }
     const char* UltimoErro() const { return erro.c_str(); }
+    // a gravacao do overlay: no proximo quadro com edicao, a cor do jogo antes e depois dela e a edicao recebida (na
+    // resolucao do jogo) vao para `pasta` -- o que a gravacao da rede (no tamanho da rede) nao mostra
+    void DespejaEm(const char* pasta);
 
   private:
     template <class T> using Com = Microsoft::WRL::ComPtr<T>;
+    // despejo (DespejaEm): pedido, leituras em voo e o quadro delas na cerca local
+    std::string despejoPedido, despejoPasta;
+    struct LeituraDespejo
+    {
+        Com<ID3D12Resource> rb;
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
+        UINT w = 0, h = 0;
+        DXGI_FORMAT fmt = DXGI_FORMAT_UNKNOWN;
+    } despejo[3];
+    uint64_t despejoValor = 0;
+    bool CopiaDespejo(ID3D12GraphicsCommandList* c, ID3D12Resource* r, D3D12_RESOURCE_STATES estado, int i);
+    void GravaDespejo();
     bool Garante(const EntradasJogo& e);
     bool CriaTex(Com<ID3D12Resource>& t, UINT w, UINT h, DXGI_FORMAT f, const wchar_t* qual, uint32_t slot);
     bool CriaCerca(Com<ID3D12Fence>& f, const wchar_t* qual);

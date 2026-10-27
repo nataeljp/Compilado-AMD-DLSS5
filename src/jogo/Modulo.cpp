@@ -720,6 +720,10 @@ void GeracaoQuadro(ffxContext* ctx, const ffxDispatchDescUpscale* u, ID3D12Graph
                 fclose(f);
                 DeleteFileW(arq);
                 g_ger.DespejaEm(pasta);
+                {
+                    std::lock_guard<std::mutex> lk(g_mx);
+                    g_cli.DespejaEm(pasta); // a cor do jogo antes e depois da edicao, e a edicao, no tamanho do jogo
+                }
                 Log("geracao: um quadro gerado sera gravado em %s (pedido da gravacao do overlay)", pasta);
             }
         }
