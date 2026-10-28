@@ -1272,7 +1272,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                 cfg.temporal.guarda = 16.f;
                 cfg.temporal.exposicao = 1.f;
                 cfg.forca = 1.f;
-                cfg.gauss = 0.f, cfg.rcas = false; // a saida da NVIDIA nao tem filtro extra
+                cfg.gauss = cfg.rcas = cfg.nitidez = 0.f; // a saida da NVIDIA nao tem filtro extra
                 cfg.ponte = -1;
                 cfg.preLuz = cfg.preSombra = cfg.preCor = 0.f;
                 cfg.alturaRede = 2160; // a rede na resolucao da janela (abaixo da nativa e a maior perda: 1080 num 4K = 32,7 dB)
@@ -1320,12 +1320,17 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         Deslizador("Intensidade", &cfg.ngx.intensidade, 0.f, 2.f, "%.3f",
                    "DLSSNR.Intensity: quanto da resposta da rede entra; acima de 1 reforca a luz (0 a 2).", 1.f);
         Deslizador("Força da edição", &cfg.forca, 0.f, 2.f, "%.3f", "Quanto da mudanca da rede entra no quadro (1 = a da rede).", 1.f);
-        Deslizador("Gaussian Blur", &cfg.gauss, 0.f, 0.5f, "%.2f",
-                   "Gaussian 3x3 fixo misturado ao quadro, so no lado da rede; 0 = desligado (padrao), 0,5 = maximo.", 0.f);
-        Marca("RCAS", &cfg.rcas, "RCAS do FSR 1 depois do Gaussian, so no lado da rede.");
-        if (cfg.rcas)
-            Deslizador("RCAS sharpness", &cfg.rcasStops, 0.f, 1.f, "%.2f",
-                       "Nitidez do RCAS em stops: 0 = o maximo, 1 = metade (padrao do FSR 1: 0,2).", 0.2f);
+        Deslizador("Gaussian Blur", &cfg.gauss, 0.f, 2.f, "%.2f",
+                   "Gaussian so no lado da rede: 0 a 1 mistura com o quadro, 1 a 2 alarga o raio ate o dobro; 0 = desligado.",
+                   0.f);
+        DeslizadorInt("Gaussian matrix", &cfg.gaussMatriz, 1, 8, "%dx",
+                      "Raio do Gaussian: 1x = o 3x3 fixo, 2x a 8x = raio de 2 a 8 pixels.", 1.f);
+        Deslizador("RCAS", &cfg.rcas, 0.f, 2.f, "%.2f",
+                   "RCAS do FSR 1 depois do Gaussian, so no lado da rede: 1 = o maximo do algoritmo, 2 = o dobro; 0 = desligado.",
+                   0.f);
+        Deslizador("CAS", &cfg.nitidez, 0.f, 2.f, "%.2f",
+                   "CAS da AMD depois do Gaussian, so no lado da rede: 1 = o maximo do algoritmo, 2 = o dobro; 0 = desligado.",
+                   0.f);
 
         {
             const char* modelos[] = {"Model A", "Model B", "Model C"};

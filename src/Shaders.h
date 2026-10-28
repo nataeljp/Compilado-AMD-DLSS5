@@ -402,17 +402,21 @@ float3 CorPorMatiz(float3 c)
 }
 )";
 
-// Depois da composicao, so no lado da rede: Gaussian 3x3 fixo ([1 2 1] x [1 2 1] / 16) misturado ao pixel por gauss
-// (0 a 0,5) e, em seguida, RCAS (Robust Contrast Adaptive Sharpening do FSR 1, AMD FidelityFX, licenca MIT; escrito aqui a
-// partir do algoritmo publicado): a cruz de 4 vizinhos com o peso negativo maximo que nao estoura [0,1] (lobo limitado a
-// 0,25 - 1/16), vezes con = 2^-sharpness (sharpness em stops: 0 = o maximo, 1 = metade). O RCAS le o resultado do
-// Gaussian (5x5 lidos por pixel). SDR: nos valores sRGB da saida; HDR: em c / (1 + c) por canal (c em brancos de papel),
-// e so a diferenca volta a luz linear. O modo Original, a metade original da comparacao e os diagnosticos ficam como estao.
+// Depois da composicao, so no lado da rede, dois passes:
+// CSGauss: Gaussian de raio = matriz (1x = o 3x3 fixo [1 2 1]^2/16; 2x..8x = raio 2..8 px, ate 9x9 amostras espacadas);
+// gauss 0..1 = a mistura com o quadro, 1..2 = inteiro e o raio cresce ate o dobro.
+// CSNitidez (no resultado): CAS (Contrast Adaptive Sharpening) e RCAS (Robust CAS do FSR 1) -- AMD FidelityFX, licenca
+// MIT, escritos aqui a partir dos algoritmos publicados -- somados ao pixel. 0..1 = o efeito do algoritmo (CAS: pico
+// -1/lerp(8,5,n) vezes n; RCAS: o lobo maximo, sharpness 0 stops, vezes a forca); 1..2 = a diferenca do maximo
+// amplificada ate o dobro (alem do que o algoritmo sozinho entrega). SDR: nos valores sRGB; HDR: em c / (1 + c) por
+// canal (c em brancos de papel), e so a diferenca volta a luz linear. Modo Original, metade original da comparacao e
+// diagnosticos ficam como estao.
 inline const char* Nitidez = R"(
-cbuffer C : register(b0) { uint w; uint h; uint hdr; float gauss; uint modo; float divisao; float escala; float stops;
-                           uint rcas; uint pad0; uint pad1; uint pad2; };
+cbuffer C : register(b0) { uint w; uint h; uint hdr; float gauss; uint modo; float divisao; float escala; float rcas;
+                           float cas; uint matriz; uint pad0; uint pad1; };
 Texture2D<float4> ent : register(t0);
 RWTexture2D<float4> sai : register(u0);
+bool Rede(uint2 p) { return modo == 0 || modo == 5 || (modo == 2 && (float)p.x >= divisao * w + 1.0); }
 float3 Le(int2 q)
 {
     float3 c = ent.Load(int3(clamp(q, int2(0, 0), int2(w, h) - 1), 0)).rgb;
@@ -423,47 +427,69 @@ float3 Le(int2 q)
     }
     return saturate(c);
 }
+[numthreads(8, 8, 1)] void CSGauss(uint2 p : SV_DispatchThreadID)
+{
+    if (p.x >= w || p.y >= h) return;
+    const float4 c4 = ent.Load(int3(p, 0));
+    if (!Rede(p))
+    {
+        sai[p] = c4;
+        return;
+    }
+    const float g = clamp(gauss, 0.0, 2.0);
+    const float raio = max(1.0, (float)matriz) * max(1.0, g);
+    const int n = min(4, (int)ceil(raio));
+    const float passo = raio / n, sigma = 0.85 * raio; // raio 1: pesos 1, 2, 1 (o 3x3 fixo)
+    float3 s = 0;
+    float ws = 0;
+    for (int j = -n; j <= n; ++j)
+        for (int i = -n; i <= n; ++i)
+        {
+            const float2 o = float2(i, j) * passo;
+            const float wt = exp(-dot(o, o) / (2.0 * sigma * sigma));
+            s += wt * ent.Load(int3(clamp(int2(p) + int2(round(o)), int2(0, 0), int2(w, h) - 1), 0)).rgb;
+            ws += wt;
+        }
+    sai[p] = float4(lerp(c4.rgb, s / ws, min(g, 1.0)), c4.a);
+}
 [numthreads(8, 8, 1)] void CSNitidez(uint2 p : SV_DispatchThreadID)
 {
     if (p.x >= w || p.y >= h) return;
     const float4 c4 = ent.Load(int3(p, 0));
-    const bool rede = modo == 0 || modo == 5 || (modo == 2 && (float)p.x >= divisao * w + 1.0);
-    if (!rede)
+    if (!Rede(p))
     {
         sai[p] = c4;
         return;
     }
     const int2 q = int2(p);
-    float3 v[5][5];
-    for (int y = 0; y < 5; ++y)
-        for (int x = 0; x < 5; ++x)
-            v[y][x] = Le(q + int2(x - 2, y - 2));
-    // o Gaussian 3x3 nos 5 pontos que o RCAS usa (centro e cruz), misturado por gauss
-    const float g = saturate(gauss);
-    float3 s[5]; // e, b, d, f, k
-    const int2 pts[5] = {int2(2, 2), int2(2, 1), int2(1, 2), int2(3, 2), int2(2, 3)};
-    for (int n = 0; n < 5; ++n)
+    // a b c
+    // d e f
+    // g k i
+    const float3 a = Le(q + int2(-1, -1)), b = Le(q + int2(0, -1)), c = Le(q + int2(1, -1));
+    const float3 d = Le(q + int2(-1, 0)), e = Le(q), f = Le(q + int2(1, 0));
+    const float3 g = Le(q + int2(-1, 1)), k = Le(q + int2(0, 1)), i = Le(q + int2(1, 1));
+    float3 delta = 0;
+    if (cas > 0)
     {
-        const int2 o = pts[n];
-        const float3 gb = (v[o.y - 1][o.x - 1] + v[o.y - 1][o.x + 1] + v[o.y + 1][o.x - 1] + v[o.y + 1][o.x + 1] +
-                           2.0 * (v[o.y - 1][o.x] + v[o.y + 1][o.x] + v[o.y][o.x - 1] + v[o.y][o.x + 1]) +
-                           4.0 * v[o.y][o.x]) / 16.0;
-        s[n] = lerp(v[o.y][o.x], gb, g);
+        float3 mn = min(min(min(d, e), min(f, b)), k);
+        float3 mx = max(max(max(d, e), max(f, b)), k);
+        mn += min(mn, min(min(a, c), min(g, i)));
+        mx += max(mx, max(max(a, c), max(g, i)));
+        const float3 amp = sqrt(saturate(min(mn, 2.0 - mx) / max(mx, 1e-5)));
+        const float n = saturate(cas);
+        const float3 wv = amp * (-n / lerp(8.0, 5.0, n));
+        delta += ((b * wv + d * wv + f * wv + k * wv + e) / (1.0 + 4.0 * wv) - e) * max(cas, 1.0);
     }
-    const float3 e = s[0], b = s[1], d = s[2], f = s[3], k = s[4];
-    float3 r = e;
-    if (rcas)
+    if (rcas > 0)
     {
-        //    b
-        //  d e f
-        //    k
         const float3 mn4 = min(min(b, d), min(f, k)), mx4 = max(max(b, d), max(f, k));
         const float3 hitMin = min(mn4, e) / (4.0 * max(mx4, 1e-5));
         const float3 hitMax = (1.0 - max(mx4, e)) / min(4.0 * mn4 - 4.0, -1e-5);
         const float3 lobe3 = max(-hitMin, hitMax);
-        const float lobe = max(-(0.25 - 1.0 / 16.0), min(max(lobe3.r, max(lobe3.g, lobe3.b)), 0.0)) * exp2(-max(stops, 0.0));
-        r = saturate((lobe * (b + d + f + k) + e) / (4.0 * lobe + 1.0));
+        const float lobe = max(-(0.25 - 1.0 / 16.0), min(max(lobe3.r, max(lobe3.g, lobe3.b)), 0.0));
+        delta += ((lobe * (b + d + f + k) + e) / (4.0 * lobe + 1.0) - e) * rcas;
     }
+    const float3 r = saturate(e + delta);
     if (!hdr)
     {
         sai[p] = float4(r, c4.a);
@@ -471,7 +497,7 @@ float3 Le(int2 q)
     }
     // HDR: so a diferenca volta a luz linear e soma no valor original (o scRGB tem canais negativos fora do sRGB, que
     // o dominio [0,1] cortaria; numa area lisa a diferenca e zero e o pixel fica identico)
-    const float3 r1 = min(r, 0.999), e1 = min(v[2][2], 0.999);
+    const float3 r1 = min(r, 0.999), e1 = min(e, 0.999);
     sai[p] = float4(c4.rgb + (r1 / (1.0 - r1) - e1 / (1.0 - e1)) * escala, c4.a);
 }
 )";
