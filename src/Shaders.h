@@ -237,7 +237,7 @@ cbuffer C : register(b0) { uint fw; uint fh; uint dw; uint dh; float forca; uint
                            uint pad3; uint pad4;
                            float satR; float satY; float satG; float satC; float satB; float satM;
                            float luzR; float luzY; float luzG; float luzC; float luzB; float luzM;
-                           uint usaMatiz; uint temCrua; uint luzLog; float reforco; };
+                           uint usaMatiz; uint temCrua; uint luzLog; uint padA1; };
 Texture2D<float4> inteiro : register(t0);
 Texture2D<float4> fed : register(t1);
 Texture2D<float4> edicao : register(t2);
@@ -339,24 +339,10 @@ float3 CorPorMatiz(float3 c)
     float3 e = 0;
     if (usaEdicao)
     {
-        const float2 uv = (float2(p) + 0.5) / float2(fw, fh);
         if (dw == fw && dh == fh)
             e = edicao.Load(int3(p, 0)).rgb;
         else
-            e = CatmullRom(edicao, uv, float2(dw, dh));
-        // o reforco (intensidade x forca acima de 1) vai sobre a edicao da vizinhanca, nao pixel a pixel: a resposta da
-        // rede fica como ela deu e a luz a mais se espalha ~1/270 da altura em volta (a aura em volta dos fios soltos).
-        // Pixel a pixel ele elevava a razao de cada pixel a potencia (2 x 2 = razao^4): na borda cabelo/ceu do TLOU2,
-        // fio a fio, pintas claras e escuras (0,57% da faixa da borda contra 0,03% sem reforco)
-        if (reforco > 0.0)
-        {
-            const float2 r = float(fh) / 270.0 / float2(fw, fh);
-            float3 viz = 0;
-            [unroll] for (int j = -1; j <= 1; ++j)
-                [unroll] for (int i = -1; i <= 1; ++i)
-                    viz += edicao.SampleLevel(s, uv + float2(i, j) * r, 0).rgb * ((2 - abs(i)) * (2 - abs(j)) / 16.0);
-            e += reforco * viz;
-        }
+            e = CatmullRom(edicao, (float2(p) + 0.5) / float2(fw, fh), float2(dw, dh));
     }
     // o resultado parte do quadro com o mesmo ajuste que a rede viu; o lado "original" fica intacto
     const float3 base = PreAjuste(o, TelaDe(o, hdr != 0 && sanduiche == 0, filmica != 0), preLuz, preSombra, preLimiar,
