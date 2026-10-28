@@ -258,11 +258,31 @@ bool Deslizador(const char* rot, float* v, float a, float b, const char* fmt, co
     bool mudou = false;
     if (ImGui::IsItemActive())
     {
-        float nv;
-        if (io.KeyShift)
-            nv = std::clamp(*v + io.MouseDelta.x / std::max(x1 - x0, 1.f) * (b - a) * 0.1f, a, b);
+        // clique fora da bolinha: o valor vai para onde clicou; arrastando: devagar, 0,001 por pixel (com Shift, 0,001
+        // a cada 10 pixels; nos inteiros, meio trilho por trilho) -- arrastar pela posicao do mouse pulava centesimos
+        static float acumulado = 0.f;
+        const float xBola = x0 + (*v - a) / std::max(b - a, 1e-6f) * (x1 - x0);
+        float nv = *v;
+        if (ImGui::IsItemActivated())
+        {
+            acumulado = 0.f;
+            if (std::fabs(io.MousePos.x - xBola) > raio * 1.5f)
+                nv = a + std::clamp((io.MousePos.x - x0) / std::max(x1 - x0, 1.f), 0.f, 1.f) * (b - a);
+        }
         else
-            nv = a + std::clamp((io.MousePos.x - x0) / std::max(x1 - x0, 1.f), 0.f, 1.f) * (b - a);
+        {
+            // o que nao chega a um passo fica guardado para o pixel seguinte (com Shift, 10 pixels por passo)
+            const float passo = casas > 0 ? 0.001f : 0.5f * (b - a) / std::max(x1 - x0, 1.f);
+            acumulado += io.MouseDelta.x * passo * (io.KeyShift ? 0.1f : 1.f);
+            const float n = std::trunc(acumulado / passo);
+            nv = std::clamp(*v + n * passo, a, b);
+            acumulado -= n * passo;
+        }
+        if (casas > 0)
+        {
+            const float q = std::pow(10.f, float(std::max(casas, 3)));
+            nv = std::clamp(std::round(nv * q) / q, a, b);
+        }
         if (nv != *v)
             *v = nv, mudou = true;
     }
