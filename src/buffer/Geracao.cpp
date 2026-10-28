@@ -992,7 +992,9 @@ FfxErrorCode Geracao::Impl::Gera(const FfxFrameGenerationDispatchDescription* d,
                       reinterpret_cast<ID3D12Resource*>(d->presentColor.resource), semHud, saidas, mg,
                       p->limiteRepro * float(d->presentColor.description.height) / 1080.f, d->reset);
     };
-    if (pr.neural && pr.temCam && p->neural.Pronta())
+    // sem a camera do jogo (a geracao FSR dele desligada no menu: sem o preparo), a neural vai sem ela (pior no giro, mas
+    // gera; so a Redstone, sem a analitica)
+    if (pr.neural && p->neural.Pronta())
     {
         ID3D12Resource* saidas[3] = {};
         for (uint32_t k = 0; k < mg; ++k)
@@ -1005,7 +1007,7 @@ FfxErrorCode Geracao::Impl::Gera(const FfxFrameGenerationDispatchDescription* d,
                            d->minMaxLuminance[1] > 0.f ? d->minMaxLuminance[0] : p->lumMinTela,
                            d->minMaxLuminance[1] > 0.f ? d->minMaxLuminance[1] : (p->lumMaxTela > 0.f ? p->lumMaxTela : 1000.f)))
         {
-            p->camAnterior = pr.qn.cam, p->temCamAnterior = true;
+            p->camAnterior = pr.qn.cam, p->temCamAnterior = pr.temCam;
             borra();
             repete();
             p->gerados += m;
