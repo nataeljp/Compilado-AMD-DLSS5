@@ -9,7 +9,7 @@ $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.e
 $vs = Join-Path (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath) 'VC\Auxiliary\Build\vcvars64.bat'
 New-Item -ItemType Directory -Force $Saida, "$raiz\obj\buffer" | Out-Null
 $flags = '/nologo /std:c++20 /EHsc /O2 /MT /W3 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOMINMAX /permissive- /Zc:__cplusplus /utf-8'
-$cli = "`"$raiz\src\buffer\ClienteBuffer.cpp`" `"$raiz\src\buffer\Geracao.cpp`""
+$cli = "`"$raiz\src\buffer\ClienteBuffer.cpp`" `"$raiz\src\buffer\Geracao.cpp`" `"$raiz\src\buffer\GeracaoNeural.cpp`""
 # geracao de quadros: as bibliotecas do FidelityFX SDK 1.1.4 compiladas do codigo fonte (externo\compila_ffx.ps1)
 $ffx = "$raiz\externo\fidelityfx_sdk\sdk"
 $ffxInc = "/I`"$ffx\include`""

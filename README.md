@@ -66,6 +66,12 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
     (colocar código no jogo pode dar banimento). Jogo com anti-cheat instalado mas aberto sem ele: conecta, com aviso —
     use só offline.
   - OptiScaler instalado na pasta do jogo assume o upscaler: tire o `dxgi.dll` dele para a captura de buffer.
+  - **Geração neural (FSR 4 / Redstone)**: com a `amd_fidelityfx_loader_dx12.dll` + `amd_fidelityfx_framegeneration_dx12.dll`
+    (provedor 4.x) na pasta do jogo e a câmera do preparo da geração FSR do jogo (a geração FSR do jogo ligada no menu
+    dele), 2x usa a geração neural da AMD. 4x intercalado: um contexto gera o meio M; outro recebe real, M, real, M...
+    (movimento pela metade, câmera no meio) e gera 0,25 e 0,75; o HUD do real entra parado depois. Cena de teste com
+    cabelo pontilhado: neural 29,7/29,4/28,9 dB contra analítica 24,9/23,9/23,9 dB; custo em 4K ~3 ms (2x) e ~8 ms
+    (4x) por real. 3x, sem câmera ou sem o provedor 4.x: a analítica abaixo (`DLSS5_GERACAO_ANALITICA=1` força ela).
   - **Geração de quadros (AMD)**: a geração do FidelityFX SDK 1.1.4 (Frame Interpolation + Optical Flow + o swapchain
     de geração da AMD, compilados do código fonte, MIT), ligada como o provedor de referência da AMD: quadros novos de
     verdade entre os do jogo, com o movimento, a profundidade e a câmera que o jogo manda ao FSR. A interpolação parte do

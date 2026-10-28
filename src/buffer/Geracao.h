@@ -7,6 +7,7 @@
 // HUD: e a cena antes do tonemap e dos pos-efeitos, outro espaco de cor) -- os quadros gerados levam a edicao da rede,
 // que ja esta no quadro do jogo.
 #pragma once
+#include "GeracaoNeural.h"
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <cstdint>
@@ -125,6 +126,14 @@ class Geracao
     uint32_t Hz() const;       // a taxa atual do monitor da janela do jogo (0 = desconhecida)
     uint32_t HzMaximo() const; // a maior que ele aceita nesta resolucao
     double FpsJogo() const;    // quadros do jogo por segundo (entre as chamadas de Quadro)
+    // A geracao neural da AMD (FSR Frame Generation 4, GeracaoNeural.h) no lugar da analitica em 2x e 4x: as funcoes
+    // originais da API do loader do jogo (o modulo as engancha) e a camera de cada quadro, a do preparo da geracao do
+    // jogo (sem ela, a analitica). DLSS5_GERACAO_ANALITICA=1: so a analitica (comparacao)
+    void ApiDaAmd(const ApiAmd& api);
+    void CameraDoJogo(const CameraJogo& cam);
+    // o log de 5 s: o provedor neural em uso e quantos quadros reais foram por ela e pela analitica desde a ultima
+    // leitura (zera), ou por que nao ha neural
+    std::string RelatoNeural();
 
   private:
     struct Impl;

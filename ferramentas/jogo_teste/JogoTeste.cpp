@@ -17,6 +17,8 @@
 //   GRAVADO antes do Present do atual, mas so ENVIADO a GPU depois dele
 // --recria Q (com --como-jogo): no quadro Q solta o swapchain e cria outro na mesma janela, como um jogo que troca de
 //   modo de tela ou de HDR (o swapchain antigo preso por alguem faz a criacao falhar)
+// --fg-jogo (com --como-jogo --cubo): como um jogo com a geracao FSR propria -- um contexto de geracao na DLL da AMD e, a
+//   cada quadro, o preparo dela com a camera da cena (posicao e eixos), de onde o modulo tira a camera da geracao neural
 #include "../../src/buffer/ClienteBuffer.h"
 #include "../../src/buffer/Geracao.h"
 #include "Cubo.h"
@@ -28,6 +30,32 @@
 #include <d3dcompiler.h>
 #pragma comment(lib, "d3dcompiler.lib")
 #include <winver.h>
+// a geracao FSR "do jogo" (--fg-jogo): o contexto e o preparo antigo com a camera ligada (ffx_framegeneration.h, MIT)
+struct FgJogoCria
+{
+    ffxCreateContextDescHeader header;
+    uint32_t flags;
+    FfxApiDimensions2D displaySize, maxRenderSize;
+    uint32_t backBufferFormat;
+};
+struct FgJogoPreparo
+{
+    ffxDispatchDescHeader header;
+    uint64_t frameID;
+    uint32_t flags;
+    void* commandList;
+    FfxApiDimensions2D renderSize;
+    FfxApiFloatCoords2D jitterOffset, motionVectorScale;
+    float frameTimeDelta;
+    bool unusedReset;
+    float cameraNear, cameraFar, cameraFovAngleVertical, viewSpaceToMetersFactor;
+    FfxApiResource depth, motionVectors;
+};
+struct FgJogoCamera
+{
+    ffxConfigureDescHeader header;
+    float cameraPosition[3], cameraUp[3], cameraRight[3], cameraForward[3];
+};
 #pragma comment(lib, "version.lib")
 #include <dxgi1_6.h>
 #include <wrl/client.h>
@@ -192,7 +220,7 @@ int wmain(int argc, wchar_t** argv)
         if (!wcscmp(argv[i], L"--pos"))
             pos = !wcscmp(argv[i + 1], L"grao") ? 1 : !wcscmp(argv[i + 1], L"nitidez") ? 2 : 0;
     }
-    bool hud = false, cubo = false;
+    bool hud = false, cubo = false, fgJogo = false;
     UINT64 verdade = 0; // --verdade Q (com --cubo --hud): grava a verdade dos instantes Q-1 + k/N (k = 0..N) e sai
     float giro = 120.f; // --giro G (com --cubo): graus por segundo da camera
     bool pontilhado = false; // --pontilhado (com --cubo): os cubos que cruzam pontilhados, como cabelo
@@ -202,6 +230,7 @@ int wmain(int argc, wchar_t** argv)
     {
         hud |= !wcscmp(argv[i], L"--hud");
         cubo |= !wcscmp(argv[i], L"--cubo");
+        fgJogo |= !wcscmp(argv[i], L"--fg-jogo");
         pontilhado |= !wcscmp(argv[i], L"--pontilhado");
         fundoLiso |= !wcscmp(argv[i], L"--fundo-liso");
         if (!wcscmp(argv[i], L"--cobertura") && i + 1 < argc)
@@ -418,7 +447,7 @@ int wmain(int argc, wchar_t** argv)
     UINT hudInc = 0, hudIncRtv = 0;
     PfnFfxCreateContext fsrCria = nullptr;
     PfnFfxDispatch fsrDespacha = nullptr;
-    ffxContext fsr = nullptr;
+    ffxContext fsr = nullptr, fgDoJogo = nullptr;
     if (comoJogo)
     {
         wchar_t eu[MAX_PATH];
@@ -467,6 +496,20 @@ int wmain(int argc, wchar_t** argv)
         sc1.As(&sc);
         sc->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709);
         printf("como jogo: FSR pela amd_fidelityfx_dx12.dll e swapchain pela DXGI (%ux%u)\n", W, H);
+        if (fgJogo && cubo)
+        {
+            // a geracao do "jogo": o contexto existe para o preparo com a camera passar pela DLL (o modulo, com a geracao
+            // dele pedida, desliga a do jogo)
+            FgJogoCria fc{};
+            fc.header.type = 0x00020001u; // FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION
+            fc.header.pNext = &be.header;
+            fc.flags = (1u << 3) | (1u << 4) | (1u << 5); // profundidade invertida e infinita, HDR
+            fc.displaySize = {W, H};
+            fc.maxRenderSize = {RW, RH};
+            fc.backBufferFormat = ffxApiGetSurfaceFormatDX12(DXGI_FORMAT_R16G16B16A16_FLOAT);
+            const ffxReturnCode_t rf = fsrCria(&fgDoJogo, &fc.header, nullptr);
+            printf("como jogo: geracao FSR do jogo (para o preparo com a camera): %s\n", rf == FFX_API_RETURN_OK ? "ok" : "falhou");
+        }
         if (hud)
         {
             auto compila = [&](const char* e, const char* alvo) {
@@ -863,6 +906,25 @@ int wmain(int argc, wchar_t** argv)
                 u.viewSpaceToMetersFactor = 1.f;
                 if (fsrDespacha(&fsr, &u.header) != FFX_API_RETURN_OK && v == 0 && i == 0)
                     fprintf(stderr, "como jogo: ffxDispatch falhou\n");
+                if (fgDoJogo)
+                {
+                    // o preparo da geracao do "jogo" com a camera deste quadro (o que o modulo captura)
+                    FgJogoPreparo pp{};
+                    pp.header.type = 0x00020004u; // FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE
+                    pp.frameID = q + 1;
+                    pp.commandList = cl.Get();
+                    pp.renderSize = {RW, RH};
+                    pp.motionVectorScale = u.motionVectorScale;
+                    pp.frameTimeDelta = u.frameTimeDelta;
+                    pp.cameraNear = u.cameraNear, pp.cameraFar = u.cameraFar;
+                    pp.cameraFovAngleVertical = u.cameraFovAngleVertical, pp.viewSpaceToMetersFactor = 1.f;
+                    pp.depth = u.depth, pp.motionVectors = u.motionVectors;
+                    FgJogoCamera cm{};
+                    cm.header.type = 0x0002000au; // FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE_CAMERAINFO
+                    cena.CameraMundo(double(q) / fps, cm.cameraPosition, cm.cameraUp, cm.cameraRight, cm.cameraForward);
+                    pp.header.pNext = &cm.header;
+                    fsrDespacha(&fgDoJogo, &pp.header); // so o preparo: a geracao do jogo nunca e configurada
+                }
                 barreira(saidaAgora.r.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
                 if (adiantado)
                 {

@@ -775,6 +775,8 @@ void GeracaoQuadro(ffxContext* ctx, const ffxDispatchDescUpscale* u, ID3D12Graph
             pedida >= 2 ? std::min<uint32_t>(pedida, 4) : 1, pedida >= 2 ? g_ger.EmUso() : 1, g_ger.Hz(), g_ger.HzMaximo(),
             jogo, g_maiorMs, g_engasgos, gerados, jogo + gerados, n, media, desvio, maior, p99 > 0 ? 1000.0 / p99 : 0.0,
             g_ger.TrocasN(), (unsigned long long)g_ger.Encontros());
+        if (pedida >= 2)
+            Log("geracao: %s", g_ger.RelatoNeural().c_str());
         // as primeiras apresentacoes com geracao, uma a uma: qual quadro cada uma usou (Geracao::Rastro)
         const std::string rastro = g_ger.Rastro();
         for (size_t i = 0, f; i < rastro.size(); i = f + 1)
@@ -1075,6 +1077,11 @@ ffxReturnCode_t Configura(ffxContext* ctx, const ffxConfigureDescHeader* desc)
 
 ffxReturnCode_t Despacha(ffxContext* ctx, const ffxDispatchDescHeader* desc)
 {
+    // o preparo da geracao FSR do proprio jogo traz a camera do quadro (posicao e eixos): a geracao neural precisa dela
+    // (as chamadas da nossa neural vao direto as originais, nao passam aqui)
+    dlss5ov::CameraJogo cam;
+    if (desc && dlss5ov::CameraDoPreparo(desc, cam))
+        g_ger.CameraDoJogo(cam);
     if (desc && desc->type == FFX_API_DISPATCH_DESC_TYPE_UPSCALE)
         semhud::Fecha(); // o upscaler de um quadro novo: a janela do anterior acabou (mesmo sem Present no meio)
     const ffxReturnCode_t r = oDespacha(ctx, desc);
@@ -1677,6 +1684,34 @@ DWORD WINAPI Instala(void*)
                 char nome[MAX_PATH];
                 WideCharToMultiByte(CP_UTF8, 0, n, -1, nome, MAX_PATH, nullptr, nullptr);
                 Log("ganchos em %s: %s", nome, r == NO_ERROR ? "ok" : "falharam");
+                // a geracao neural da AMD pela API do loader do SDK 2: as funcoes originais (as enganchadas mandariam a
+                // nossa geracao para o tratamento da do jogo)
+                dlss5ov::ApiAmd api;
+                if (!wcscmp(n, candidatos[0]) && r == NO_ERROR)
+                {
+                    api.cria = reinterpret_cast<void*>(oCriaContexto);
+                    api.destroi = reinterpret_cast<void*>(oDestroiContexto);
+                    api.configura = reinterpret_cast<void*>(oConfigura);
+                    api.despacha = reinterpret_cast<void*>(oDespacha);
+                    api.consulta = reinterpret_cast<void*>(GetProcAddress(m, "ffxQuery"));
+                }
+                else
+                {
+                    wchar_t pasta[MAX_PATH];
+                    const DWORD k = GetModuleFileNameW(nullptr, pasta, MAX_PATH);
+                    std::wstring loader(pasta, k);
+                    loader = loader.substr(0, loader.find_last_of(L"\\/") + 1) + candidatos[0];
+                    if (HMODULE l = LoadLibraryW(loader.c_str()))
+                    {
+                        api.cria = reinterpret_cast<void*>(GetProcAddress(l, "ffxCreateContext"));
+                        api.destroi = reinterpret_cast<void*>(GetProcAddress(l, "ffxDestroyContext"));
+                        api.configura = reinterpret_cast<void*>(GetProcAddress(l, "ffxConfigure"));
+                        api.despacha = reinterpret_cast<void*>(GetProcAddress(l, "ffxDispatch"));
+                        api.consulta = reinterpret_cast<void*>(GetProcAddress(l, "ffxQuery"));
+                    }
+                }
+                g_ger.ApiDaAmd(api);
+                Log("geracao neural da AMD: %s", api.Tem() ? "API do loader do SDK 2 encontrada" : "sem o loader do SDK 2 na pasta do jogo (so a analitica)");
                 return 0;
             }
         if (volta == 0)

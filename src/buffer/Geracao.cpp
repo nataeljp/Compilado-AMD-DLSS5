@@ -61,6 +61,36 @@ bool SemLimite() // testes de ritmo: sem o limite pela taxa do monitor nem o lim
     return sem;
 }
 
+// as flags do contexto da interpolacao (SDK 1.1.4) nas da API da geracao (FfxApiCreateContextFramegenerationFlags)
+uint32_t FlagsNeural(uint32_t fi)
+{
+    return ((fi & FFX_FRAMEINTERPOLATION_ENABLE_DISPLAY_RESOLUTION_MOTION_VECTORS) ? 1u << 1 : 0u) |
+           ((fi & FFX_FRAMEINTERPOLATION_ENABLE_JITTER_MOTION_VECTORS) ? 1u << 2 : 0u) |
+           ((fi & FFX_FRAMEINTERPOLATION_ENABLE_DEPTH_INVERTED) ? 1u << 3 : 0u) |
+           ((fi & FFX_FRAMEINTERPOLATION_ENABLE_DEPTH_INFINITE) ? 1u << 4 : 0u) |
+           ((fi & FFX_FRAMEINTERPOLATION_ENABLE_HDR_COLOR_INPUT) ? 1u << 5 : 0u);
+}
+
+// o formato de uma copia de recurso do jogo (CopyResource: o mesmo grupo sem tipo); UNKNOWN = nao copiavel aqui
+// (profundidade com estencil: dois planos)
+DXGI_FORMAT Copiavel(DXGI_FORMAT f)
+{
+    switch (f)
+    {
+    case DXGI_FORMAT_D32_FLOAT:
+    case DXGI_FORMAT_R32_FLOAT:
+    case DXGI_FORMAT_R32_TYPELESS: return DXGI_FORMAT_R32_TYPELESS;
+    case DXGI_FORMAT_D16_UNORM:
+    case DXGI_FORMAT_R16_UNORM:
+    case DXGI_FORMAT_R16_TYPELESS: return DXGI_FORMAT_R16_TYPELESS;
+    case DXGI_FORMAT_D24_UNORM_S8_UINT:
+    case DXGI_FORMAT_R24G8_TYPELESS:
+    case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+    case DXGI_FORMAT_R32G8X24_TYPELESS: return DXGI_FORMAT_UNKNOWN;
+    default: return f;
+    }
+}
+
 FfxResourceStates Estado(D3D12_RESOURCE_STATES s)
 {
     if (s & D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
@@ -127,6 +157,10 @@ struct Geracao::Impl
         uint64_t enviado;          // ordem de envio a GPU (0 = ainda nao)
         bool semHud;               // a imagem sem HUD deste quadro esta em semHud[id % kJogos]
         uint32_t passeHud;         // de qual passe do jogo ela veio
+        // a neural: as copias da profundidade e do movimento (anelProf/anelMov[id % kJogos]) e a camera do jogo
+        bool neural = false;
+        bool temCam = false;
+        QuadroNeural qn{};
     };
     // a UI do jogo vale de fato: textura ou callback, ou a imagem sem HUD com a copia dela funcionando (usada nas ultimas
     // 30 apresentacoes) -- sem a copia a procura da imagem sem HUD volta, em vez de o HUD ser interpolado com a cena
@@ -198,6 +232,21 @@ struct Geracao::Impl
     std::chrono::steady_clock::time_point rastroAnt{};
     uint64_t gerados = 0;
     uint64_t chamadas = 0; // apresentacoes com geracao (cada uma gera n - 1)
+    // a geracao neural (GeracaoNeural.h): a API do loader, os contextos, por quadro preparado as copias da profundidade e
+    // do movimento (o jogo os reescreve antes do Present, onde a neural roda) e as cameras do preparo da geracao do jogo
+    // ainda sem quadro (com filaMx)
+    ApiAmd api;
+    GeracaoNeural neural;
+    char erroNeural[160] = {};
+    Microsoft::WRL::ComPtr<ID3D12Resource> anelProf[kJogos], anelMov[kJogos];
+    std::deque<CameraJogo> cameras;
+    CameraJogo camAnterior{};
+    bool temCamAnterior = false;
+    uint64_t quadrosNeural = 0, quadrosAnalitica = 0, ultimoAnalitica = 0;
+    // a luminancia do monitor (nits), para a neural quando o jogo nao passa metadados HDR ao swapchain (a analitica ignora o
+    // 0..0 no scRGB; a neural saia 1,5% mais escura no jogo de teste)
+    float lumMinTela = 0.f, lumMaxTela = 0.f;
+    bool CopiaNeural(ID3D12GraphicsCommandList* c, const QuadroGeracao& q, int jogo, QuadroNeural& qn);
     // a imagem sem HUD de cada quadro preparado (um por jogo de recursos), no formato do backbuffer
     Microsoft::WRL::ComPtr<ID3D12Resource> semHud[kJogos];
     D3D12_RESOURCE_STATES semHudEstado[kJogos] = {};
@@ -321,6 +370,7 @@ void Geracao::Impl::Destroi()
         ffxWaitForPresents(ffxSc); // nada da AMD em voo usando os recursos
     }
     std::lock_guard<std::mutex> lf(fiMx);
+    neural.Destroi();
     for (int i = 0; i < R_N; ++i)
         if (criado[i])
             shared.fpDestroyResource(&shared, rec[i], idShared), criado[i] = false;
@@ -392,6 +442,75 @@ bool Geracao::Impl::Cria()
     }
     if (!CriaConferencia()) // sem ela nenhuma imagem sem HUD vai para a AMD (nao conferida, poderia ser a errada)
         faseHud = 2;
+    // a luminancia do monitor da janela (aqui, fora da thread de render: consultar o monitor disputa trava com o DirectX)
+    if (sc)
+    {
+        Microsoft::WRL::ComPtr<IDXGIOutput> saida;
+        Microsoft::WRL::ComPtr<IDXGIOutput6> saida6;
+        DXGI_OUTPUT_DESC1 od{};
+        if (SUCCEEDED(sc->GetContainingOutput(&saida)) && SUCCEEDED(saida.As(&saida6)) && SUCCEEDED(saida6->GetDesc1(&od)))
+            lumMinTela = od.MinLuminance, lumMaxTela = od.MaxLuminance;
+    }
+    // a neural no provedor 4.x do loader do jogo (sem ele, ou fora do RDNA 4, so a analitica)
+    static const bool soAnalitica = std::getenv("DLSS5_GERACAO_ANALITICA") != nullptr;
+    erroNeural[0] = 0;
+    if (soAnalitica)
+        snprintf(erroNeural, sizeof erroNeural, "desligada (DLSS5_GERACAO_ANALITICA)");
+    else if (!neural.Cria(api, dev, telaW, telaH, maxRW, maxRH, fmtTela, FlagsNeural(flagsFi)))
+        snprintf(erroNeural, sizeof erroNeural, "%s", neural.Erro());
+    return true;
+}
+
+// a profundidade e o movimento deste quadro copiados para o anel da neural (na lista do jogo, logo depois do despacho
+// do FSR, quando ainda sao os deste quadro), e os parametros dele
+bool Geracao::Impl::CopiaNeural(ID3D12GraphicsCommandList* c, const QuadroGeracao& q, int jogo, QuadroNeural& qn)
+{
+    auto garante = [&](Microsoft::WRL::ComPtr<ID3D12Resource>& r, ID3D12Resource* fonte) -> bool {
+        const D3D12_RESOURCE_DESC f = fonte->GetDesc();
+        const DXGI_FORMAT fmt = Copiavel(f.Format);
+        if (fmt == DXGI_FORMAT_UNKNOWN || f.SampleDesc.Count != 1)
+            return false;
+        if (r)
+        {
+            const D3D12_RESOURCE_DESC d = r->GetDesc();
+            if (d.Width == f.Width && d.Height == f.Height && d.Format == fmt && d.MipLevels == f.MipLevels)
+                return true;
+        }
+        D3D12_RESOURCE_DESC d = f;
+        d.Format = fmt;
+        d.Flags = D3D12_RESOURCE_FLAG_NONE;
+        d.Alignment = 0;
+        D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+        r = nullptr;
+        return SUCCEEDED(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d,
+                                                      D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, nullptr,
+                                                      IID_PPV_ARGS(&r)));
+    };
+    if (!garante(anelProf[jogo], q.prof) || !garante(anelMov[jogo], q.mov))
+        return false;
+    auto copia = [&](ID3D12Resource* de, D3D12_RESOURCE_STATES estado, ID3D12Resource* para) {
+        D3D12_RESOURCE_BARRIER b[2] = {};
+        b[0].Type = b[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b[0].Transition = {de, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, estado, D3D12_RESOURCE_STATE_COPY_SOURCE};
+        b[1].Transition = {para, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                           D3D12_RESOURCE_STATE_COPY_DEST};
+        const bool transiciona = estado != D3D12_RESOURCE_STATE_COPY_SOURCE;
+        c->ResourceBarrier(transiciona ? 2 : 1, transiciona ? b : b + 1);
+        c->CopyResource(para, de);
+        std::swap(b[0].Transition.StateBefore, b[0].Transition.StateAfter);
+        std::swap(b[1].Transition.StateBefore, b[1].Transition.StateAfter);
+        c->ResourceBarrier(transiciona ? 2 : 1, transiciona ? b : b + 1);
+    };
+    copia(q.prof, q.profEstado, anelProf[jogo].Get());
+    copia(q.mov, q.movEstado, anelMov[jogo].Get());
+    qn.prof = anelProf[jogo].Get();
+    qn.mov = anelMov[jogo].Get();
+    qn.renderW = q.renderW, qn.renderH = q.renderH;
+    qn.jitterX = q.jitterX, qn.jitterY = q.jitterY, qn.movEscX = q.movEscX, qn.movEscY = q.movEscY;
+    qn.msQuadro = q.msQuadro;
+    qn.perto = q.perto > 0.f ? q.perto : 0.1f;
+    qn.longe = q.longe > qn.perto ? q.longe : 1e5f;
+    qn.fovY = q.fovY > 0.01f ? q.fovY : 1.0472f;
     return true;
 }
 
@@ -823,10 +942,42 @@ FfxErrorCode Geracao::Impl::Gera(const FfxFrameGenerationDispatchDescription* d,
     if (semHud)
         corSemHud = ffxGetResourceDX12(semHud, ffxGetResourceDescriptionDX12(semHud), L"imagem sem HUD",
                                        FFX_RESOURCE_STATE_COMPUTE_READ);
+    // a neural (2x: o meio; 4x: o intercalado de dois contextos) com a camera deste quadro; 3x, sem camera ou se ela falhar,
+    // a analitica
+    const uint32_t m = std::clamp<uint32_t>(d->numInterpolatedFrames, 1, 3);
+    if (pr.neural && pr.temCam && p->neural.Pronta() && (m == 1 || m == 3))
+    {
+        ID3D12Resource* saidas[3] = {};
+        for (uint32_t k = 0; k < m; ++k)
+            saidas[k] = reinterpret_cast<ID3D12Resource*>(d->outputs[k].resource);
+        if (p->neural.Gera(reinterpret_cast<ID3D12GraphicsCommandList*>(d->commandList), pr.id, pr.qn,
+                           p->temCamAnterior ? p->camAnterior : pr.qn.cam,
+                           reinterpret_cast<ID3D12Resource*>(d->presentColor.resource), uint32_t(d->presentColor.state),
+                           semHud, uint32_t(FFX_RESOURCE_STATE_COMPUTE_READ), saidas,
+                           uint32_t(d->outputs[0].state), m, d->reset, uint32_t(d->backBufferTransferFunction),
+                           d->minMaxLuminance[1] > 0.f ? d->minMaxLuminance[0] : p->lumMinTela,
+                           d->minMaxLuminance[1] > 0.f ? d->minMaxLuminance[1] : (p->lumMaxTela > 0.f ? p->lumMaxTela : 1000.f)))
+        {
+            p->camAnterior = pr.qn.cam, p->temCamAnterior = true;
+            p->gerados += m;
+            ++p->chamadas;
+            ++p->quadrosNeural;
+            p->Despejo(d, pr.id);
+            return FFX_OK;
+        }
+        snprintf(p->erroNeural, sizeof p->erroNeural, "%s", p->neural.Erro());
+    }
+    p->temCamAnterior = pr.temCam;
+    if (pr.temCam)
+        p->camAnterior = pr.qn.cam;
+    ++p->quadrosAnalitica;
+    // quadros que foram pela neural nao passaram pela analitica: o anterior dela ficou velho
+    const bool resetFi = d->reset || pr.id != p->ultimoAnalitica + 1;
+    p->ultimoAnalitica = pr.id;
     FfxOpticalflowDispatchDescription o{};
     o.commandList = d->commandList;
     o.color = semHud ? corSemHud : d->presentColor;
-    o.reset = d->reset;
+    o.reset = resetFi;
     o.backbufferTransferFunction = d->backBufferTransferFunction;
     o.minMaxLuminance = {d->minMaxLuminance[0], d->minMaxLuminance[1]};
     o.opticalFlowVector = p->Rec(R_FLUXO);
@@ -839,7 +990,7 @@ FfxErrorCode Geracao::Impl::Gera(const FfxFrameGenerationDispatchDescription* d,
     f.currentBackBuffer = d->presentColor;
     if (semHud)
         f.currentBackBuffer_HUDLess = corSemHud;
-    f.reset = d->reset;
+    f.reset = resetFi;
     f.renderSize = pd.renderSize;
     f.opticalFlowVector = p->Rec(R_FLUXO);
     f.opticalFlowSceneChangeDetection = p->Rec(R_CORTE);
@@ -865,7 +1016,6 @@ FfxErrorCode Geracao::Impl::Gera(const FfxFrameGenerationDispatchDescription* d,
     // prioridade de profundidade, fluxo optico, mascara de desoclusao, a fonte atual e a apresentada)
     static const bool depura = std::getenv("DLSS5_GERACAO_DEPURA") != nullptr;
     f.flags = depura ? FFX_FRAMEINTERPOLATION_DISPATCH_DRAW_DEBUG_VIEW : 0;
-    const uint32_t m = std::clamp<uint32_t>(d->numInterpolatedFrames, 1, 3);
     for (uint32_t k = 0; k < m; ++k)
     {
         f.output = d->outputs[k];
@@ -1293,10 +1443,16 @@ bool Geracao::Quadro(ID3D12GraphicsCommandList* c, const QuadroGeracao& q, uint3
     }
     if (e != FFX_OK)
         return p->Erro("ffxFrameInterpolationPrepare", e), false;
+    Impl::Preparado novo{p->quadro, pd, ListaNativa(c), 0, false, 0};
+    if (p->neural.Pronta())
+        novo.neural = p->CopiaNeural(c, q, jogo, novo.qn);
     {
         std::lock_guard<std::mutex> lk(p->filaMx);
         ++p->despachosRastro;
-        p->fila.push_back({p->quadro, pd, ListaNativa(c), 0, false, 0});
+        // a camera do preparo da geracao do jogo deste quadro, se ja veio (o jogo pode prepara-la antes do upscaler)
+        if (novo.neural && !p->cameras.empty())
+            novo.qn.cam = p->cameras.front(), novo.temCam = true, p->cameras.pop_front();
+        p->fila.push_back(novo);
         while (p->fila.size() > size_t(kJogos)) // mais preparados que apresentacoes (o jogo pulou um Present): o velho sai
             p->fila.pop_front();
     }
@@ -1714,6 +1870,41 @@ uint32_t Geracao::Hz() const
 uint32_t Geracao::HzMaximo() const
 {
     return p->hzMax;
+}
+
+void Geracao::ApiDaAmd(const ApiAmd& api)
+{
+    std::lock_guard<std::mutex> lk(p->mx);
+    p->api = api;
+}
+
+void Geracao::CameraDoJogo(const CameraJogo& cam)
+{
+    std::lock_guard<std::mutex> lk(p->filaMx);
+    // o quadro mais antigo da fila ainda sem camera (o jogo a prepara depois do upscaler); sem ele, espera o proximo
+    for (auto& f : p->fila)
+        if (f.neural && !f.temCam)
+        {
+            f.qn.cam = cam, f.temCam = true;
+            return;
+        }
+    p->cameras.push_back(cam);
+    while (p->cameras.size() > size_t(kJogos))
+        p->cameras.pop_front();
+}
+
+std::string Geracao::RelatoNeural()
+{
+    char b[320];
+    if (p->neural.Pronta())
+        snprintf(b, sizeof b, "geracao neural da AMD %s: %llu quadros reais por ela, %llu pela analitica%s%s",
+                 p->neural.Provedor(), (unsigned long long)p->quadrosNeural, (unsigned long long)p->quadrosAnalitica,
+                 p->erroNeural[0] ? " | ultimo erro: " : "", p->erroNeural);
+    else
+        snprintf(b, sizeof b, "geracao neural da AMD: nao (%s); %llu quadros reais pela analitica",
+                 p->erroNeural[0] ? p->erroNeural : "contexto ainda nao criado", (unsigned long long)p->quadrosAnalitica);
+    p->quadrosNeural = p->quadrosAnalitica = 0;
+    return b;
 }
 
 double Geracao::FpsJogo() const
