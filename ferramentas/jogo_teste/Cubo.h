@@ -124,6 +124,19 @@ class CenaCubo
         }
     }
 
+    // a camera no instante t (a mesma de Camera): posicao e eixos no mundo, para a geracao de quadros da AMD (camera info)
+    void CameraMundo(double t, float pos[3], float cima[3], float direita[3], float frente[3]) const
+    {
+        const double a = double(giro) * 3.14159265358979 / 180.0 * t, inc = -0.18;
+        pos[0] = 0.6f * float(std::sin(0.9 * t)), pos[1] = 2.2f + 0.15f * float(std::sin(1.7 * t)), pos[2] = 0.f;
+        frente[0] = float(std::sin(a) * std::cos(inc)), frente[1] = float(std::sin(inc)), frente[2] = float(std::cos(a) * std::cos(inc));
+        const float nx = std::sqrt(frente[2] * frente[2] + frente[0] * frente[0]);
+        direita[0] = frente[2] / nx, direita[1] = 0.f, direita[2] = -frente[0] / nx;
+        cima[0] = frente[1] * direita[2] - frente[2] * direita[1];
+        cima[1] = frente[2] * direita[0] - frente[0] * direita[2];
+        cima[2] = frente[0] * direita[1] - frente[1] * direita[0];
+    }
+
   private:
     struct M4
     {
