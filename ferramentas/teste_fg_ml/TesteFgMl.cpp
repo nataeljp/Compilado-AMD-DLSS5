@@ -159,7 +159,7 @@ int wmain(int argc, wchar_t** argv)
     UINT n = 3, quadroAlvo = 210, repete = 0;
     double fps = 20.0;
     std::string versaoPedida;
-    bool prepare1 = false, pontilhado = false, liso = false, recursivo = false, semGeracao = false;
+    bool prepare1 = false, pontilhado = false, liso = false, recursivo = false, semGeracao = false, semCamera = false;
     float cobertura = 0.5f;
     for (int i = 3; i < argc; ++i)
     {
@@ -184,6 +184,7 @@ int wmain(int argc, wchar_t** argv)
         liso |= !wcscmp(argv[i], L"--fundo-liso");
         recursivo |= !wcscmp(argv[i], L"--recursivo");
         semGeracao |= !wcscmp(argv[i], L"--sem-geracao");
+        semCamera |= !wcscmp(argv[i], L"--sem-camera"); // a camera zerada (jogo sem geracao propria)
     }
     n = n < 1 ? 1 : n > 3 ? 3 : n;
     if (repete)
@@ -359,8 +360,9 @@ int wmain(int argc, wchar_t** argv)
         pp.cameraFovAngleVertical = 1.0472f, pp.viewSpaceToMetersFactor = 1.f;
         pp.depth = ffxApiGetResourceDX12(prof.Get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
         pp.motionVectors = ffxApiGetResourceDX12(mov.Get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
-        memcpy(pp.cameraPosition, pos, 12), memcpy(pp.cameraUp, cima, 12), memcpy(pp.cameraRight, dir, 12),
-            memcpy(pp.cameraForward, frente, 12);
+        if (!semCamera)
+            memcpy(pp.cameraPosition, pos, 12), memcpy(pp.cameraUp, cima, 12), memcpy(pp.cameraRight, dir, 12),
+                memcpy(pp.cameraForward, frente, 12);
         r |= Despacha(ctx, &pp.header);
         ffxDispatchDescFrameGeneration dg{};
         dg.header.type = FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION;
@@ -479,8 +481,9 @@ int wmain(int argc, wchar_t** argv)
             pp.motionVectorScale = {float(W), float(H)};
             pp.frameTimeDelta = dtMs, pp.reset = q == 0 && chamada == 0, pp.cameraNear = 0.1f, pp.cameraFar = 1e5f;
             pp.cameraFovAngleVertical = 1.0472f, pp.viewSpaceToMetersFactor = 1.f, pp.depth = rProf, pp.motionVectors = rMov;
-            memcpy(pp.cameraPosition, pos, 12), memcpy(pp.cameraUp, cima, 12), memcpy(pp.cameraRight, dir, 12),
-                memcpy(pp.cameraForward, frente, 12);
+            if (!semCamera)
+                memcpy(pp.cameraPosition, pos, 12), memcpy(pp.cameraUp, cima, 12), memcpy(pp.cameraRight, dir, 12),
+                    memcpy(pp.cameraForward, frente, 12);
             rcP |= Despacha(&fg, &pp.header);
         }
 
