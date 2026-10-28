@@ -258,8 +258,8 @@ bool Deslizador(const char* rot, float* v, float a, float b, const char* fmt, co
     bool mudou = false;
     if (ImGui::IsItemActive())
     {
-        // clique fora da bolinha: o valor vai para onde clicou; arrastando: devagar, 0,001 por pixel (com Shift, 0,001
-        // a cada 10 pixels; nos inteiros, meio trilho por trilho) -- arrastar pela posicao do mouse pulava centesimos
+        // clique fora da bolinha: o valor vai para onde clicou; arrastando: relativo, fino devagar e acelerado rapido
+        // (arrastar pela posicao do mouse pulava centesimos)
         static float acumulado = 0.f;
         const float xBola = x0 + (*v - a) / std::max(b - a, 1e-6f) * (x1 - x0);
         float nv = *v;
@@ -271,9 +271,12 @@ bool Deslizador(const char* rot, float* v, float a, float b, const char* fmt, co
         }
         else
         {
-            // o que nao chega a um passo fica guardado para o pixel seguinte (com Shift, 10 pixels por passo)
-            const float passo = casas > 0 ? 0.001f : 0.5f * (b - a) / std::max(x1 - x0, 1.f);
-            acumulado += io.MouseDelta.x * passo * (io.KeyShift ? 0.1f : 1.f);
+            // o que nao chega a um passo fica guardado para o pixel seguinte. Devagar: 0,001 por pixel (inteiros: 1 a cada
+            // 12 pixels); rapido, acelera (ate 40x) -- o mouse fica preso a area do painel e so o devagar nao cobria a faixa.
+            // Shift: 10x mais fino, sem aceleracao
+            const float passo = casas > 0 ? 0.001f : 1.f;
+            const float dx = io.MouseDelta.x, acel = io.KeyShift ? 0.1f : std::clamp(std::fabs(dx) / 3.f, 1.f, 40.f);
+            acumulado += dx * (casas > 0 ? 0.001f : 1.f / 12.f) * acel;
             const float n = std::trunc(acumulado / passo);
             nv = std::clamp(*v + n * passo, a, b);
             acumulado -= n * passo;
