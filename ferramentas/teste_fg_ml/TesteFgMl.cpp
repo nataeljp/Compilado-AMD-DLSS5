@@ -4,7 +4,11 @@
 // outputs[4])? Grava o anterior, o real, os gerados e a verdade de cada instante (a cena a 2x2 por pixel, mesmo tonemap),
 // no formato do despejo do modulo (nome_WxH_pitchP_fmtF.raw), e meta.json com o quadro.
 // uso: TesteFgMl.exe <pasta das DLLs da AMD> <saida> [--n N] [--quadro Q] [--fps F] [--versao texto] [--prepare1]
-//      [--pontilhado] [--fundo-liso] [--cobertura C] [--render R]
+//      [--pontilhado] [--fundo-liso] [--cobertura C] [--repete K]
+// --repete K: K chamadas independentes da geracao por quadro real (1 quadro cada), o preparo de cada uma com o tempo
+//   do quadro deslocado em k x 10 ns: gerado<k> sai da chamada k (a ideia de tirar mais de 1 quadro do provedor neural)
+// --recursivo: 4x com dois contextos -- A gera o meio M (t = 0,5) entre os reais; B recebe real, M, real, M... como
+//   quadros seguidos (movimento do real pela metade, camera no meio do caminho) e gera t = 0,25 e t = 0,75
 #include "../jogo_teste/Cubo.h"
 #include "ffx_api/ffx_api.h"
 #include "ffx_api/ffx_framegeneration.h"
@@ -152,10 +156,10 @@ int wmain(int argc, wchar_t** argv)
         return 1;
     }
     const std::wstring pastaDll = argv[1], saida = argv[2];
-    UINT n = 3, quadroAlvo = 210;
+    UINT n = 3, quadroAlvo = 210, repete = 0;
     double fps = 20.0;
     std::string versaoPedida;
-    bool prepare1 = false, pontilhado = false, liso = false;
+    bool prepare1 = false, pontilhado = false, liso = false, recursivo = false, semGeracao = false;
     float cobertura = 0.5f;
     for (int i = 3; i < argc; ++i)
     {
@@ -171,15 +175,26 @@ int wmain(int argc, wchar_t** argv)
             WideCharToMultiByte(CP_UTF8, 0, argv[++i], -1, b, 128, nullptr, nullptr);
             versaoPedida = b;
         }
+        else if (!wcscmp(argv[i], L"--repete") && i + 1 < argc)
+            repete = UINT(_wtoi(argv[++i]));
         else if (!wcscmp(argv[i], L"--cobertura") && i + 1 < argc)
             cobertura = float(_wtof(argv[++i]));
         prepare1 |= !wcscmp(argv[i], L"--prepare1");
         pontilhado |= !wcscmp(argv[i], L"--pontilhado");
         liso |= !wcscmp(argv[i], L"--fundo-liso");
+        recursivo |= !wcscmp(argv[i], L"--recursivo");
+        semGeracao |= !wcscmp(argv[i], L"--sem-geracao");
     }
     n = n < 1 ? 1 : n > 3 ? 3 : n;
+    if (repete)
+        n = repete > 3 ? 3 : repete;
+    if (recursivo)
+        n = 3, repete = 0;
     CreateDirectoryW(saida.c_str(), nullptr);
-    const UINT W = 1920, H = 1080;
+    bool quatroK = false;
+    for (int i = 3; i < argc; ++i)
+        quatroK |= !wcscmp(argv[i], L"--4k");
+    const UINT W = quatroK ? 3840 : 1920, H = quatroK ? 2160 : 1080; // --4k: a tela do TLOU2
 
     App a;
     if (FAILED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&a.dev))))
@@ -263,6 +278,9 @@ int wmain(int argc, wchar_t** argv)
     printf("contexto: codigo %u, provedor %s\n", rc, pv.versionName ? pv.versionName : "?");
     if (rc != FFX_API_RETURN_OK)
         return 5;
+    ffxContext fgB = nullptr;
+    if (recursivo && Cria(&fgB, &cd.header, nullptr) != FFX_API_RETURN_OK)
+        return printf("segundo contexto falhou\n"), 5;
 
     // ---- a cena (Cubo.h), a verdade a 2x2, o tonemap ----
     CenaCubo cena;
@@ -322,11 +340,69 @@ int wmain(int argc, wchar_t** argv)
         a.cl->Dispatch((W + 7) / 8, (H + 7) / 8, 1);
     };
 
+    // um quadro numa geracao: configura, preparo V2 (movimento x escMov) e a geracao de 1 quadro entre o anterior dela e este
+    auto UmQuadro = [&](ffxContext* ctx, uint64_t id, ID3D12Resource* fonte, uint32_t estadoFonte, ID3D12Resource* destino,
+                        float escMov, const float* pos, const float* cima, const float* dir, const float* frente, float dtMs,
+                        bool reset) -> ffxReturnCode_t {
+        ffxConfigureDescFrameGeneration cf{};
+        cf.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION;
+        cf.frameGenerationEnabled = true;
+        cf.flags = FFX_FRAMEGENERATION_FLAG_NO_SWAPCHAIN_CONTEXT_NOTIFY;
+        cf.generationRect = {0, 0, int32_t(W), int32_t(H)};
+        cf.frameID = id;
+        ffxReturnCode_t r = Configura(ctx, &cf.header);
+        DescPreparoV2 pp{};
+        pp.header.type = TESTE_DESC_TYPE_FRAMEGENERATION_PREPARE_V2;
+        pp.frameID = id, pp.commandList = a.cl.Get(), pp.renderSize = {W, H};
+        pp.motionVectorScale = {float(W) * escMov, float(H) * escMov};
+        pp.frameTimeDelta = dtMs, pp.reset = reset, pp.cameraNear = 0.1f, pp.cameraFar = 1e5f;
+        pp.cameraFovAngleVertical = 1.0472f, pp.viewSpaceToMetersFactor = 1.f;
+        pp.depth = ffxApiGetResourceDX12(prof.Get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
+        pp.motionVectors = ffxApiGetResourceDX12(mov.Get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
+        memcpy(pp.cameraPosition, pos, 12), memcpy(pp.cameraUp, cima, 12), memcpy(pp.cameraRight, dir, 12),
+            memcpy(pp.cameraForward, frente, 12);
+        r |= Despacha(ctx, &pp.header);
+        ffxDispatchDescFrameGeneration dg{};
+        dg.header.type = FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION;
+        dg.commandList = a.cl.Get();
+        dg.presentColor = ffxApiGetResourceDX12(fonte, estadoFonte);
+        dg.outputs[0] = ffxApiGetResourceDX12(destino, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
+        dg.numGeneratedFrames = 1;
+        dg.reset = reset;
+        dg.backbufferTransferFunction = FFX_API_BACKBUFFER_TRANSFER_FUNCTION_SRGB;
+        dg.minMaxLuminance[0] = 0.f, dg.minMaxLuminance[1] = 1.f;
+        dg.generationRect = {0, 0, int32_t(W), int32_t(H)};
+        dg.frameID = id;
+        return r | Despacha(ctx, &dg.header);
+    };
+    // a camera no meio do caminho entre dois quadros (o que um jogo daria: so a de cada quadro real)
+    auto CameraMeio = [&](double t0, double t1, float* pos, float* cima, float* dir, float* frente) {
+        float p0[3], c0[3], d0[3], f0[3], p1[3], c1[3], d1[3], f1[3];
+        cena.CameraMundo(t0, p0, c0, d0, f0);
+        cena.CameraMundo(t1, p1, c1, d1, f1);
+        auto meio = [](const float* x, const float* y, float* o, bool normaliza) {
+            for (int i = 0; i < 3; ++i)
+                o[i] = 0.5f * (x[i] + y[i]);
+            if (normaliza)
+            {
+                const float l = std::sqrt(o[0] * o[0] + o[1] * o[1] + o[2] * o[2]);
+                for (int i = 0; i < 3; ++i)
+                    o[i] /= l;
+            }
+        };
+        meio(p0, p1, pos, false), meio(c0, c1, cima, true), meio(d0, d1, dir, true), meio(f0, f1, frente, true);
+    };
+
     // ---- os quadros: a cena, o tonemap, o preparo da AMD e a geracao de n quadros entre o anterior e este ----
     const auto RTST = D3D12_RESOURCE_STATE_RENDER_TARGET;
     UINT erros = 0;
+    // tempo de cada quadro (a GPU termina antes do seguinte: e o tempo da cena + tonemap + geracao), dos 20 primeiros em diante
+    LARGE_INTEGER freq, ini{}, fim{};
+    QueryPerformanceFrequency(&freq);
     for (UINT q = 0; q <= quadroAlvo; ++q)
     {
+        if (q == 20)
+            QueryPerformanceCounter(&ini);
         const double t = q / fps, tAnt = (q - 1.0) / fps;
         a.alo->Reset();
         a.cl->Reset(a.alo.Get(), nullptr);
@@ -341,17 +417,43 @@ int wmain(int argc, wchar_t** argv)
         Tom(0, 1, 1);
         a.Barreira(tela.Get(), UAVST, SRV);
 
+        ffxReturnCode_t rcC = 0, rcP = 0, rcD = 0;
+        float pos[3], cima[3], dir[3], frente[3];
+        cena.CameraMundo(t, pos, cima, dir, frente);
+        const uint32_t UAVFFX = FFX_API_RESOURCE_STATE_UNORDERED_ACCESS, LEFFX = FFX_API_RESOURCE_STATE_COMPUTE_READ;
+        const float dt = float(1000.0 / fps);
+        if (semGeracao)
+        {
+        }
+        else if (recursivo)
+        {
+            // A: o meio M (saidas[0]) entre o real anterior e este
+            rcD |= UmQuadro(&fg, q, tela.Get(), LEFFX, saidas[0].Get(), 1.f, pos, cima, dir, frente, dt, q == 0);
+            if (q == 0)
+                rcD |= UmQuadro(&fgB, 0, tela.Get(), LEFFX, saidas[2].Get(), 0.5f, pos, cima, dir, frente, dt / 2, true);
+            else
+            {
+                // B: M como o quadro seguinte ao real anterior (t = 0,25 sai em saidas[1]), depois este real (t = 0,75)
+                float pm[3], cm[3], dm[3], fm[3];
+                CameraMeio(tAnt, t, pm, cm, dm, fm);
+                rcD |= UmQuadro(&fgB, 2 * uint64_t(q) - 1, saidas[0].Get(), UAVFFX, saidas[1].Get(), 0.5f, pm, cm, dm, fm,
+                                dt / 2, false);
+                rcD |= UmQuadro(&fgB, 2 * uint64_t(q), tela.Get(), LEFFX, saidas[2].Get(), 0.5f, pos, cima, dir, frente,
+                                dt / 2, false);
+            }
+        }
+        else
+        {
         ffxConfigureDescFrameGeneration cf{};
         cf.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION;
         cf.frameGenerationEnabled = true;
         cf.flags = FFX_FRAMEGENERATION_FLAG_NO_SWAPCHAIN_CONTEXT_NOTIFY;
         cf.generationRect = {0, 0, int32_t(W), int32_t(H)};
         cf.frameID = q;
-        const ffxReturnCode_t rcC = Configura(&fg, &cf.header);
-
-        float pos[3], cima[3], dir[3], frente[3];
-        cena.CameraMundo(t, pos, cima, dir, frente);
-        ffxReturnCode_t rcP;
+        rcC = Configura(&fg, &cf.header);
+        for (UINT chamada = 0; chamada < (repete ? n : 1u); ++chamada)
+        {
+        const float dtMs = float(1000.0 / fps + chamada * 1e-5); // + k x 10 ns
         const FfxApiResource rProf = ffxApiGetResourceDX12(prof.Get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
         const FfxApiResource rMov = ffxApiGetResourceDX12(mov.Get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
         if (prepare1)
@@ -360,14 +462,14 @@ int wmain(int argc, wchar_t** argv)
             pp.header.type = FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE;
             pp.frameID = q, pp.commandList = a.cl.Get(), pp.renderSize = {W, H};
             pp.motionVectorScale = {float(W), float(H)};
-            pp.frameTimeDelta = float(1000.0 / fps), pp.cameraNear = 0.1f, pp.cameraFar = 1e5f;
+            pp.frameTimeDelta = dtMs, pp.cameraNear = 0.1f, pp.cameraFar = 1e5f;
             pp.cameraFovAngleVertical = 1.0472f, pp.viewSpaceToMetersFactor = 1.f, pp.depth = rProf, pp.motionVectors = rMov;
             ffxDispatchDescFrameGenerationPrepareCameraInfo ci{};
             ci.header.type = FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE_CAMERAINFO;
             memcpy(ci.cameraPosition, pos, 12), memcpy(ci.cameraUp, cima, 12), memcpy(ci.cameraRight, dir, 12),
                 memcpy(ci.cameraForward, frente, 12);
             pp.header.pNext = &ci.header;
-            rcP = Despacha(&fg, &pp.header);
+            rcP |= Despacha(&fg, &pp.header);
         }
         else
         {
@@ -375,26 +477,31 @@ int wmain(int argc, wchar_t** argv)
             pp.header.type = TESTE_DESC_TYPE_FRAMEGENERATION_PREPARE_V2;
             pp.frameID = q, pp.commandList = a.cl.Get(), pp.renderSize = {W, H};
             pp.motionVectorScale = {float(W), float(H)};
-            pp.frameTimeDelta = float(1000.0 / fps), pp.reset = q == 0, pp.cameraNear = 0.1f, pp.cameraFar = 1e5f;
+            pp.frameTimeDelta = dtMs, pp.reset = q == 0 && chamada == 0, pp.cameraNear = 0.1f, pp.cameraFar = 1e5f;
             pp.cameraFovAngleVertical = 1.0472f, pp.viewSpaceToMetersFactor = 1.f, pp.depth = rProf, pp.motionVectors = rMov;
             memcpy(pp.cameraPosition, pos, 12), memcpy(pp.cameraUp, cima, 12), memcpy(pp.cameraRight, dir, 12),
                 memcpy(pp.cameraForward, frente, 12);
-            rcP = Despacha(&fg, &pp.header);
+            rcP |= Despacha(&fg, &pp.header);
         }
 
         ffxDispatchDescFrameGeneration dg{};
         dg.header.type = FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION;
         dg.commandList = a.cl.Get();
         dg.presentColor = ffxApiGetResourceDX12(tela.Get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
-        for (UINT k = 0; k < n; ++k)
-            dg.outputs[k] = ffxApiGetResourceDX12(saidas[k].Get(), FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
-        dg.numGeneratedFrames = n;
-        dg.reset = q == 0;
+        if (repete)
+            dg.outputs[0] = ffxApiGetResourceDX12(saidas[chamada].Get(), FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
+        else
+            for (UINT k = 0; k < n; ++k)
+                dg.outputs[k] = ffxApiGetResourceDX12(saidas[k].Get(), FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
+        dg.numGeneratedFrames = repete ? 1 : n;
+        dg.reset = q == 0 && chamada == 0;
         dg.backbufferTransferFunction = FFX_API_BACKBUFFER_TRANSFER_FUNCTION_SRGB;
         dg.minMaxLuminance[0] = 0.f, dg.minMaxLuminance[1] = 1.f;
         dg.generationRect = {0, 0, int32_t(W), int32_t(H)};
         dg.frameID = q;
-        const ffxReturnCode_t rcD = Despacha(&fg, &dg.header);
+        rcD |= Despacha(&fg, &dg.header);
+        }
+        }
         a.cl->Close();
         ID3D12CommandList* l[] = {a.cl.Get()};
         a.fila->ExecuteCommandLists(1, l);
@@ -403,15 +510,21 @@ int wmain(int argc, wchar_t** argv)
             ++erros;
         if (q < 3 || q == quadroAlvo || ((rcC || rcP || rcD) && erros <= 5))
             printf("quadro %u: configura %u, preparo %u, geracao %u (n = %u)\n", q, rcC, rcP, rcD, n);
+        if (q == quadroAlvo - 2)
+            QueryPerformanceCounter(&fim);
         if (q == quadroAlvo - 1)
             a.Grava(tela.Get(), SRV, saida, L"anterior");
     }
+    if (quadroAlvo > 25)
+        printf("tempo por quadro real (cena + tonemap + geracao): %.2f ms\n",
+               1000.0 * double(fim.QuadPart - ini.QuadPart) / double(freq.QuadPart) / double(quadroAlvo - 22));
     a.Grava(tela.Get(), SRV, saida, L"real");
     for (UINT k = 0; k < n; ++k)
     {
         wchar_t nome[32];
         swprintf(nome, 32, L"gerado%u", k + 1);
-        a.Grava(saidas[k].Get(), UAVST, saida, nome);
+        static const int kRec[3] = {1, 0, 2}; // recursivo: 0,25 em saidas[1], 0,5 em saidas[0], 0,75 em saidas[2]
+        a.Grava(saidas[recursivo ? kRec[k] : k].Get(), UAVST, saida, nome);
     }
     // a verdade: os instantes Q-1 + k/(n+1), k = 0..n+1, a 2x2 por pixel e o mesmo tonemap
     for (UINT k = 0; k <= n + 1; ++k)
@@ -443,5 +556,7 @@ int wmain(int argc, wchar_t** argv)
     }
     printf("gravado em %ls (%u quadros com erro)\n", saida.c_str(), erros);
     Destroi(&fg, nullptr);
+    if (fgB)
+        Destroi(&fgB, nullptr);
     return 0;
 }
