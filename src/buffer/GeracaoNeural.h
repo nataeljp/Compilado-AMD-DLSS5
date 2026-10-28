@@ -83,29 +83,35 @@ class GeracaoNeural
     char erro[160] = {};
 };
 
-// o borrao de movimento dos gerados acima do limite medido (como o monitor com tearing: ate onde o movimento nao distorce,
-// o gerado passa intacto; acima, os blocos 8x8 que a geracao quebra viram borrao). Cena de teste, erro p90 por bloco 8x8
-// contra a verdade, por movimento entre os reais (1080p): neural limpa ate 16 px (2,9/255) e quebra de 16 a 24 px
-// (5,0/255) em diante; a analitica ja quebra de 12 a 16 px (5,7/255). Acima do limite, a janela 8x8 (4 px de cada lado)
-// entra aos poucos, inteira no dobro do limite. O HUD (onde o final difere da imagem sem HUD) fica intacto
-class BorraoMovimento
+// a reprojecao dos gerados acima do limite de movimento (no lugar da geracao da AMD, que mistura os dois reais quando o
+// movimento passa do que ela acha: fantasma e fundo duplicado no giro rapido da camera). Cada pixel dos dois reais vai
+// para a posicao dele no tempo do gerado pelo movimento do jogo (que ja traz a camera e os objetos): o atual volta
+// (1 - t) do movimento dele, o anterior anda t (o movimento dele ao contrario: velocidade constante); na disputa pelo
+// mesmo pixel ganha o mais perto (profundidade), e no empate o real mais perto no tempo. Buracos (o que nenhum dos
+// dois mostra) pegam o fundo vizinho. Sem fluxo optico e sem rede: sem blocos 8x8 e sem limite de velocidade. Ate o
+// limite fica o gerado da AMD; acima entra a reprojecao aos poucos, inteira no dobro do limite. O HUD fica intacto
+class Reprojecao
 {
   public:
     bool Cria(ID3D12Device* dev);
-    bool Pronto() const { return pso != nullptr; }
-    // saida: o gerado (UNORDERED_ACCESS), borrado no lugar. mov: o movimento do real (NON_PIXEL_SHADER_RESOURCE, na
-    // resolucao de render; mov x movEsc = pixels de render). final_/semHud: COMPUTE_READ (semHud pode ser nullptr).
-    // limite: pixels de tela entre os reais
-    void Borra(ID3D12GraphicsCommandList* c, ID3D12Resource* saida, ID3D12Resource* mov, float movEscX, float movEscY,
-               UINT renderW, UINT renderH, ID3D12Resource* final_, ID3D12Resource* semHud, float limite);
+    bool Pronta() const { return pso[0] != nullptr; }
+    // depois da geracao, nos m gerados (UNORDERED_ACCESS, em ordem de tempo) entre o real anterior e este. q: a
+    // profundidade e o movimento deste real (NON_PIXEL_SHADER_RESOURCE). final_/semHud: COMPUTE_READ (semHud pode
+    // ser nullptr). limite: pixels de tela entre os reais (0 = so a reprojecao). Guarda este real para o seguinte
+    void Gera(ID3D12GraphicsCommandList* c, uint64_t id, const QuadroNeural& q, bool profInvertida, ID3D12Resource* final_,
+              ID3D12Resource* semHud, ID3D12Resource* const* saidas, uint32_t m, float limite, bool reset);
 
   private:
     Microsoft::WRL::ComPtr<ID3D12Device> dev;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> rs;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> pso[6]; // limpa, espalha atual/anterior, cor atual/anterior, resolve
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap;
-    Microsoft::WRL::ComPtr<ID3D12Resource> fonte; // a copia do gerado (a janela le os vizinhos sem o que ja foi borrado)
+    Microsoft::WRL::ComPtr<ID3D12Resource> chave, rep, anterior; // profundidade vencedora, cor reprojetada, o real anterior
     UINT inc = 0, proximo = 0;
+    uint64_t idAnterior = 0;
+    bool temAnterior = false;
+    QuadroNeural qAnterior{};
+    bool Garante(Microsoft::WRL::ComPtr<ID3D12Resource>& r, UINT w, UINT h, DXGI_FORMAT f, bool uav);
 };
 
 } // namespace dlss5ov

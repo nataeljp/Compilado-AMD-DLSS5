@@ -207,52 +207,118 @@ bool GeracaoNeural::Cria(const ApiAmd& api_, ID3D12Device* dev, UINT w, UINT h, 
 }
 
 // o HUD do real nos gerados do 4x: onde o final difere da imagem sem HUD, o final; o resto fica como gerado
-static const char kBorra[] = R"(
-cbuffer K : register(b0) { float2 esc; float limite; uint temHud; uint2 render; uint2 tela; };
-Texture2D<float4> fonte : register(t0);
-Texture2D<float2> mov : register(t1);
-Texture2D<float4> final_ : register(t2);
-Texture2D<float4> semHud : register(t3);
-RWTexture2D<float4> saida : register(u0);
-[numthreads(8, 8, 1)] void CSBorra(uint2 p : SV_DispatchThreadID)
+static const char kRepro[] = R"(
+cbuffer K : register(b0)
 {
-    if (p.x >= tela.x || p.y >= tela.y) return;
-    if (temHud && any(final_[p].rgb != semHud[p].rgb)) return;
+    float2 escB, escA; uint2 renderB, renderA; uint2 tela; float t, limite; uint flags; uint3 _p;
+};
+Texture2D<float4> corB : register(t0);
+Texture2D<float2> movB : register(t1);
+Texture2D<float> profB : register(t2);
+Texture2D<float4> corA : register(t3);
+Texture2D<float2> movA : register(t4);
+Texture2D<float> profA : register(t5);
+Texture2D<float4> final_ : register(t6);
+Texture2D<float4> semHud : register(t7);
+RWTexture2D<uint> chave : register(u0);
+RWTexture2D<float4> rep : register(u1);
+RWTexture2D<float4> saida : register(u2);
+static const uint VAZIO = 0xffffffffu;
+uint2 R(int2 q, uint2 render) { return min(uint2((float2(q) + 0.5) * float2(render) / float2(tela)), render - 1); }
+// a chave: a profundidade (perto = menor) com o bit baixo = o real (0 ganha o empate: o mais perto no tempo)
+uint Chave(float z, uint real)
+{
+    const float d = (flags & 1) ? 1.0 - z : z;
+    const uint pref = t >= 0.5 ? 0u : 1u; // 0 = atual, 1 = anterior
+    return (asuint(saturate(d)) & ~1u) | (real == pref ? 0u : 1u);
+}
+bool Destino(int2 q, bool atual, out int2 d, out uint k)
+{
+    if (atual)
+    {
+        const uint2 r = R(q, renderB);
+        d = int2(floor(float2(q) + 0.5 + (1.0 - t) * movB[r] * escB));
+        k = Chave(profB[r], 0);
+    }
+    else
+    {
+        const uint2 r = R(q, renderA);
+        d = int2(floor(float2(q) + 0.5 - t * movA[r] * escA));
+        k = Chave(profA[r], 1);
+    }
+    return all(d >= 0) && all(d < int2(tela));
+}
+[numthreads(8, 8, 1)] void CSLimpa(uint2 p : SV_DispatchThreadID)
+{
+    if (all(p < tela)) chave[p] = VAZIO;
+}
+[numthreads(8, 8, 1)] void CSEspalhaB(uint2 p : SV_DispatchThreadID)
+{
+    int2 d; uint k;
+    if (all(p < tela) && Destino(int2(p), true, d, k)) InterlockedMin(chave[d], k);
+}
+[numthreads(8, 8, 1)] void CSEspalhaA(uint2 p : SV_DispatchThreadID)
+{
+    int2 d; uint k;
+    if (all(p < tela) && (flags & 4) && Destino(int2(p), false, d, k)) InterlockedMin(chave[d], k);
+}
+[numthreads(8, 8, 1)] void CSCorB(uint2 p : SV_DispatchThreadID)
+{
+    int2 d; uint k;
+    if (all(p < tela) && Destino(int2(p), true, d, k) && chave[d] == k) rep[d] = corB[p];
+}
+[numthreads(8, 8, 1)] void CSCorA(uint2 p : SV_DispatchThreadID)
+{
+    int2 d; uint k;
+    if (all(p < tela) && (flags & 4) && Destino(int2(p), false, d, k) && chave[d] == k) rep[d] = corA[p];
+}
+[numthreads(8, 8, 1)] void CSResolve(uint2 p : SV_DispatchThreadID)
+{
+    if (any(p >= tela)) return;
+    if ((flags & 2) && any(final_[p].rgb != semHud[p].rgb)) return; // o HUD: o da geracao (o real, parado)
     const int2 ultimo = int2(tela) - 1;
-    // o maior movimento na janela 8x8 (a borda do que anda tambem quebra)
+    // o maior movimento perto (a borda do que anda tambem quebra na geracao)
     float m = 0;
-    for (int j = -4; j <= 4; j += 4)
-        for (int i = -4; i <= 4; i += 4)
-        {
-            const int2 q = clamp(int2(p) + int2(i, j), 0, ultimo);
-            const uint2 r = min(uint2((float2(q) + 0.5) * float2(render) / float2(tela)), render - 1);
-            m = max(m, length(mov[r] * esc));
-        }
-    const float w = saturate((m - limite) / limite);
+    for (int j = -8; j <= 8; j += 8)
+        for (int i = -8; i <= 8; i += 8)
+            m = max(m, length(movB[R(clamp(int2(p) + int2(i, j), 0, ultimo), renderB)] * escB));
+    const float w = limite > 0 ? saturate((m - limite) / limite) : 1.0;
     if (w <= 0) return;
-    float4 s = 0;
-    float n = 0;
-    for (int y = -4; y <= 4; ++y)
-        for (int x = -4; x <= 4; ++x)
-        {
-            const float k = (abs(x) == 4 ? 0.5 : 1.0) * (abs(y) == 4 ? 0.5 : 1.0);
-            s += k * fonte[clamp(int2(p) + int2(x, y), 0, ultimo)];
-            n += k;
-        }
-    saida[p] = lerp(fonte[p], s / n, w);
+    float4 c;
+    if (chave[p] != VAZIO)
+        c = rep[p];
+    else
+    {
+        // buraco: o fundo vizinho (a maior profundidade valida no anel mais proximo que tiver alguma)
+        uint melhor = 0; int2 onde = int2(p); bool achou = false;
+        for (int r = 1; r <= 8 && !achou; ++r)
+            for (int j = -r; j <= r; ++j)
+                for (int i = -r; i <= r; ++i)
+                {
+                    if (max(abs(i), abs(j)) != r) continue;
+                    const int2 q = clamp(int2(p) + int2(i, j), 0, ultimo);
+                    const uint k = chave[q];
+                    if (k != VAZIO && k >= melhor) melhor = k, onde = q, achou = true;
+                }
+        c = achou ? rep[onde] : corB[p];
+    }
+    saida[p] = lerp(saida[p], c, w);
 }
 )";
 
-bool BorraoMovimento::Cria(ID3D12Device* d)
+bool Reprojecao::Cria(ID3D12Device* d)
 {
     dev = d;
-    Microsoft::WRL::ComPtr<ID3DBlob> cs, err, ser;
-    if (FAILED(D3DCompile(kBorra, sizeof kBorra - 1, "borrao", nullptr, nullptr, "CSBorra", "cs_5_1", 0, 0, &cs, &err)))
-        return false;
-    D3D12_DESCRIPTOR_RANGE rsr{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0, 0, 0}, ru{D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, 0};
+    static const char* entradas[6] = {"CSLimpa", "CSEspalhaB", "CSEspalhaA", "CSCorB", "CSCorA", "CSResolve"};
+    Microsoft::WRL::ComPtr<ID3DBlob> cs[6], err, ser;
+    for (int i = 0; i < 6; ++i)
+        if (FAILED(D3DCompile(kRepro, sizeof kRepro - 1, "reprojecao", nullptr, nullptr, entradas[i], "cs_5_1", 0, 0, &cs[i],
+                              &err)))
+            return false;
+    D3D12_DESCRIPTOR_RANGE rsr{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 8, 0, 0, 0}, ru{D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 3, 0, 0, 0};
     D3D12_ROOT_PARAMETER rp[3]{};
     rp[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    rp[0].Constants = {0, 0, 8};
+    rp[0].Constants = {0, 0, 16};
     rp[1].ParameterType = rp[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     rp[1].DescriptorTable = {1, &rsr};
     rp[2].DescriptorTable = {1, &ru};
@@ -260,93 +326,145 @@ bool BorraoMovimento::Cria(ID3D12Device* d)
     if (FAILED(D3D12SerializeRootSignature(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, &ser, &err)) ||
         FAILED(dev->CreateRootSignature(0, ser->GetBufferPointer(), ser->GetBufferSize(), IID_PPV_ARGS(&rs))))
         return false;
-    D3D12_COMPUTE_PIPELINE_STATE_DESC pd{rs.Get(), {cs->GetBufferPointer(), cs->GetBufferSize()}};
-    if (FAILED(dev->CreateComputePipelineState(&pd, IID_PPV_ARGS(&pso))))
-        return false;
-    // 5 descritores por gerado, um anel para os quadros em voo
-    D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 5 * 32, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE};
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ps[6];
+    for (int i = 0; i < 6; ++i)
+    {
+        D3D12_COMPUTE_PIPELINE_STATE_DESC pd{rs.Get(), {cs[i]->GetBufferPointer(), cs[i]->GetBufferSize()}};
+        if (FAILED(dev->CreateComputePipelineState(&pd, IID_PPV_ARGS(&ps[i]))))
+            return false;
+    }
+    // 11 descritores por gerado (8 SRV + 3 UAV), um anel para os quadros em voo
+    D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 11 * 32, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE};
     if (FAILED(dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&heap))))
-        return pso = nullptr, false;
+        return false;
     inc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    for (int i = 0; i < 6; ++i)
+        pso[i] = ps[i];
     return true;
 }
 
-void BorraoMovimento::Borra(ID3D12GraphicsCommandList* c, ID3D12Resource* saida, ID3D12Resource* mov, float movEscX,
-                            float movEscY, UINT renderW, UINT renderH, ID3D12Resource* final_, ID3D12Resource* semHud,
-                            float limite)
+static DXGI_FORMAT Tipado(DXGI_FORMAT f)
 {
-    if (!pso || !saida || !mov || !final_ || !renderW || !renderH || limite <= 0.f)
-        return;
-    const D3D12_RESOURCE_DESC sd = saida->GetDesc();
-    D3D12_RESOURCE_DESC fd = fonte ? fonte->GetDesc() : D3D12_RESOURCE_DESC{};
-    if (!fonte || fd.Width != sd.Width || fd.Height != sd.Height || fd.Format != sd.Format)
+    switch (f)
     {
-        D3D12_RESOURCE_DESC d = sd;
-        d.Flags = D3D12_RESOURCE_FLAG_NONE;
-        d.Alignment = 0;
-        D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
-        fonte = nullptr;
-        if (FAILED(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                               nullptr, IID_PPV_ARGS(&fonte))))
-            return;
+    case DXGI_FORMAT_R16G16_TYPELESS: return DXGI_FORMAT_R16G16_FLOAT;
+    case DXGI_FORMAT_R32G32_TYPELESS: return DXGI_FORMAT_R32G32_FLOAT;
+    case DXGI_FORMAT_R32_TYPELESS: return DXGI_FORMAT_R32_FLOAT;
+    case DXGI_FORMAT_R16G16B16A16_TYPELESS: return DXGI_FORMAT_R16G16B16A16_FLOAT;
+    case DXGI_FORMAT_R10G10B10A2_TYPELESS: return DXGI_FORMAT_R10G10B10A2_UNORM;
+    case DXGI_FORMAT_R8G8B8A8_TYPELESS: case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: return DXGI_FORMAT_R8G8B8A8_UNORM;
+    case DXGI_FORMAT_B8G8R8A8_TYPELESS: case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: return DXGI_FORMAT_B8G8R8A8_UNORM;
+    default: return f;
     }
-    D3D12_RESOURCE_BARRIER b[2] = {};
-    b[0].Type = b[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    b[0].Transition = {saida, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                       D3D12_RESOURCE_STATE_COPY_SOURCE};
-    b[1].Transition = {fonte.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                       D3D12_RESOURCE_STATE_COPY_DEST};
-    c->ResourceBarrier(2, b);
-    c->CopyResource(fonte.Get(), saida);
-    for (auto& x : b)
-    {
-        const D3D12_RESOURCE_STATES t = x.Transition.StateBefore;
-        x.Transition.StateBefore = x.Transition.StateAfter, x.Transition.StateAfter = t;
-    }
-    c->ResourceBarrier(2, b);
+}
 
-    const UINT base = (proximo++ % 32) * 5;
-    D3D12_CPU_DESCRIPTOR_HANDLE h = heap->GetCPUDescriptorHandleForHeapStart();
-    h.ptr += SIZE_T(base) * inc;
-    auto srv = [&](ID3D12Resource* r) {
+bool Reprojecao::Garante(Microsoft::WRL::ComPtr<ID3D12Resource>& r, UINT w, UINT h, DXGI_FORMAT f, bool uav)
+{
+    if (r)
+    {
         const D3D12_RESOURCE_DESC d = r->GetDesc();
+        if (d.Width == w && d.Height == h && d.Format == f)
+            return true;
+    }
+    D3D12_RESOURCE_DESC d{D3D12_RESOURCE_DIMENSION_TEXTURE2D, 0, w, h, 1, 1, f, {1, 0}, D3D12_TEXTURE_LAYOUT_UNKNOWN,
+                          uav ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_NONE};
+    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+    r = nullptr;
+    return SUCCEEDED(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d,
+                                                  uav ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+                                                      : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                                                  nullptr, IID_PPV_ARGS(&r)));
+}
+
+void Reprojecao::Gera(ID3D12GraphicsCommandList* c, uint64_t id, const QuadroNeural& q, bool profInvertida,
+                      ID3D12Resource* final_, ID3D12Resource* semHud, ID3D12Resource* const* saidas, uint32_t m,
+                      float limite, bool reset)
+{
+    if (!Pronta() || !final_ || !q.mov || !q.prof || !q.renderW || !q.renderH || !m || !saidas[0])
+        return void(temAnterior = false);
+    ID3D12Resource* fonte = semHud ? semHud : final_;
+    const D3D12_RESOURCE_DESC fd = fonte->GetDesc(), sd = saidas[0]->GetDesc();
+    const UINT tw = UINT(sd.Width), th = sd.Height;
+    if (!Garante(chave, tw, th, DXGI_FORMAT_R32_UINT, true) || !Garante(rep, tw, th, Tipado(sd.Format), true) ||
+        !Garante(anterior, UINT(fd.Width), fd.Height, fd.Format, false))
+        return void(temAnterior = false);
+    const bool comA = temAnterior && !reset && id == idAnterior + 1 && qAnterior.mov && qAnterior.prof;
+    auto srv = [&](D3D12_CPU_DESCRIPTOR_HANDLE& h, ID3D12Resource* r) {
         D3D12_SHADER_RESOURCE_VIEW_DESC v{};
-        v.Format = d.Format == DXGI_FORMAT_R16G16_TYPELESS   ? DXGI_FORMAT_R16G16_FLOAT
-                   : d.Format == DXGI_FORMAT_R32G32_TYPELESS ? DXGI_FORMAT_R32G32_FLOAT
-                                                             : d.Format;
+        v.Format = Tipado(r->GetDesc().Format);
         v.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         v.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         v.Texture2D.MipLevels = 1;
         dev->CreateShaderResourceView(r, &v, h);
         h.ptr += inc;
     };
-    srv(fonte.Get()), srv(mov), srv(final_), srv(semHud ? semHud : final_);
-    D3D12_UNORDERED_ACCESS_VIEW_DESC u{};
-    u.Format = sd.Format;
-    u.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-    dev->CreateUnorderedAccessView(saida, nullptr, &u, h);
-    // o movimento em pixels de tela: mov x movEsc = pixels de render
-    const UINT telaW = UINT(sd.Width), telaH = sd.Height;
-    struct
-    {
-        float escX, escY, limite;
-        uint32_t temHud, rw, rh, tw, th;
-    } k{movEscX * telaW / renderW, movEscY * telaH / renderH, limite, semHud ? 1u : 0u, renderW, renderH, telaW, telaH};
+    auto uav = [&](D3D12_CPU_DESCRIPTOR_HANDLE& h, ID3D12Resource* r) {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC u{};
+        u.Format = Tipado(r->GetDesc().Format);
+        u.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        dev->CreateUnorderedAccessView(r, nullptr, &u, h);
+        h.ptr += inc;
+    };
     ID3D12DescriptorHeap* hs[] = {heap.Get()};
     c->SetDescriptorHeaps(1, hs);
     c->SetComputeRootSignature(rs.Get());
-    c->SetPipelineState(pso.Get());
-    c->SetComputeRoot32BitConstants(0, 8, &k, 0);
-    D3D12_GPU_DESCRIPTOR_HANDLE g = heap->GetGPUDescriptorHandleForHeapStart();
-    g.ptr += UINT64(base) * inc;
-    c->SetComputeRootDescriptorTable(1, g);
-    g.ptr += UINT64(4) * inc;
-    c->SetComputeRootDescriptorTable(2, g);
-    c->Dispatch((telaW + 7) / 8, (telaH + 7) / 8, 1);
-    D3D12_RESOURCE_BARRIER ub{};
-    ub.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-    ub.UAV.pResource = saida;
-    c->ResourceBarrier(1, &ub);
+    D3D12_RESOURCE_BARRIER ub[3] = {};
+    for (auto& b : ub)
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    ub[0].UAV.pResource = chave.Get(), ub[1].UAV.pResource = rep.Get();
+    for (uint32_t k = 0; k < m; ++k)
+    {
+        if (!saidas[k])
+            continue;
+        const UINT base = (proximo++ % 32) * 11;
+        D3D12_CPU_DESCRIPTOR_HANDLE h = heap->GetCPUDescriptorHandleForHeapStart();
+        h.ptr += SIZE_T(base) * inc;
+        srv(h, fonte), srv(h, q.mov), srv(h, q.prof);
+        srv(h, comA ? anterior.Get() : fonte), srv(h, comA ? qAnterior.mov : q.mov), srv(h, comA ? qAnterior.prof : q.prof);
+        srv(h, final_), srv(h, semHud ? semHud : final_);
+        uav(h, chave.Get()), uav(h, rep.Get()), uav(h, saidas[k]);
+        struct
+        {
+            float escBx, escBy, escAx, escAy;
+            uint32_t rbw, rbh, raw, rah, tw, th;
+            float t, limite;
+            uint32_t flags, p0, p1, p2;
+        } kc{q.movEscX * tw / q.renderW, q.movEscY * th / q.renderH,
+             comA ? qAnterior.movEscX * tw / qAnterior.renderW : 0.f, comA ? qAnterior.movEscY * th / qAnterior.renderH : 0.f,
+             q.renderW, q.renderH, comA ? qAnterior.renderW : q.renderW, comA ? qAnterior.renderH : q.renderH, tw, th,
+             float(k + 1) / float(m + 1), limite,
+             (profInvertida ? 1u : 0u) | (semHud ? 2u : 0u) | (comA ? 4u : 0u), 0, 0, 0};
+        c->SetComputeRoot32BitConstants(0, 16, &kc, 0);
+        D3D12_GPU_DESCRIPTOR_HANDLE g = heap->GetGPUDescriptorHandleForHeapStart();
+        g.ptr += UINT64(base) * inc;
+        c->SetComputeRootDescriptorTable(1, g);
+        g.ptr += UINT64(8) * inc;
+        c->SetComputeRootDescriptorTable(2, g);
+        ub[2].UAV.pResource = saidas[k];
+        c->ResourceBarrier(3, ub); // a geracao terminou de escrever a saida
+        for (int i = 0; i < 6; ++i)
+        {
+            c->SetPipelineState(pso[i].Get());
+            c->Dispatch((tw + 7) / 8, (th + 7) / 8, 1);
+            c->ResourceBarrier(i == 5 ? 3 : 2, ub);
+        }
+    }
+    // este real e o anterior do seguinte
+    D3D12_RESOURCE_BARRIER b[2] = {};
+    b[0].Type = b[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b[0].Transition = {fonte, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                       D3D12_RESOURCE_STATE_COPY_SOURCE};
+    b[1].Transition = {anterior.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                       D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST};
+    c->ResourceBarrier(2, b);
+    c->CopyResource(anterior.Get(), fonte);
+    for (auto& x : b)
+    {
+        const D3D12_RESOURCE_STATES s = x.Transition.StateBefore;
+        x.Transition.StateBefore = x.Transition.StateAfter, x.Transition.StateAfter = s;
+    }
+    c->ResourceBarrier(2, b);
+    qAnterior = q, idAnterior = id, temAnterior = true;
 }
 
 static const char kUi[] = R"(

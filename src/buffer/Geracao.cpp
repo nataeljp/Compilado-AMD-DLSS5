@@ -237,8 +237,8 @@ struct Geracao::Impl
     // ainda sem quadro (com filaMx)
     ApiAmd api;
     GeracaoNeural neural;
-BorraoMovimento borrao;
-float limiteBorrao = 16.f; // pixels de movimento entre os reais em 1080p (medido: GeracaoNeural.h); 0 = sem borrao
+Reprojecao repro;
+float limiteRepro = 16.f; // pixels de movimento entre os reais em 1080p acima do qual entra a reprojecao; <0 = desligada
     char erroNeural[160] = {};
     Microsoft::WRL::ComPtr<ID3D12Resource> anelProf[kJogos], anelMov[kJogos];
     std::deque<CameraJogo> cameras;
@@ -460,11 +460,11 @@ bool Geracao::Impl::Cria()
         snprintf(erroNeural, sizeof erroNeural, "desligada (DLSS5_GERACAO_ANALITICA)");
     else if (!neural.Cria(api, dev, telaW, telaH, maxRW, maxRH, fmtTela, FlagsNeural(flagsFi)))
         snprintf(erroNeural, sizeof erroNeural, "%s", neural.Erro());
-    // o borrao acima do limite de movimento (DLSS5_GERACAO_LIMITE = pixels em 1080p; 0 desliga)
+    // a reprojecao acima do limite de movimento (DLSS5_GERACAO_LIMITE = pixels em 1080p; 0 = so ela; negativo desliga)
     if (const char* l = std::getenv("DLSS5_GERACAO_LIMITE"))
-        limiteBorrao = float(atof(l));
-    if (limiteBorrao > 0.f && !borrao.Pronto())
-        borrao.Cria(dev);
+        limiteRepro = float(atof(l));
+    if (limiteRepro >= 0.f && !repro.Pronta())
+        repro.Cria(dev);
     return true;
 }
 
@@ -952,16 +952,17 @@ FfxErrorCode Geracao::Impl::Gera(const FfxFrameGenerationDispatchDescription* d,
     // a neural (2x: o meio; 4x: o intercalado de dois contextos) com a camera deste quadro; 3x, sem camera ou se ela falhar,
     // a analitica
     const uint32_t m = std::clamp<uint32_t>(d->numInterpolatedFrames, 1, 3);
-    // o borrao dos gerados acima do limite de movimento (escala com a altura da tela)
+    // a reprojecao nos gerados acima do limite de movimento (escala com a altura da tela)
     auto borra = [&] {
-        if (!pr.neural || !p->borrao.Pronto() || p->limiteBorrao <= 0.f)
+        if (!pr.neural || !p->repro.Pronta() || p->limiteRepro < 0.f)
             return;
+        ID3D12Resource* saidas[3] = {};
         for (uint32_t k = 0; k < m; ++k)
-            p->borrao.Borra(reinterpret_cast<ID3D12GraphicsCommandList*>(d->commandList),
-                            reinterpret_cast<ID3D12Resource*>(d->outputs[k].resource), pr.qn.mov, pr.qn.movEscX,
-                            pr.qn.movEscY, pr.qn.renderW, pr.qn.renderH,
-                            reinterpret_cast<ID3D12Resource*>(d->presentColor.resource), semHud,
-                            p->limiteBorrao * float(d->presentColor.description.height) / 1080.f);
+            saidas[k] = reinterpret_cast<ID3D12Resource*>(d->outputs[k].resource);
+        p->repro.Gera(reinterpret_cast<ID3D12GraphicsCommandList*>(d->commandList), pr.id, pr.qn,
+                      (p->flagsFi & FFX_FRAMEINTERPOLATION_ENABLE_DEPTH_INVERTED) != 0,
+                      reinterpret_cast<ID3D12Resource*>(d->presentColor.resource), semHud, saidas, m,
+                      p->limiteRepro * float(d->presentColor.description.height) / 1080.f, d->reset);
     };
     if (pr.neural && pr.temCam && p->neural.Pronta() && (m == 1 || m == 3))
     {
@@ -1465,7 +1466,7 @@ bool Geracao::Quadro(ID3D12GraphicsCommandList* c, const QuadroGeracao& q, uint3
     if (e != FFX_OK)
         return p->Erro("ffxFrameInterpolationPrepare", e), false;
     Impl::Preparado novo{p->quadro, pd, ListaNativa(c), 0, false, 0};
-    if (p->neural.Pronta() || p->borrao.Pronto()) // a neural e o borrao usam o movimento copiado
+    if (p->neural.Pronta() || p->repro.Pronta()) // a neural e a reprojecao usam o movimento copiado
         novo.neural = p->CopiaNeural(c, q, jogo, novo.qn);
     {
         std::lock_guard<std::mutex> lk(p->filaMx);
