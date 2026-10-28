@@ -108,7 +108,7 @@ struct App
     std::chrono::steady_clock::time_point marcaFps = std::chrono::steady_clock::now();
     UINT64 quadrosMarca = 0, apresentados = 0, apresentadosMarca = 0;
     Config cfg;
-    Passe pInteiro, pReduz, pCompoe, pExporta, pGuias, pNitidez, pGauss;
+    Passe pInteiro, pReduz, pCompoe, pExporta, pGuias, pNitidez, pBilateral, pTemporal;
     // ---- captura de buffer (Modo de Rede): a DLSS5Buffer.dll no jogo aberto entrega cor sem HUD, movimento e
     // profundidade do upscaler dele; a edicao volta para o jogo, que a soma no quadro seguinte ----
     FonteBuffer fb;
@@ -136,7 +136,10 @@ struct App
     bool Ligado() const { return cap.Ativa() || buffer; }
     HWND Alvo() const { return buffer ? alvoBuffer : cap.Alvo(); }
     Tex inteiro, orig, fed, saida, fedAnt, saidaAnt; // orig: quadro no tamanho da rede; fed: o proxy dele
-    Tex comGauss;   // o Gaussian antes do CAS/RCAS (com os tres ligados)
+    Tex comBilateral, comTemporal; // os passos do denoise antes do seguinte
+    Tex hist[2];                   // o denoise temporal: o resultado anterior e o deste quadro (alternados)
+    int histI = 0;
+    bool histValida = false;
     Tex semNitidez; // a composicao antes da nitidez CAS (criada na primeira vez que a nitidez liga)
     // quadros mesclados na captura de video: o processado anterior, o novo, a mistura e as misturas que faltam mostrar
     // (peso do novo; 1 = o novo sozinho), uma por quadro capturado sem rede
@@ -300,8 +303,9 @@ struct App
         pExporta.Cria(gpu.dev.Get(), (std::string(hlsl::Comum) + hlsl::Exporta).c_str(), "CSExporta", 3, 1, 12,
                       "edicao para o jogo");
         pGuias.Cria(gpu.dev.Get(), hlsl::Guias, "CSGuias", 2, 2, 4, "guias do historico da rede");
-        pNitidez.Cria(gpu.dev.Get(), hlsl::Nitidez, "CSNitidez", 1, 1, 12, "CAS e RCAS");
-        pGauss.Cria(gpu.dev.Get(), hlsl::Nitidez, "CSGauss", 1, 1, 12, "gaussian");
+        pNitidez.Cria(gpu.dev.Get(), hlsl::Nitidez, "CSNitidez", 1, 1, 16, "RCAS");
+        pBilateral.Cria(gpu.dev.Get(), hlsl::Nitidez, "CSBilateral", 1, 1, 16, "denoise bilateral");
+        pTemporal.Cria(gpu.dev.Get(), hlsl::Nitidez, "CSTemporal", 3, 2, 16, "denoise temporal");
         pMistura.Cria(gpu.dev.Get(), R"(
 cbuffer C : register(b0) { uint w; uint h; float peso; uint pad; };
 Texture2D<float4> anterior : register(t0);
@@ -1030,7 +1034,8 @@ RWTexture2D<float4> saida : register(u0);
         fed.Cria(gpu.dev.Get(), dw, dh, DXGI_FORMAT_R16G16B16A16_FLOAT, L"proxy (alimentado)", true, true);
         saida.Cria(gpu.dev.Get(), fw, fh, fmtSaida, L"saida");
         semNitidez.Solta(); // recriada no tamanho novo quando a nitidez estiver ligada (a GPU ja esta parada aqui)
-        comGauss.Solta();
+        comBilateral.Solta(), comTemporal.Solta(), hist[0].Solta(), hist[1].Solta();
+        histValida = false;
         if (!dumpPasta.empty())
             saidaAnt.Cria(gpu.dev.Get(), fw, fh, fmtSaida, L"saida anterior", false);
         // o movimento e alocado no quadro que precisar dele (PrecisaMovimento), ja no tamanho novo
@@ -1615,7 +1620,10 @@ RWTexture2D<float4> saida : register(u0);
         if (crua)
             temporal.Crua().Para(c, SRV);
         // nitidez CAS depois da composicao: o CSCompoe grava no semNitidez e o CSNitidez dele na saida
-        const bool borra = cfg.gauss > 0.f, afia = cfg.rcas > 0.f || cfg.nitidez > 0.f, nitida = borra || afia;
+        const bool bilat = cfg.bilateral > 0.f, tempo = cfg.denoiseTemporal > 0.f, afia = cfg.rcas > 0.f,
+                   nitida = bilat || tempo || afia;
+        if (!tempo)
+            histValida = false;
         if (nitida && semNitidez.w == 0)
             semNitidez.Cria(gpu.dev.Get(), saida.w, saida.h, saida.fmt, L"saida antes da nitidez");
         Tex& alvo = nitida ? semNitidez : saida;
@@ -1657,36 +1665,68 @@ RWTexture2D<float4> saida : register(u0);
                      {{alvo.r.Get(), alvo.fmt}}, &kc, (saida.w + 7) / 8, (saida.h + 7) / 8);
         if (nitida)
         {
-            // Gaussian e depois CAS/RCAS: semNitidez -> (comGauss ->) saida
+            // bilateral -> temporal -> RCAS: semNitidez -> ... -> saida
             struct
             {
                 UINT w, h, hdr;
-                float gauss;
+                float bil;
                 UINT modo;
                 float divisao, escala, rcas, cas;
-                UINT matriz, pad0, pad1;
-            } kn{saida.w, saida.h, hdr ? 1u : 0u, std::clamp(cfg.gauss, 0.f, 2.f), (UINT)cfg.modo, cfg.divisao,
-                 escalaUsada, std::clamp(cfg.rcas, 0.f, 2.f), std::clamp(cfg.nitidez, 0.f, 2.f),
-                 (UINT)std::clamp(cfg.gaussMatriz, 1, 8), 0, 0};
-            static_assert(sizeof(kn) == 12 * 4, "constantes: o mesmo layout do cbuffer do CSGauss/CSNitidez");
+                UINT raio;
+                float temporal;
+                UINT histValida, movW, movH, pad0, pad1;
+            } kn{saida.w, saida.h, hdr ? 1u : 0u, std::clamp(cfg.bilateral, 0.f, 2.f), (UINT)cfg.modo, cfg.divisao,
+                 escalaUsada, std::clamp(cfg.rcas, 0.f, 2.f), 0.f, (UINT)std::clamp(cfg.raioBilateral, 1, 8),
+                 std::clamp(cfg.denoiseTemporal, 0.f, 1.f), histValida ? 1u : 0u, temMov ? fluxo.Movimento().w : 0u,
+                 temMov ? fluxo.Movimento().h : 0u, 0, 0};
+            static_assert(sizeof(kn) == 16 * 4, "constantes: o mesmo layout do cbuffer do denoise");
+            auto passo = [&](Tex& t, bool ultimo, const wchar_t* nome) -> Tex& {
+                if (ultimo)
+                    return saida;
+                if (t.w == 0)
+                    t.Cria(gpu.dev.Get(), saida.w, saida.h, saida.fmt, nome);
+                return t;
+            };
+            const UINT gx = (saida.w + 7) / 8, gy = (saida.h + 7) / 8;
             Tex* fonte = &semNitidez;
-            if (borra)
+            if (bilat)
             {
-                if (afia && comGauss.w == 0)
-                    comGauss.Cria(gpu.dev.Get(), saida.w, saida.h, saida.fmt, L"saida com o gaussian");
-                Tex& destino = afia ? comGauss : saida;
-                semNitidez.Para(c, SRV);
-                destino.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-                pGauss.Roda(c, desc, gpu.dev.Get(), {{semNitidez.r.Get(), semNitidez.fmt}}, {{destino.r.Get(), destino.fmt}},
-                            &kn, (saida.w + 7) / 8, (saida.h + 7) / 8);
-                fonte = &comGauss;
+                Tex& d = passo(comBilateral, !tempo && !afia, L"denoise bilateral");
+                fonte->Para(c, SRV);
+                d.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                pBilateral.Roda(c, desc, gpu.dev.Get(), {{fonte->r.Get(), fonte->fmt}}, {{d.r.Get(), d.fmt}}, &kn, gx, gy);
+                fonte = &d;
+            }
+            if (tempo)
+            {
+                for (auto& hx : hist)
+                    if (hx.w == 0)
+                        hx.Cria(gpu.dev.Get(), saida.w, saida.h, saida.fmt, L"denoise temporal (historico)"), histValida = false;
+                kn.histValida = histValida ? 1u : 0u;
+                Tex& hAnt = hist[histI];
+                Tex& hNovo = hist[histI ^ 1];
+                Tex& d = passo(comTemporal, !afia, L"denoise temporal");
+                fonte->Para(c, SRV);
+                hAnt.Para(c, SRV);
+                if (temMov)
+                    fluxo.Movimento().Para(c, SRV);
+                d.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                hNovo.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                pTemporal.Roda(c, desc, gpu.dev.Get(),
+                               {{fonte->r.Get(), fonte->fmt},
+                                {hAnt.r.Get(), hAnt.fmt},
+                                temMov ? std::pair<ID3D12Resource*, DXGI_FORMAT>{fluxo.Movimento().r.Get(), fluxo.Movimento().fmt}
+                                       : std::pair<ID3D12Resource*, DXGI_FORMAT>{fonte->r.Get(), fonte->fmt}},
+                               {{d.r.Get(), d.fmt}, {hNovo.r.Get(), hNovo.fmt}}, &kn, gx, gy);
+                histI ^= 1;
+                histValida = true;
+                fonte = &d;
             }
             if (afia)
             {
                 fonte->Para(c, SRV);
                 saida.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-                pNitidez.Roda(c, desc, gpu.dev.Get(), {{fonte->r.Get(), fonte->fmt}}, {{saida.r.Get(), saida.fmt}}, &kn,
-                              (saida.w + 7) / 8, (saida.h + 7) / 8);
+                pNitidez.Roda(c, desc, gpu.dev.Get(), {{fonte->r.Get(), fonte->fmt}}, {{saida.r.Get(), saida.fmt}}, &kn, gx, gy);
             }
         }
         // captura de buffer: a edicao (C(saida) - C(cor do jogo)) vai para o slot que o jogo soma no quadro seguinte

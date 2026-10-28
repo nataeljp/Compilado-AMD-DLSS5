@@ -92,9 +92,10 @@ void Config::Carrega(const std::wstring& arquivo)
     I("fonte", fonte);
     B("redePequena", redePequena);
     F("forca", forca);
-    F("gauss", gauss);
-    I("gaussMatriz", gaussMatriz);
-    gaussMatriz = gaussMatriz < 1 ? 1 : gaussMatriz > 8 ? 8 : gaussMatriz;
+    F("bilateral", bilateral);
+    I("raioBilateral", raioBilateral);
+    raioBilateral = raioBilateral < 1 ? 1 : raioBilateral > 8 ? 8 : raioBilateral;
+    F("denoiseTemporal", denoiseTemporal);
     F("rcasForca", rcas);
     F("nitidezCas", nitidez);
     I("ponte", ponte);
@@ -152,8 +153,9 @@ std::string Config::Texto() const
     f << "  \"fonte\": " << fonte << ",\n";
     f << "  \"redePequena\": " << b(redePequena) << ",\n";
     f << "  \"forca\": " << forca << ",\n";
-    f << "  \"gauss\": " << gauss << ",\n";
-    f << "  \"gaussMatriz\": " << gaussMatriz << ",\n";
+    f << "  \"bilateral\": " << bilateral << ",\n";
+    f << "  \"raioBilateral\": " << raioBilateral << ",\n";
+    f << "  \"denoiseTemporal\": " << denoiseTemporal << ",\n";
     f << "  \"rcasForca\": " << rcas << ",\n";
     f << "  \"nitidezCas\": " << nitidez << ",\n";
     f << "  \"ponte\": " << ponte << ",\n";

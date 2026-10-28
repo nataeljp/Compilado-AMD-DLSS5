@@ -41,9 +41,10 @@ struct Config
     int alturaRede = 1080;  // altura em que a rede roda (720..2160); a largura segue a proporcao da janela
     bool redePequena = false; // a rede pequena da 310.9.16 (31 blocos, mais rapida) no lugar da grande (71 blocos)
     float forca = 1.f;      // quanto da edicao final entra no quadro (0..4)
-    float gauss = 0.f;   // Gaussian depois da composicao, so no lado da rede: 0..1 a mistura, 1..2 o raio ate o dobro (0 = desligado)
-    int gaussMatriz = 1; // o raio do Gaussian: 1x = o 3x3 fixo, 2x..8x = raio de 2 a 8 px
-    float rcas = 0.f;    // RCAS (FSR 1) depois do Gaussian: 0..1 a forca do maximo do algoritmo, 1..2 amplificado (0 = desligado)
+    float bilateral = 0.f; // denoise bilateral guiado por bordas, so no lado da rede: 0..1 a mistura, 1..2 a tolerancia de cor
+    int raioBilateral = 2; // o raio do bilateral em pixels (1 a 8)
+    float denoiseTemporal = 0.f; // denoise temporal: o resultado anterior reprojetado pelo movimento, 0..1 (1 = 90% do historico)
+    float rcas = 0.f;    // RCAS (FSR 1) depois do denoise: 0..1 a forca do maximo do algoritmo, 1..2 amplificado (0 = desligado)
     float nitidez = 0.f;    // nitidez CAS depois da composicao, so no lado da rede (0 = desligada, 1 = o maximo do CAS)
     int ponte = -1;         // ponte do quadro para a rede: -1 auto (SDR direto, HDR SoftKnee), 0 direto, 1 SoftKnee, 2 ACES,
                             // 3 curva do jogo, 4 luz de cena direta (so o ombro do codificador da NVIDIA)

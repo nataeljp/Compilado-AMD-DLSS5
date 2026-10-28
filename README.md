@@ -310,9 +310,9 @@ Os parâmetros do DLSS 5 seguem os nomes que a NVIDIA expõe no NGX (os mesmos d
 | `forcaHistoricoRede` | 0..2 | com `temporalRede` 1: escala do peso que a própria rede dá à resposta anterior (força × 0,74 × a decisão da cabeça de histórico, teto 0,95); 1 = o da rede; padrão 2 = a decisão dela dobrada. Medido nos quadros do TLOU2 com a câmera parada: a saída da rede oscila 9% menos (a edição, 5%), com a régua de movimento igual. É o máximo da acumulação da NVIDIA ali: sem as guardas de cor/profundidade do runtime ganha só mais 1% e começa a deixar rastro; o resto da cintilação a cabeça de histórico não segura |
 | `recorteHistoricoRede` | 0..4 | com `temporalRede` 1: a resposta anterior só entra dentro de média ± este número de desvios da saída crua deste quadro no 3×3 (YCoCg), o recorte por variância do TAA, feito no runtime antes da mistura (`LmxxfNrSetHistoryClip`). Sem ele, o que a rede pinta em volta de um objeto em movimento ficava no fundo que passa atrás dele e andava com esse fundo, uma cópia por quadro da rede (o rastro em degraus). 0 = sem recorte; padrão 1 |
 | `forca` | 0..2 | força da edição final (1 = a da rede) |
-| `gauss` / `gaussMatriz` | 0..2 / 1..8 | Gaussian depois da composição, só no lado da rede: 0..1 mistura, 1..2 alarga o raio até o dobro; matriz 1x = o 3x3 fixo, 2x..8x = raio de 2 a 8 px |
-| `rcasForca` | 0..2 | RCAS do FSR 1 (AMD, MIT) depois do Gaussian: 1 = o máximo do algoritmo, 2 = a diferença amplificada ao dobro; 0 = desligado |
-| `nitidezCas` | 0..2 | CAS da AMD (MIT) depois do Gaussian, somado ao RCAS: 1 = o máximo do algoritmo, 2 = o dobro; 0 = desligado |
+| `bilateral` / `raioBilateral` | 0..2 / 1..8 | denoise bilateral guiado por bordas depois da composição, só no lado da rede: suaviza o ruído sem atravessar bordas (0..1 mistura, 1..2 tolerância de cor até o dobro); raio em pixels |
+| `denoiseTemporal` | 0..1 | denoise temporal: o resultado anterior reprojetado pelo movimento e preso ao mínimo/máximo 3x3 do atual (sem rastro); 1 = 90% do histórico |
+| `rcasForca` | 0..2 | RCAS do FSR 1 (AMD, MIT) depois do denoise: 1 = o máximo do algoritmo, 2 = a diferença amplificada ao dobro; 0 = desligado (o CAS e o Gaussian saíram) |
 | `modo`, `fpsMax`, `ocultaDeGravacoes` | | modo de exibição (0 rede, 1 original, 2 comparação, 3 só a edição, 4 movimento, 5 saída crua da última resposta), teto de FPS, esconder de prints/OBS |
 
 No painel os ajustes finos têm três casas decimais: Shift + arrastar anda 1/10 do normal, e a roda do mouse sobre o

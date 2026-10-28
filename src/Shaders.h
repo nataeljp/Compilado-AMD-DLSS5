@@ -402,24 +402,24 @@ float3 CorPorMatiz(float3 c)
 }
 )";
 
-// Depois da composicao, so no lado da rede, dois passes:
-// CSGauss: Gaussian de raio = matriz (1x = o 3x3 fixo [1 2 1]^2/16; 2x..8x = raio 2..8 px, ate 9x9 amostras espacadas);
-// gauss 0..1 = a mistura com o quadro, 1..2 = inteiro e o raio cresce ate o dobro.
-// CSNitidez (no resultado): CAS (Contrast Adaptive Sharpening) e RCAS (Robust CAS do FSR 1) -- AMD FidelityFX, licenca
-// MIT, escritos aqui a partir dos algoritmos publicados -- somados ao pixel. 0..1 = o efeito do algoritmo (CAS: pico
-// -1/lerp(8,5,n) vezes n; RCAS: o lobo maximo, sharpness 0 stops, vezes a forca); 1..2 = a diferenca do maximo
-// amplificada ate o dobro (alem do que o algoritmo sozinho entrega). SDR: nos valores sRGB; HDR: em c / (1 + c) por
-// canal (c em brancos de papel), e so a diferenca volta a luz linear. Modo Original, metade original da comparacao e
-// diagnosticos ficam como estao.
+// Depois da composicao, so no lado da rede (denoise): CSBilateral (bilateral guiado por bordas: peso espacial gaussiano
+// de raio = raioB e peso de cor que cai com a diferenca para o centro -- suaviza o ruido sem atravessar as bordas; bil
+// 0..1 a mistura, 1..2 a tolerancia de cor ate o dobro), CSTemporal (o resultado anterior reprojetado pelo movimento,
+// preso ao minimo/maximo 3x3 do atual para nao deixar rastro, misturado ate 90%) e CSNitidez (RCAS do FSR 1 e, se cas
+// > 0, o CAS -- AMD FidelityFX, licenca MIT, escritos a partir dos algoritmos publicados: 1 = o maximo do algoritmo,
+// 2 = a diferenca amplificada ao dobro). SDR: nos valores sRGB; HDR: pesos e nitidez em c / (1 + c) por canal (c em
+// brancos de papel). Modo Original, metade original da comparacao e diagnosticos ficam como estao.
 inline const char* Nitidez = R"(
-cbuffer C : register(b0) { uint w; uint h; uint hdr; float gauss; uint modo; float divisao; float escala; float rcas;
-                           float cas; uint matriz; uint pad0; uint pad1; };
+cbuffer C : register(b0) { uint w; uint h; uint hdr; float bil; uint modo; float divisao; float escala; float rcas;
+                           float cas; uint raioB; float temporal; uint histValida; uint movW; uint movH; uint pad0; uint pad1; };
 Texture2D<float4> ent : register(t0);
+Texture2D<float4> hist : register(t1);
+Texture2D<float2> mov : register(t2);
 RWTexture2D<float4> sai : register(u0);
+RWTexture2D<float4> histNovo : register(u1);
 bool Rede(uint2 p) { return modo == 0 || modo == 5 || (modo == 2 && (float)p.x >= divisao * w + 1.0); }
-float3 Le(int2 q)
+float3 Comp(float3 c)
 {
-    float3 c = ent.Load(int3(clamp(q, int2(0, 0), int2(w, h) - 1), 0)).rgb;
     if (hdr)
     {
         c = max(c, 0.0) / escala;
@@ -427,7 +427,7 @@ float3 Le(int2 q)
     }
     return saturate(c);
 }
-[numthreads(8, 8, 1)] void CSGauss(uint2 p : SV_DispatchThreadID)
+[numthreads(8, 8, 1)] void CSBilateral(uint2 p : SV_DispatchThreadID)
 {
     if (p.x >= w || p.y >= h) return;
     const float4 c4 = ent.Load(int3(p, 0));
@@ -436,22 +436,60 @@ float3 Le(int2 q)
         sai[p] = c4;
         return;
     }
-    const float g = clamp(gauss, 0.0, 2.0);
-    const float raio = max(1.0, (float)matriz) * max(1.0, g);
+    const float b = clamp(bil, 0.0, 2.0);
+    const float raio = max(1.0, (float)raioB);
     const int n = min(4, (int)ceil(raio));
-    const float passo = raio / n, sigma = 0.85 * raio; // raio 1: pesos 1, 2, 1 (o 3x3 fixo)
+    const float passo = raio / n, ss = 0.85 * raio, sr = 0.03 + 0.06 * b;
+    const float3 ce = Comp(c4.rgb);
     float3 s = 0;
     float ws = 0;
     for (int j = -n; j <= n; ++j)
         for (int i = -n; i <= n; ++i)
         {
             const float2 o = float2(i, j) * passo;
-            const float wt = exp(-dot(o, o) / (2.0 * sigma * sigma));
-            s += wt * ent.Load(int3(clamp(int2(p) + int2(round(o)), int2(0, 0), int2(w, h) - 1), 0)).rgb;
+            const float3 x = ent.Load(int3(clamp(int2(p) + int2(round(o)), int2(0, 0), int2(w, h) - 1), 0)).rgb;
+            const float3 dc = Comp(x) - ce;
+            const float wt = exp(-dot(o, o) / (2.0 * ss * ss) - dot(dc, dc) / (2.0 * sr * sr));
+            s += wt * x;
             ws += wt;
         }
-    sai[p] = float4(lerp(c4.rgb, s / ws, min(g, 1.0)), c4.a);
+    sai[p] = float4(lerp(c4.rgb, s / ws, min(b, 1.0)), c4.a);
 }
+[numthreads(8, 8, 1)] void CSTemporal(uint2 p : SV_DispatchThreadID)
+{
+    if (p.x >= w || p.y >= h) return;
+    const float4 c4 = ent.Load(int3(p, 0));
+    if (!Rede(p))
+    {
+        sai[p] = c4;
+        histNovo[p] = c4;
+        return;
+    }
+    float3 mn = c4.rgb, mx = c4.rgb;
+    for (int j = -1; j <= 1; ++j)
+        for (int i = -1; i <= 1; ++i)
+        {
+            const float3 x = ent.Load(int3(clamp(int2(p) + int2(i, j), int2(0, 0), int2(w, h) - 1), 0)).rgb;
+            mn = min(mn, x), mx = max(mx, x);
+        }
+    // o movimento (pixels da textura dele, atual -> anterior) na resolucao da saida
+    float2 mv = 0;
+    if (movW && movH)
+        mv = mov.Load(int3(min(uint2((float2(p) + 0.5) * float2(movW, movH) / float2(w, h)), uint2(movW, movH) - 1), 0)) *
+             float2(w, h) / float2(movW, movH);
+    const float2 q = float2(p) + 0.5 + mv;
+    const bool dentro = all(q >= 0.0) && all(q < float2(w, h));
+    float3 o = c4.rgb;
+    if (histValida && dentro)
+    {
+        const float3 hc = clamp(hist.Load(int3(int2(q), 0)).rgb, mn, mx);
+        o = lerp(c4.rgb, hc, 0.9 * saturate(temporal));
+    }
+    sai[p] = float4(o, c4.a);
+    histNovo[p] = float4(o, c4.a);
+}
+float3 Ld(int2 q) { return ent.Load(int3(clamp(q, int2(0, 0), int2(w, h) - 1), 0)).rgb; }
+float3 Le(int2 q) { return Comp(Ld(q)); }
 [numthreads(8, 8, 1)] void CSNitidez(uint2 p : SV_DispatchThreadID)
 {
     if (p.x >= w || p.y >= h) return;
