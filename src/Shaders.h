@@ -402,15 +402,15 @@ float3 CorPorMatiz(float3 c)
 }
 )";
 
-// Nitidez depois da composicao, pelo algoritmo do CAS (Contrast Adaptive Sharpening, AMD FidelityFX, licenca MIT;
-// escrito aqui a partir do algoritmo publicado): por canal, o peso dos 4 vizinhos em cruz e negativo e cai onde o 3x3 ja
-// tem contraste alto (amp = sqrt(min(min, 2 - max) / max) com min e max da cruz somados aos do 3x3) -- reforca o detalhe
-// fraco sem halo nas bordas fortes. nitidez: 0 = sem efeito, 1 = o maximo do CAS (pico -1/5); entre os dois o pico do
-// CAS (-1 / lerp(8, 5, n)) vezes n, para comecar do zero sem salto. SDR: nos valores sRGB da saida (o CAS espera [0,1]);
-// HDR: em c / (1 + c) por canal (c em brancos de papel) -- o realce acima do branco nao satura.
-// So no lado da rede: o modo Original, a metade original da comparacao e os modos de diagnostico ficam como estao.
+// Depois da composicao, so no lado da rede: Gaussian 3x3 fixo ([1 2 1] x [1 2 1] / 16) misturado ao pixel por gauss
+// (0 a 0,5) e, em seguida, RCAS (Robust Contrast Adaptive Sharpening do FSR 1, AMD FidelityFX, licenca MIT; escrito aqui a
+// partir do algoritmo publicado): a cruz de 4 vizinhos com o peso negativo maximo que nao estoura [0,1] (lobo limitado a
+// 0,25 - 1/16), vezes con = 2^-sharpness (sharpness em stops: 0 = o maximo, 1 = metade). O RCAS le o resultado do
+// Gaussian (5x5 lidos por pixel). SDR: nos valores sRGB da saida; HDR: em c / (1 + c) por canal (c em brancos de papel),
+// e so a diferenca volta a luz linear. O modo Original, a metade original da comparacao e os diagnosticos ficam como estao.
 inline const char* Nitidez = R"(
-cbuffer C : register(b0) { uint w; uint h; uint hdr; float nitidez; uint modo; float divisao; float escala; uint pad; };
+cbuffer C : register(b0) { uint w; uint h; uint hdr; float gauss; uint modo; float divisao; float escala; float stops;
+                           uint rcas; uint pad0; uint pad1; uint pad2; };
 Texture2D<float4> ent : register(t0);
 RWTexture2D<float4> sai : register(u0);
 float3 Le(int2 q)
@@ -434,20 +434,36 @@ float3 Le(int2 q)
         return;
     }
     const int2 q = int2(p);
-    // a b c
-    // d e f
-    // g k i
-    const float3 a = Le(q + int2(-1, -1)), b = Le(q + int2(0, -1)), c = Le(q + int2(1, -1));
-    const float3 d = Le(q + int2(-1, 0)), e = Le(q), f = Le(q + int2(1, 0));
-    const float3 g = Le(q + int2(-1, 1)), k = Le(q + int2(0, 1)), i = Le(q + int2(1, 1));
-    float3 mn = min(min(min(d, e), min(f, b)), k);
-    float3 mx = max(max(max(d, e), max(f, b)), k);
-    mn += min(mn, min(min(a, c), min(g, i)));
-    mx += max(mx, max(max(a, c), max(g, i)));
-    const float3 amp = sqrt(saturate(min(mn, 2.0 - mx) / max(mx, 1e-5)));
-    const float n = saturate(nitidez);
-    const float3 wv = amp * (-n / lerp(8.0, 5.0, n));
-    const float3 r = saturate((b * wv + d * wv + f * wv + k * wv + e) / (1.0 + 4.0 * wv));
+    float3 v[5][5];
+    for (int y = 0; y < 5; ++y)
+        for (int x = 0; x < 5; ++x)
+            v[y][x] = Le(q + int2(x - 2, y - 2));
+    // o Gaussian 3x3 nos 5 pontos que o RCAS usa (centro e cruz), misturado por gauss
+    const float g = saturate(gauss);
+    float3 s[5]; // e, b, d, f, k
+    const int2 pts[5] = {int2(2, 2), int2(2, 1), int2(1, 2), int2(3, 2), int2(2, 3)};
+    for (int n = 0; n < 5; ++n)
+    {
+        const int2 o = pts[n];
+        const float3 gb = (v[o.y - 1][o.x - 1] + v[o.y - 1][o.x + 1] + v[o.y + 1][o.x - 1] + v[o.y + 1][o.x + 1] +
+                           2.0 * (v[o.y - 1][o.x] + v[o.y + 1][o.x] + v[o.y][o.x - 1] + v[o.y][o.x + 1]) +
+                           4.0 * v[o.y][o.x]) / 16.0;
+        s[n] = lerp(v[o.y][o.x], gb, g);
+    }
+    const float3 e = s[0], b = s[1], d = s[2], f = s[3], k = s[4];
+    float3 r = e;
+    if (rcas)
+    {
+        //    b
+        //  d e f
+        //    k
+        const float3 mn4 = min(min(b, d), min(f, k)), mx4 = max(max(b, d), max(f, k));
+        const float3 hitMin = min(mn4, e) / (4.0 * max(mx4, 1e-5));
+        const float3 hitMax = (1.0 - max(mx4, e)) / min(4.0 * mn4 - 4.0, -1e-5);
+        const float3 lobe3 = max(-hitMin, hitMax);
+        const float lobe = max(-(0.25 - 1.0 / 16.0), min(max(lobe3.r, max(lobe3.g, lobe3.b)), 0.0)) * exp2(-max(stops, 0.0));
+        r = saturate((lobe * (b + d + f + k) + e) / (4.0 * lobe + 1.0));
+    }
     if (!hdr)
     {
         sai[p] = float4(r, c4.a);
@@ -455,7 +471,7 @@ float3 Le(int2 q)
     }
     // HDR: so a diferenca volta a luz linear e soma no valor original (o scRGB tem canais negativos fora do sRGB, que
     // o dominio [0,1] cortaria; numa area lisa a diferenca e zero e o pixel fica identico)
-    const float3 r1 = min(r, 0.999), e1 = min(e, 0.999);
+    const float3 r1 = min(r, 0.999), e1 = min(v[2][2], 0.999);
     sai[p] = float4(c4.rgb + (r1 / (1.0 - r1) - e1 / (1.0 - e1)) * escala, c4.a);
 }
 )";

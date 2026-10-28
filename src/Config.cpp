@@ -92,7 +92,9 @@ void Config::Carrega(const std::wstring& arquivo)
     I("fonte", fonte);
     B("redePequena", redePequena);
     F("forca", forca);
-    F("nitidezCas", nitidez);
+    F("gauss", gauss);
+    B("rcas", rcas);
+    F("rcasStops", rcasStops);
     I("ponte", ponte);
     F("brancoNits", brancoNits);
     F("preLuz", preLuz);
@@ -148,7 +150,9 @@ std::string Config::Texto() const
     f << "  \"fonte\": " << fonte << ",\n";
     f << "  \"redePequena\": " << b(redePequena) << ",\n";
     f << "  \"forca\": " << forca << ",\n";
-    f << "  \"nitidezCas\": " << nitidez << ",\n";
+    f << "  \"gauss\": " << gauss << ",\n";
+    f << "  \"rcas\": " << (rcas ? "true" : "false") << ",\n";
+    f << "  \"rcasStops\": " << rcasStops << ",\n";
     f << "  \"ponte\": " << ponte << ",\n";
     f << "  \"brancoNits\": " << brancoNits << ",\n";
     f << "  \"preLuz\": " << preLuz << ",\n";

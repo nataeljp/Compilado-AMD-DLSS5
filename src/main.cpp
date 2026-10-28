@@ -299,7 +299,7 @@ struct App
         pExporta.Cria(gpu.dev.Get(), (std::string(hlsl::Comum) + hlsl::Exporta).c_str(), "CSExporta", 3, 1, 12,
                       "edicao para o jogo");
         pGuias.Cria(gpu.dev.Get(), hlsl::Guias, "CSGuias", 2, 2, 4, "guias do historico da rede");
-        pNitidez.Cria(gpu.dev.Get(), hlsl::Nitidez, "CSNitidez", 1, 1, 8, "nitidez CAS");
+        pNitidez.Cria(gpu.dev.Get(), hlsl::Nitidez, "CSNitidez", 1, 1, 12, "gaussian e RCAS");
         pMistura.Cria(gpu.dev.Get(), R"(
 cbuffer C : register(b0) { uint w; uint h; float peso; uint pad; };
 Texture2D<float4> anterior : register(t0);
@@ -1612,7 +1612,7 @@ RWTexture2D<float4> saida : register(u0);
         if (crua)
             temporal.Crua().Para(c, SRV);
         // nitidez CAS depois da composicao: o CSCompoe grava no semNitidez e o CSNitidez dele na saida
-        const bool nitida = cfg.nitidez > 0.f;
+        const bool nitida = cfg.gauss > 0.f || cfg.rcas;
         if (nitida && semNitidez.w == 0)
             semNitidez.Cria(gpu.dev.Get(), saida.w, saida.h, saida.fmt, L"saida antes da nitidez");
         Tex& alvo = nitida ? semNitidez : saida;
@@ -1659,13 +1659,13 @@ RWTexture2D<float4> saida : register(u0);
             struct
             {
                 UINT w, h, hdr;
-                float nitidez;
+                float gauss;
                 UINT modo;
-                float divisao, escala;
-                UINT pad;
-            } kn{saida.w, saida.h, hdr ? 1u : 0u, std::clamp(cfg.nitidez, 0.f, 1.f), (UINT)cfg.modo, cfg.divisao,
-                 escalaUsada, 0};
-            static_assert(sizeof(kn) == 8 * 4, "constantes: o mesmo layout do cbuffer do CSNitidez");
+                float divisao, escala, stops;
+                UINT rcas, pad0, pad1, pad2;
+            } kn{saida.w, saida.h, hdr ? 1u : 0u, std::clamp(cfg.gauss, 0.f, 0.5f), (UINT)cfg.modo, cfg.divisao,
+                 escalaUsada, std::clamp(cfg.rcasStops, 0.f, 1.f), cfg.rcas ? 1u : 0u, 0, 0, 0};
+            static_assert(sizeof(kn) == 12 * 4, "constantes: o mesmo layout do cbuffer do CSNitidez");
             pNitidez.Roda(c, desc, gpu.dev.Get(), {{semNitidez.r.Get(), semNitidez.fmt}}, {{saida.r.Get(), saida.fmt}}, &kn,
                           (saida.w + 7) / 8, (saida.h + 7) / 8);
         }
