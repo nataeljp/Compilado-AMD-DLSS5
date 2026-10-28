@@ -53,6 +53,12 @@ class FonteBuffer
     Tex* EdicaoLivre();
     // depois de submeter (na fila g.fila) a lista que escreveu a edicao do quadro n
     void Publica(uint64_t n, int luz);
+    // a ultima Abre achou o modulo no jogo, mas de um protocolo que este overlay nao fala (0 = nao)
+    uint32_t VersaoRecusada() const { return versaoRecusada; }
+    // conectado a um modulo de versao anterior (aceita: kVersaoMinima)
+    bool ModuloAntigo() const { return cab && cab->versao < dlss5ov::kVersao; }
+    // a luz que o modulo conectado entende: o v9 nao tem a mista e recebe a logaritmica
+    int LuzDoModulo(int luz) const { return ModuloAntigo() && luz == 2 ? 1 : luz; }
     std::string Exe() const { return cab ? std::string(cab->exe) : std::string(); }
     UINT CorW() const { return cab ? cab->corW : 0; }
     UINT CorH() const { return cab ? cab->corH : 0; }
@@ -66,6 +72,7 @@ class FonteBuffer
     DWORD pid = 0;
     HANDLE mapa = nullptr;
     dlss5ov::Cabecalho* cab = nullptr;
+    uint32_t versaoRecusada = 0;
     uint32_t geracao = 0;
     ComPtr<ID3D12Fence> cercaJogo, cercaOverlay;
     UINT64 valorOverlay = 0;

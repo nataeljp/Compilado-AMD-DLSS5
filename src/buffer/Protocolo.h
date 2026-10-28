@@ -35,6 +35,9 @@ constexpr uint32_t kVersao = 10; // 2: movimento RG32F acumulado ate a exportaca
                                  // 6: a luz de cada edicao (linear / logaritmica); 7: geracao de quadros da AMD;
                                  // 8: a geracao em uso, a taxa do monitor e o ritmo do jogo; 9: quadros na tela e 1% low;
                                  // 10: luz mista
+// o modulo mais antigo com que o overlay ainda fala: o v9 tem o mesmo layout e so nao conhece a luz mista (recebe a
+// logaritmica). Um jogo aberto antes da atualizacao fica com o modulo antigo carregado ate reabrir
+constexpr uint32_t kVersaoMinima = 9;
 constexpr uint32_t kSlotsEntrada = 2;
 constexpr uint32_t kSlotsEdicao = 3;
 

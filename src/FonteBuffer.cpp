@@ -8,6 +8,7 @@ bool FonteBuffer::Abre(Gpu& g, DWORD pid_)
     if (cab && pid == pid_)
         return true;
     Fecha();
+    versaoRecusada = 0;
     gpu = &g;
     wchar_t nome[96];
     dlss5ov::NomeMapa(nome, 96, pid_);
@@ -15,16 +16,24 @@ bool FonteBuffer::Abre(Gpu& g, DWORD pid_)
     if (!mapa)
         return false;
     cab = static_cast<dlss5ov::Cabecalho*>(MapViewOfFile(mapa, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(dlss5ov::Cabecalho)));
-    if (!cab || cab->versao != dlss5ov::kVersao || cab->tamanho != sizeof(dlss5ov::Cabecalho))
+    const uint32_t v = cab ? cab->versao : 0;
+    if (!cab || v < dlss5ov::kVersaoMinima || v > dlss5ov::kVersao || cab->tamanho != sizeof(dlss5ov::Cabecalho))
     {
-        Log("buffer", cab ? Fmt("modulo do jogo com outro protocolo (versao %u)", cab->versao) : "MapViewOfFile falhou");
+        Log("buffer", cab ? Fmt("modulo do jogo com outro protocolo (versao %u; este overlay fala %u a %u)", v,
+                                dlss5ov::kVersaoMinima, dlss5ov::kVersao)
+                          : "MapViewOfFile falhou");
         Fecha();
+        versaoRecusada = v;
         return false;
     }
     pid = pid_;
     dlss5ov::NomeEventoPublica(nome, 96, pid_);
     evPublica = OpenEventW(EVENT_MODIFY_STATE, FALSE, nome);
-    Log("buffer", Fmt("conectado ao modulo do jogo %s (pid %lu)", cab->exe, (unsigned long)pid));
+    Log("buffer", Fmt("conectado ao modulo do jogo %s (pid %lu, protocolo %u)", cab->exe, (unsigned long)pid, v));
+    if (ModuloAntigo())
+        Log("buffer", Fmt("modulo do jogo da versao anterior (protocolo %u): a luz mista vai como logaritmica ate o "
+                          "jogo reabrir com a DLL nova",
+                          v));
     return true;
 }
 

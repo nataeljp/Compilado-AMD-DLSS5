@@ -1199,7 +1199,11 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             const ImVec2 q = ImGui::GetCursorScreenPos();
             dl->AddCircleFilled(ImVec2(q.x + 5 * g_e, q.y + g_tTexto * 0.55f), 4.5f * g_e, e.redeOk ? kVerde : IM_COL32(230, 80, 80, 255));
             ImGui::SetCursorScreenPos(ImVec2(q.x + 16 * g_e, q.y));
-            ImGui::Text("%s   %.0f fps", e.exe.empty() ? Utf8(e.alvo).c_str() : e.exe.c_str(), e.fps);
+            const std::string nomeJogo = e.exe.empty() ? Utf8(e.alvo) : e.exe;
+            if (e.vfps > 0)
+                ImGui::Text("%s   %.0f fps / %.0f vfps", nomeJogo.c_str(), e.fps, e.vfps);
+            else
+                ImGui::Text("%s   %.0f fps", nomeJogo.c_str(), e.fps);
             ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kTexto2), "rede %ux%u  ·  overlay %.1f ms  ·  resposta em %.0f%%",
                                e.redeW, e.redeH, e.msMedio, 100.0 * e.fracaoRede);
         }

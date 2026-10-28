@@ -90,6 +90,17 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
     ritmo real das apresentações (intervalo médio, desvio, maior e o **1% low**: o intervalo que só 1% das apresentações
     passa, por um histograma de 0,1 ms no presenter da AMD) e o painel mostra, com a geração ligada, os quadros do jogo,
     os da tela (reais + gerados) e o 1% low dos últimos 5 s. Medido no sample da AMD a 3x: 116 q/s na tela, 1% low ~100.
+    O topo do painel mostra os dois: `N fps / M vfps` — reais (na captura de buffer, os do jogo; na de vídeo, os que a
+    rede processou) e os que vão à tela com a geração (a da AMD na captura de buffer; os quadros gerados do Ritmo na de
+    vídeo). Sem geração, só `N fps`. Na captura de vídeo o Ritmo não sobe os reais: a rede processa 1 de cada N quadros
+    (jogo de teste a 40 q/s: Ritmo 1 33 fps; Ritmo 2 repetido 20 / 20 vfps; mesclado 20 / 40 vfps, misturas sem
+    movimento); quem multiplica o jogo é a geração da AMD na captura de buffer.
+  - **Módulo de versão anterior no jogo**: com o jogo aberto antes de atualizar o overlay, a DLL da pasta dele está em
+    uso e o módulo carregado é o antigo. O overlay fala com o protocolo anterior (`kVersaoMinima`, mesmo layout; recebe a
+    luz logarítmica no lugar da mista) e atualiza a DLL da pasta do jogo (a em uso é renomeada; a nova vale ao reabrir).
+    Antes, a conexão recusada caía na injeção, o jogo negava o acesso, a mensagem pedia "administrador" e a DLL da pasta
+    nunca era trocada — sem conexão, sem captura de buffer, sem a geração da AMD e sem o mouse do painel (que passa pelo
+    módulo).
   - **Preparo e geração em threads diferentes**: o preparo da AMD roda na thread de render (despacho do FSR) e o fluxo
     óptico + a interpolação no Present — no TLOU2, outra thread. Os dois usam o mesmo backend da AMD (fila de trabalhos e
     recursos dinâmicos do contexto da interpolação, que não são seguros entre threads) e agora passam um de cada vez por

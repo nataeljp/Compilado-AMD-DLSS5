@@ -24,6 +24,7 @@ struct EstadoPainel
     bool redeOk = false;
     UINT janelaW = 0, janelaH = 0, redeW = 0, redeH = 0;
     double msMedio = 0, fps = 0;
+    double vfps = 0;             // quadros na tela com a geracao de quadros (0 = sem geracao)
     double fracaoRede = 1; // fracao dos quadros com resposta nova da rede
     int fonte = 0;               // Modo de Rede: 0 captura de video, 1 captura de buffer
     std::string estadoBuffer;    // estado da captura de buffer

@@ -104,8 +104,9 @@ struct App
     Painel painel;
     bool comPainel = true;
     double fps = 0, msMedio = 0;
+    double vfps = 0; // quadros na tela (processados + gerados) por segundo
     std::chrono::steady_clock::time_point marcaFps = std::chrono::steady_clock::now();
-    UINT64 quadrosMarca = 0;
+    UINT64 quadrosMarca = 0, apresentados = 0, apresentadosMarca = 0;
     Config cfg;
     Passe pInteiro, pReduz, pCompoe, pExporta, pGuias, pNitidez;
     // ---- captura de buffer (Modo de Rede): a DLSS5Buffer.dll no jogo aberto entrega cor sem HUD, movimento e
@@ -187,6 +188,7 @@ struct App
         ID3D12CommandList* l[] = {c};
         gpu.fila->ExecuteCommandLists(1, l);
         ov.Apresenta();
+        ++apresentados;
         gpu.Espera();
     }
     std::wstring dumpPasta;
@@ -954,24 +956,38 @@ RWTexture2D<float4> saida : register(u0);
         painel.DefineMouseJogo(nullptr); // Abre fecha a memoria compartilhada de antes
         if (fb.Abre(gpu, pid))
             r.ok = true; // o modulo ja esta no jogo (religou, ou e o jogo de teste)
+        else if (fb.VersaoRecusada())
+            // o modulo ja esta no jogo, de um protocolo que este overlay nao fala: injetar outro por cima nao resolve
+            // (e o jogo nega o acesso; a mensagem era "rode como administrador")
+            r.motivo = Fmt("o modulo dentro do jogo e de outra versao (protocolo %u; este overlay fala %u a %u)",
+                           fb.VersaoRecusada(), dlss5ov::kVersaoMinima, dlss5ov::kVersao);
         else
             r = InjetaBuffer(pid, Dll());
+        // o overlay foi atualizado: a copia na pasta do jogo tambem, conectando ou nao (com o jogo aberto a DLL em uso
+        // e renomeada e a nova vale ao reabrir; antes a falha da conexao saia daqui sem atualizar, e o jogo seguia
+        // abrindo com a antiga)
+        bool atualizou = false;
+        if (instalacao == Instalacao::Desatualizada)
+        {
+            const std::string m = InstalaNoJogo(exeJogo, Dll());
+            instalacao = EstadoInstalacao(exeJogo, Dll());
+            atualizou = m.empty();
+            Log("geracao", m.empty() ? "DLL da pasta do jogo atualizada (" + Utf8(NomeProxy(exeJogo)) +
+                                           "; vale na proxima abertura do jogo)"
+                                     : "nao atualizou a DLL da pasta do jogo: " + m);
+        }
         if (!r.ok)
         {
             estadoBuffer = "nao conectou: " + r.motivo;
+            if (fb.VersaoRecusada())
+                estadoBuffer += atualizou ? " | DLL do jogo atualizada: feche e abra o jogo" : " | feche e abra o jogo";
             Log("buffer", estadoBuffer);
             return;
         }
         if (!r.motivo.empty())
             Log("buffer", r.motivo);
-        if (instalacao == Instalacao::Desatualizada) // o overlay foi atualizado: a copia na pasta do jogo tambem
-        {
-            const std::string m = InstalaNoJogo(exeJogo, Dll());
-            instalacao = EstadoInstalacao(exeJogo, Dll());
-            Log("geracao", m.empty() ? "DLL da pasta do jogo atualizada (" + Utf8(NomeProxy(exeJogo)) +
-                                           "; vale na proxima abertura do jogo)"
-                                     : "nao atualizou a DLL da pasta do jogo: " + m);
-        }
+        if (fb.ModuloAntigo())
+            r.motivo = "modulo do jogo da versao anterior: reabra o jogo para a luz mista";
         IniciaSessao();
         buffer = true;
         alvoBuffer = h;
@@ -1670,7 +1686,7 @@ RWTexture2D<float4> saida : register(u0);
                 UINT luz, pad1;
             } ke{saida.w, saida.h, qb.prof->w, qb.prof->h, qb.perto, qb.longe, invertidaUsada ? 1u : 0u,
                  qb.profInfinita ? 1u : 0u, dlss5ov::TanMeioFov(qb.fovY), float(saida.w) / float(saida.h),
-                 (UINT)std::clamp(cfg.temporal.luz, 0, 2), 0};
+                 (UINT)std::clamp(fb.LuzDoModulo(cfg.temporal.luz), 0, 2), 0};
             pExporta.Roda(c, desc, gpu.dev.Get(),
                           {{qb.cor->r.Get(), qb.cor->fmt}, {saida.r.Get(), saida.fmt}, {qb.prof->r.Get(), qb.prof->fmt}},
                           {{edJogo->r.Get(), edJogo->fmt}}, &ke, (saida.w + 7) / 8, (saida.h + 7) / 8);
@@ -1745,11 +1761,12 @@ RWTexture2D<float4> saida : register(u0);
         ID3D12CommandList* l1[] = {c};
         gpu.fila->ExecuteCommandLists(1, l1);
         if (edJogo)
-            fb.Publica(qb.n, cfg.temporal.luz);
+            fb.Publica(qb.n, fb.LuzDoModulo(cfg.temporal.luz));
         const UINT64 fim = gpu.Sinaliza();
         if (apresenta)
         {
             ov.Apresenta();
+            ++apresentados;
             ov.Mostra(true);
         }
         gpu.EsperaValor(fim);
@@ -1800,19 +1817,22 @@ RWTexture2D<float4> saida : register(u0);
             if (dt >= 0.5)
             {
                 fps = double(quadros - quadrosMarca) / dt;
+                vfps = double(apresentados - apresentadosMarca) / dt;
                 marcaFps = agora;
                 quadrosMarca = quadros;
+                apresentadosMarca = apresentados;
             }
             msMedio = msMedio * 0.95 + ms * 0.05;
         }
         if (quadros % 60 == 0)
         {
             Log("tempo", Fmt("quadros %llu: media %.2f ms, pior %.2f ms (captura -> overlay) | resposta da rede em %.0f%% "
-                             "dos quadros, %.1f quadros / %.1f ms depois do envio | confianca %.3f, luz %.4f, vel %.1f px",
+                             "dos quadros, %.1f quadros / %.1f ms depois do envio | confianca %.3f, luz %.4f, vel %.1f px | "
+                             "%.1f fps / %.1f na tela",
                              (unsigned long long)quadros, somaMs / 60.0, maxMs,
                              100.0 * double(quadrosComRede - comRedeMarca) / 60.0,
                              chegadas ? somaAtrasoQ / chegadas : 0.0, chegadas ? somaAtrasoMs / chegadas : 0.0,
-                             1.0 - estat.semConfianca, estat.mudancaLuz, estat.velocidade));
+                             1.0 - estat.semConfianca, estat.mudancaLuz, estat.velocidade, fps, vfps));
             fracaoRede = double(quadrosComRede - comRedeMarca) / 60.0;
             comRedeMarca = quadrosComRede;
             somaMs = maxMs = 0;
@@ -1978,7 +1998,11 @@ RWTexture2D<float4> saida : register(u0);
             e.redeW = fed.w;
             e.redeH = fed.h;
             e.msMedio = msMedio;
-            e.fps = fps;
+            // reais / com a geracao: na captura de buffer os do jogo (o modulo conta), com a geracao da AMD em uso; na de
+            // video os processados pela rede e os que vao a tela com os quadros gerados (Ritmo 2-4)
+            const bool gerBuffer = buffer && fb.GeracaoEmUso() >= 2 && fb.FpsTela() > 0;
+            e.fps = buffer && fb.FpsJogo() > 0 ? fb.FpsJogo() : fps;
+            e.vfps = gerBuffer ? fb.FpsTela() : !buffer && cfg.ritmo > 1 ? vfps : 0.0;
             e.fracaoRede = fracaoRede;
             e.alturaSessao = sessao.alturaRede;
             e.pequenaSessao = sessao.redePequena;
