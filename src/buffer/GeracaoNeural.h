@@ -83,4 +83,29 @@ class GeracaoNeural
     char erro[160] = {};
 };
 
+// o borrao de movimento dos gerados acima do limite medido (como o monitor com tearing: ate onde o movimento nao distorce,
+// o gerado passa intacto; acima, os blocos 8x8 que a geracao quebra viram borrao). Cena de teste, erro p90 por bloco 8x8
+// contra a verdade, por movimento entre os reais (1080p): neural limpa ate 16 px (2,9/255) e quebra de 16 a 24 px
+// (5,0/255) em diante; a analitica ja quebra de 12 a 16 px (5,7/255). Acima do limite, a janela 8x8 (4 px de cada lado)
+// entra aos poucos, inteira no dobro do limite. O HUD (onde o final difere da imagem sem HUD) fica intacto
+class BorraoMovimento
+{
+  public:
+    bool Cria(ID3D12Device* dev);
+    bool Pronto() const { return pso != nullptr; }
+    // saida: o gerado (UNORDERED_ACCESS), borrado no lugar. mov: o movimento do real (NON_PIXEL_SHADER_RESOURCE, na
+    // resolucao de render; mov x movEsc = pixels de render). final_/semHud: COMPUTE_READ (semHud pode ser nullptr).
+    // limite: pixels de tela entre os reais
+    void Borra(ID3D12GraphicsCommandList* c, ID3D12Resource* saida, ID3D12Resource* mov, float movEscX, float movEscY,
+               UINT renderW, UINT renderH, ID3D12Resource* final_, ID3D12Resource* semHud, float limite);
+
+  private:
+    Microsoft::WRL::ComPtr<ID3D12Device> dev;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> rs;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap;
+    Microsoft::WRL::ComPtr<ID3D12Resource> fonte; // a copia do gerado (a janela le os vizinhos sem o que ja foi borrado)
+    UINT inc = 0, proximo = 0;
+};
+
 } // namespace dlss5ov

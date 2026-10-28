@@ -207,6 +207,148 @@ bool GeracaoNeural::Cria(const ApiAmd& api_, ID3D12Device* dev, UINT w, UINT h, 
 }
 
 // o HUD do real nos gerados do 4x: onde o final difere da imagem sem HUD, o final; o resto fica como gerado
+static const char kBorra[] = R"(
+cbuffer K : register(b0) { float2 esc; float limite; uint temHud; uint2 render; uint2 tela; };
+Texture2D<float4> fonte : register(t0);
+Texture2D<float2> mov : register(t1);
+Texture2D<float4> final_ : register(t2);
+Texture2D<float4> semHud : register(t3);
+RWTexture2D<float4> saida : register(u0);
+[numthreads(8, 8, 1)] void CSBorra(uint2 p : SV_DispatchThreadID)
+{
+    if (p.x >= tela.x || p.y >= tela.y) return;
+    if (temHud && any(final_[p].rgb != semHud[p].rgb)) return;
+    const int2 ultimo = int2(tela) - 1;
+    // o maior movimento na janela 8x8 (a borda do que anda tambem quebra)
+    float m = 0;
+    for (int j = -4; j <= 4; j += 4)
+        for (int i = -4; i <= 4; i += 4)
+        {
+            const int2 q = clamp(int2(p) + int2(i, j), 0, ultimo);
+            const uint2 r = min(uint2((float2(q) + 0.5) * float2(render) / float2(tela)), render - 1);
+            m = max(m, length(mov[r] * esc));
+        }
+    const float w = saturate((m - limite) / limite);
+    if (w <= 0) return;
+    float4 s = 0;
+    float n = 0;
+    for (int y = -4; y <= 4; ++y)
+        for (int x = -4; x <= 4; ++x)
+        {
+            const float k = (abs(x) == 4 ? 0.5 : 1.0) * (abs(y) == 4 ? 0.5 : 1.0);
+            s += k * fonte[clamp(int2(p) + int2(x, y), 0, ultimo)];
+            n += k;
+        }
+    saida[p] = lerp(fonte[p], s / n, w);
+}
+)";
+
+bool BorraoMovimento::Cria(ID3D12Device* d)
+{
+    dev = d;
+    Microsoft::WRL::ComPtr<ID3DBlob> cs, err, ser;
+    if (FAILED(D3DCompile(kBorra, sizeof kBorra - 1, "borrao", nullptr, nullptr, "CSBorra", "cs_5_1", 0, 0, &cs, &err)))
+        return false;
+    D3D12_DESCRIPTOR_RANGE rsr{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0, 0, 0}, ru{D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, 0};
+    D3D12_ROOT_PARAMETER rp[3]{};
+    rp[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    rp[0].Constants = {0, 0, 8};
+    rp[1].ParameterType = rp[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rp[1].DescriptorTable = {1, &rsr};
+    rp[2].DescriptorTable = {1, &ru};
+    D3D12_ROOT_SIGNATURE_DESC rsd{3, rp, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE};
+    if (FAILED(D3D12SerializeRootSignature(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, &ser, &err)) ||
+        FAILED(dev->CreateRootSignature(0, ser->GetBufferPointer(), ser->GetBufferSize(), IID_PPV_ARGS(&rs))))
+        return false;
+    D3D12_COMPUTE_PIPELINE_STATE_DESC pd{rs.Get(), {cs->GetBufferPointer(), cs->GetBufferSize()}};
+    if (FAILED(dev->CreateComputePipelineState(&pd, IID_PPV_ARGS(&pso))))
+        return false;
+    // 5 descritores por gerado, um anel para os quadros em voo
+    D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 5 * 32, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE};
+    if (FAILED(dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&heap))))
+        return pso = nullptr, false;
+    inc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    return true;
+}
+
+void BorraoMovimento::Borra(ID3D12GraphicsCommandList* c, ID3D12Resource* saida, ID3D12Resource* mov, float movEscX,
+                            float movEscY, UINT renderW, UINT renderH, ID3D12Resource* final_, ID3D12Resource* semHud,
+                            float limite)
+{
+    if (!pso || !saida || !mov || !final_ || !renderW || !renderH || limite <= 0.f)
+        return;
+    const D3D12_RESOURCE_DESC sd = saida->GetDesc();
+    D3D12_RESOURCE_DESC fd = fonte ? fonte->GetDesc() : D3D12_RESOURCE_DESC{};
+    if (!fonte || fd.Width != sd.Width || fd.Height != sd.Height || fd.Format != sd.Format)
+    {
+        D3D12_RESOURCE_DESC d = sd;
+        d.Flags = D3D12_RESOURCE_FLAG_NONE;
+        d.Alignment = 0;
+        D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+        fonte = nullptr;
+        if (FAILED(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                                               nullptr, IID_PPV_ARGS(&fonte))))
+            return;
+    }
+    D3D12_RESOURCE_BARRIER b[2] = {};
+    b[0].Type = b[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b[0].Transition = {saida, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                       D3D12_RESOURCE_STATE_COPY_SOURCE};
+    b[1].Transition = {fonte.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                       D3D12_RESOURCE_STATE_COPY_DEST};
+    c->ResourceBarrier(2, b);
+    c->CopyResource(fonte.Get(), saida);
+    for (auto& x : b)
+    {
+        const D3D12_RESOURCE_STATES t = x.Transition.StateBefore;
+        x.Transition.StateBefore = x.Transition.StateAfter, x.Transition.StateAfter = t;
+    }
+    c->ResourceBarrier(2, b);
+
+    const UINT base = (proximo++ % 32) * 5;
+    D3D12_CPU_DESCRIPTOR_HANDLE h = heap->GetCPUDescriptorHandleForHeapStart();
+    h.ptr += SIZE_T(base) * inc;
+    auto srv = [&](ID3D12Resource* r) {
+        const D3D12_RESOURCE_DESC d = r->GetDesc();
+        D3D12_SHADER_RESOURCE_VIEW_DESC v{};
+        v.Format = d.Format == DXGI_FORMAT_R16G16_TYPELESS   ? DXGI_FORMAT_R16G16_FLOAT
+                   : d.Format == DXGI_FORMAT_R32G32_TYPELESS ? DXGI_FORMAT_R32G32_FLOAT
+                                                             : d.Format;
+        v.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        v.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        v.Texture2D.MipLevels = 1;
+        dev->CreateShaderResourceView(r, &v, h);
+        h.ptr += inc;
+    };
+    srv(fonte.Get()), srv(mov), srv(final_), srv(semHud ? semHud : final_);
+    D3D12_UNORDERED_ACCESS_VIEW_DESC u{};
+    u.Format = sd.Format;
+    u.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+    dev->CreateUnorderedAccessView(saida, nullptr, &u, h);
+    // o movimento em pixels de tela: mov x movEsc = pixels de render
+    const UINT telaW = UINT(sd.Width), telaH = sd.Height;
+    struct
+    {
+        float escX, escY, limite;
+        uint32_t temHud, rw, rh, tw, th;
+    } k{movEscX * telaW / renderW, movEscY * telaH / renderH, limite, semHud ? 1u : 0u, renderW, renderH, telaW, telaH};
+    ID3D12DescriptorHeap* hs[] = {heap.Get()};
+    c->SetDescriptorHeaps(1, hs);
+    c->SetComputeRootSignature(rs.Get());
+    c->SetPipelineState(pso.Get());
+    c->SetComputeRoot32BitConstants(0, 8, &k, 0);
+    D3D12_GPU_DESCRIPTOR_HANDLE g = heap->GetGPUDescriptorHandleForHeapStart();
+    g.ptr += UINT64(base) * inc;
+    c->SetComputeRootDescriptorTable(1, g);
+    g.ptr += UINT64(4) * inc;
+    c->SetComputeRootDescriptorTable(2, g);
+    c->Dispatch((telaW + 7) / 8, (telaH + 7) / 8, 1);
+    D3D12_RESOURCE_BARRIER ub{};
+    ub.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    ub.UAV.pResource = saida;
+    c->ResourceBarrier(1, &ub);
+}
+
 static const char kUi[] = R"(
 Texture2D<float4> final_ : register(t0);
 Texture2D<float4> semHud : register(t1);
