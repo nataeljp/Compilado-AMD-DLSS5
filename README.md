@@ -268,7 +268,7 @@ Os parâmetros do DLSS 5 seguem os nomes que a NVIDIA expõe no NGX (os mesmos d
 
 | Chave | Faixa | NGX / o que faz |
 |---|---|---|
-| `modelo` | 0/1/2 | `DLSSNR.Style`: Model A (padrão), B (natural), C (cinemático) — controle de estilo da rede + gradação final da NVIDIA |
+| `modelo` | 0/1/2 | `DLSSNR.Style`: Model A (padrão), B (natural), C (cinemático) — controle de estilo da rede + gradação final da NVIDIA. Contra a foto Zorah da NVIDIA (DLSS 5 ligado) o mais próximo é o C: realces do rosto (p90 de L\*) 0,0 com a rede 2160 e +0,7 com a 1080, contra −5,1 do A (o A escurece a pele e mantém o grão dela); erro regional 8,7 C, 11,7 A |
 | `intensidade` | 0..2 | `DLSSNR.Intensity`: quanto da resposta entra (acima de 1 reforça a luz; na composição de referência) |
 | `tomLocal` | 0..1 | `DLSSNR.LocalToneStrength`: luz e cor em grande escala; também escala a gradação do modelo |
 | `estruturaLocal` | −1..2 | `DLSSNR.LocalStructureStrength` |
@@ -277,6 +277,7 @@ Os parâmetros do DLSS 5 seguem os nomes que a NVIDIA expõe no NGX (os mesmos d
 | `gradacao` | true/false | aplica a gradação do Model B/C (exposição, contraste, saturação do kernel da NVIDIA) |
 | `composicao` | 0/1 | 0 crua (resposta − proxy), 1 referência NVIDIA/RenoDX (razão de luz em dois ramos, piso 1/512, proteção, cor) |
 | `corComposicao`, `protecao` | 0..1, 1..16 | mistura de cor e proteção bilateral de luz da composição (padrão 1 e 16 = desligada) |
+| `luz` | 0/1/2 | como a edição chega à tela e ao jogo: 0 linear (diferença somada), 1 logarítmica (razão multiplicada), 2 mista (padrão). No mesmo pixel as três dão o mesmo resultado. Na ampliação da rede para a tela a mista é a logarítmica (o pixel da tela é a mesma superfície do pixel da rede; Zorah, rede 1080 numa tela 4K contra a rede 2160: 32,8 dB log, 31,5 linear, 30,2 somando). Para o quadro seguinte do jogo (captura de buffer), clarear soma a luz e escurecer multiplica: levada pelo movimento, a razão de um fio de cabelo escuro que a rede clareou 10× multiplicava o céu claro ao lado (o grão branco na borda do cabelo); somada, a mesma luz vira o halo dela. Medido levando a edição ao quadro seguinte em 4 reproduções 2160p do TLOU2: erro 2,9–3,6× menor que a logarítmica, pintas claras na borda do cabelo de 0,09–2,34% para 0–0,25%; na cena 3D do jogo de teste a luz média fica igual (0,590 log, 0,587 mista) |
 | `matizVermelhoSat` … `matizMagentaSat`, `matizVermelhoLuz` … `matizMagentaLuz` | −1..1 | cor por matiz depois da rede, em seis faixas (Vermelho, Amarelo, Verde, Ciano, Azul, Magenta): saturação (−1 = cinza, +1 = o dobro) e brilho (−1 = apaga, +1 = o dobro; pesa pela saturação do pixel, cinza e branco não mudam). Faixas vizinhas se misturam em triângulo. Padrão 0 = desligado |
 | `ponte` | −1..4 | quadro → proxy da rede: −1 automática (SDR direta, HDR SoftKnee), 0 direta, 1 SoftKnee, 2 ACES (RRT+ODT, RenoDX), 3 curva do jogo, 4 luz de cena direta (só na captura de buffer: só o ombro do codificador da NVIDIA comprime os realces; na captura de vídeo vira a automática) |
 | `brancoNits` | 0..400 | branco de papel do HDR (0 = o branco SDR do Windows) |

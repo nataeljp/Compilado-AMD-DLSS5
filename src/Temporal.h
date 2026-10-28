@@ -15,11 +15,17 @@ struct ParamsTemporal
     float guarda = 16.f;      // protecao bilateral: a luz muda no maximo esse fator (16 = desligada; medido contra a
                               // saida real da NVIDIA, 2,0 custava 1,5-2 dB)
     float exposicao = 1.f;    // ganho do quadro antes da rede (ponto de operacao); desfeito na composicao
-    // como a edicao chega ao quadro: false = luz linear (a diferenca somada), true = luz logaritmica (log2 da razao de
-    // luz, multiplicada; piso 1/512 como a composicao de referencia). Iguais na mesma resolucao com forca 1; diferem
-    // quando a edicao e ampliada (rede menor que a tela), com outra forca e quando o jogo a leva ao quadro seguinte
-    bool luzLog = false;
+    // como a edicao chega ao quadro (Shaders.h CodificaLuz): 0 linear (a diferenca somada), 1 logaritmica (log2 da
+    // razao, multiplicada; piso 1/512), 2 mista (clarear somado, escurecer pela razao). Iguais na mesma resolucao com
+    // forca 1; diferem quando a edicao e ampliada (rede menor que a tela), com outra forca e quando o jogo a leva ao
+    // quadro seguinte
+    int luz = 2;
 };
+
+// a luz da edicao na tela (a ampliacao da rede ao tamanho da tela): o pixel da tela e a mesma superficie do pixel da
+// rede, e a razao conserva a textura dele -- a mista usa a razao aqui e so leva a luz somada ao quadro seguinte do jogo
+// (Zorah, rede 1080 numa tela 4K contra a rede 2160: 32,8 dB log, 31,5 linear, 30,2 mista)
+inline UINT LuzNaTela(int luz) { return luz == 0 ? 0u : 1u; }
 
 class Temporal
 {

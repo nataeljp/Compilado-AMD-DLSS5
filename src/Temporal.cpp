@@ -9,13 +9,12 @@ namespace {
 // jogos) e de volta a luz linear, com teto: somada a um realce mais claro, a luma comprimida passaria de 1 e
 // c / (1 - luma) explodiria. O brilho editado chega no maximo a 4x o original + 4 (a rede reilumina, nao cria sol; em
 // SDR o teto fica acima de 4x o branco e nao toca no realce). temCrua: grava tambem a edicao comprimida (diagnostico).
-// luzLog: a edicao sai como log2 da razao de luz (resultado / original) no lugar da diferenca.
+// luz: como a edicao sai (Shaders.h CodificaLuz): a diferenca, log2 da razao ou mista.
 const char* kEdicao = R"(
 float3 Comprime(float3 x) { return x / (1.0 + max(Lum(x), 0.0)); }
 float3 Expande(float3 c) { return c / max(1.0 - Lum(c), 1e-3); }
 cbuffer C : register(b0) { uint w; uint h; uint comp; float sInt; float sCor; float sGuarda; float exposicao; uint temCrua;
-                           uint luzLog; uint pad0; uint pad1; uint pad2; };
-static const float PISO_RAZAO = 1.0 / 512.0;
+                           uint luz; uint pad0; uint pad1; uint pad2; };
 Texture2D<float4> fed : register(t0);  // proxy que a rede viu
 Texture2D<float4> resp : register(t1); // resposta da rede (no espaco do proxy)
 Texture2D<float4> orig : register(t2); // o quadro no tamanho da rede (linear, branco de papel = 1)
@@ -36,7 +35,7 @@ RWTexture2D<float4> edLin : register(u1);
     float lc = Lum(c);
     if (lc > lim) c *= lim / lc;
     const float3 C = Expande(c);
-    edLin[p] = float4(luzLog ? log2(max(C, PISO_RAZAO) / max(O, PISO_RAZAO)) : C - O, 1.0);
+    edLin[p] = float4(CodificaLuz(O, C, luz), 1.0);
 }
 )";
 
@@ -44,7 +43,7 @@ struct KEdicao
 {
     UINT w, h, comp;
     float sInt, sCor, sGuarda, exposicao;
-    UINT temCrua, luzLog, pad0, pad1, pad2;
+    UINT temCrua, luz, pad0, pad1, pad2;
 };
 const D3D12_RESOURCE_STATES SRV =
     D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
@@ -88,7 +87,7 @@ Tex* Temporal::Edicao(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Dev
               std::clamp(p.guarda, 1.f, 16.f),
               std::max(p.exposicao, 1e-3f),
               comCrua ? 1u : 0u,
-              p.luzLog ? 1u : 0u,
+              LuzNaTela(p.luz),
               0,
               0,
               0};

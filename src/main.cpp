@@ -1614,12 +1614,12 @@ RWTexture2D<float4> saida : register(u0);
             float preLuz, preSombra, preLimiar, preLimiarSombra, preCor;
             UINT pad2, pad3, pad4;
             float satMatiz[6], luzMatiz[6];
-            UINT usaMatiz, temCrua, luzLog, padA1;
+            UINT usaMatiz, temCrua, luz, padA1;
         } kc{inteiro.w,      inteiro.h,      fed.w, fed.h, edicao ? std::clamp(cfg.forca, 0.f, 2.f) : 0.f, (UINT)cfg.modo, cfg.divisao,
              edicao ? 1u : 0u, hdr ? 1u : 0u, escalaUsada, kExp, kCon, kSat, grada ? 1u : 0u,
              pontePassada == 3 ? 1u : 0u, (hdr && pontePassada == 1) ? 1u : 0u, cfg.preLuz, cfg.preSombra, cfg.preLimiar, cfg.preLimiarSombra, cfg.preCor,
              0, 0, 0, {}, {}, cfg.matiz.Ativa() ? 1u : 0u, (cfg.modo == 5 && crua) ? 1u : 0u,
-             cfg.temporal.luzLog ? 1u : 0u, 0};
+             LuzNaTela(cfg.temporal.luz), 0};
         static_assert(sizeof(kc) == 40 * 4, "constantes: o mesmo layout do cbuffer do CSCompoe");
         for (int i = 0; i < 6; ++i)
         {
@@ -1667,10 +1667,10 @@ RWTexture2D<float4> saida : register(u0);
                 float perto, longe;
                 UINT invertida, infinita;
                 float tanY, aspecto;
-                UINT luzLog, pad1;
+                UINT luz, pad1;
             } ke{saida.w, saida.h, qb.prof->w, qb.prof->h, qb.perto, qb.longe, invertidaUsada ? 1u : 0u,
                  qb.profInfinita ? 1u : 0u, dlss5ov::TanMeioFov(qb.fovY), float(saida.w) / float(saida.h),
-                 cfg.temporal.luzLog ? 1u : 0u, 0};
+                 (UINT)std::clamp(cfg.temporal.luz, 0, 2), 0};
             pExporta.Roda(c, desc, gpu.dev.Get(),
                           {{qb.cor->r.Get(), qb.cor->fmt}, {saida.r.Get(), saida.fmt}, {qb.prof->r.Get(), qb.prof->fmt}},
                           {{edJogo->r.Get(), edJogo->fmt}}, &ke, (saida.w + 7) / 8, (saida.h + 7) / 8);
@@ -1745,7 +1745,7 @@ RWTexture2D<float4> saida : register(u0);
         ID3D12CommandList* l1[] = {c};
         gpu.fila->ExecuteCommandLists(1, l1);
         if (edJogo)
-            fb.Publica(qb.n, cfg.temporal.luzLog);
+            fb.Publica(qb.n, cfg.temporal.luz);
         const UINT64 fim = gpu.Sinaliza();
         if (apresenta)
         {

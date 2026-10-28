@@ -29,12 +29,12 @@ cbuffer K : register(b0)
     uint ativos, zera;  // acumuladores: os que seguem e os que comecam neste quadro (ancora = este quadro)
     uint jExporta;      // acumulador cujo deslocamento vai como movimento exportado (3 = so o deste quadro)
     float tanY, aspecto; // tan(fovY / 2) e largura / altura: distancia radial (0 = sem FOV: Z da camera)
-    uint luzLog;        // a edicao lida (edicao) e logaritmica: log2 da razao de luz, nao a diferenca comprimida
+    uint luz;           // a luz da edicao lida (edicao): 0 a diferenca comprimida, 1 log2 da razao, 2 mista
     uint movVW, movVH, profVW, profVH; // a regiao valida do movimento e da profundidade do jogo neste quadro
     uint mostra;        // quadros repetidos: a saida e o quadro guardado da ancora + a edicao dela, sem movimento
     uint guarda;        // quadros repetidos: guarda a cor deste quadro (exportado) para mostrar quando a edicao chegar
     float peso;         // mesclado: quanto do processado seguinte (guardadaLe2 + edicao2) entra; 0 = so a ancora
-    uint luzLog2;       // a luz da edicao2
+    uint luz2;          // a luz da edicao2
 };
 Texture2D<float2> movJogo : register(t0);
 Texture2D<float> profJogo : register(t1);
@@ -206,12 +206,15 @@ float NaoOculto(float2 qAnc, float z, uint2 pz)
 
 // a cor (x exposicao) com a edicao do overlay. Luz linear: somada no espaco comprimido, a edicao encolhe ate nenhum
 // canal ficar negativo (cortar canal por canal mudava o matiz). Logaritmica: a razao de luz multiplicada (piso 1/512;
-// sem edicao o pixel fica igual). Nas duas o brilho para em 4x o original + 4, como no overlay.
-float3 Editado(float3 ca, float3 ev, uint log)
+// sem edicao o pixel fica igual). Mista: onde clareia a luz somada, onde escurece a razao (o sinal diz qual; a razao de
+// um fio escuro levada ao ceu claro do lado era o grao branco na borda do cabelo). Em todas o brilho para em 4x o
+// original + 4, como no overlay.
+float3 Editado(float3 ca, float3 ev, uint luz)
 {
-    if (log)
+    if (luz != 0)
     {
-        float3 y = max(ca + max(ca, 1.0 / 512.0) * (exp2(ev) - 1.0), 0.0);
+        const float3 razao = ca + max(ca, 1.0 / 512.0) * (exp2(ev) - 1.0);
+        float3 y = max(luz == 2 && ev >= 0.0 ? ca + ev : razao, 0.0);
         const float lo = max(Lum(ca), 0.0) * 4.0 + 4.0, ly = Lum(y);
         if (ly > lo) y *= lo / ly;
         return y;
@@ -242,9 +245,9 @@ float3 Editado(float3 ca, float3 ev, uint log)
     {
         // quadro repetido: o quadro guardado da ancora com a edicao feita nele, pixel a pixel (nada trazido pelo movimento);
         // mesclado: misturado com o processado seguinte (tambem com a edicao dele) na proporcao `peso`
-        float3 og = Editado(guardadaLe.Load(int3(p, 0)).rgb, edicao.Load(int3(p, 0)).rgb, luzLog);
+        float3 og = Editado(guardadaLe.Load(int3(p, 0)).rgb, edicao.Load(int3(p, 0)).rgb, luz);
         if (peso > 0.0)
-            og = lerp(og, Editado(guardadaLe2.Load(int3(p, 0)).rgb, edicao2.Load(int3(p, 0)).rgb, luzLog2), peso);
+            og = lerp(og, Editado(guardadaLe2.Load(int3(p, 0)).rgb, edicao2.Load(int3(p, 0)).rgb, luz2), peso);
         og /= e;
         corJogo[p] = float4(srgb ? Srgb(og) : og, c4.a);
         return;
@@ -322,7 +325,7 @@ float3 Editado(float3 ca, float3 ev, uint log)
         }
     }
     ed = soma > 1e-4 ? ed / soma : 0;
-    const float3 o = Editado(ce, ed, luzLog) / e;
+    const float3 o = Editado(ce, ed, luz) / e;
     corJogo[p] = float4(srgb ? Srgb(o) : o, c4.a);
 }
 )";
@@ -1045,11 +1048,11 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
         float perto, longe;
         UINT ativos, zera, jExporta;
         float tanY, aspecto;
-        UINT luzLog;
+        UINT luz;
         UINT movVW, movVH, profVW, profVH;
         UINT mostra, guarda;
         float peso;
-        UINT luzLog2;
+        UINT luz2;
     } k_{UINT(corW), corH, movW, movH, profW, profH, exporta ? 1u : 0u, k >= 0 ? 1u : 0u,
          e.movEscalaX * float(corW) / float(mw), e.movEscalaY * float(corH) / float(mh), e.preExposicao,
          e.escalaExposicao, e.exposicao ? 1u : 0u, Srgb(fmtCor) ? 1u : 0u,

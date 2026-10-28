@@ -1,4 +1,5 @@
 #include "FonteBuffer.h"
+#include <algorithm>
 
 namespace ov {
 
@@ -194,7 +195,7 @@ Tex* FonteBuffer::EdicaoLivre()
     return &edicao[k];
 }
 
-void FonteBuffer::Publica(uint64_t n, bool luzLog)
+void FonteBuffer::Publica(uint64_t n, int luz)
 {
     if (slotEscrita < 0 || !Conectada())
         return;
@@ -202,7 +203,7 @@ void FonteBuffer::Publica(uint64_t n, bool luzLog)
     if (FAILED(gpu->fila->Signal(cercaOverlay.Get(), v)))
         return;
     cab->edicao[slotEscrita].cerca = v;
-    cab->edicao[slotEscrita].luz = luzLog ? 1u : 0u;
+    cab->edicao[slotEscrita].luz = uint32_t(std::clamp(luz, 0, 2));
     MemoryBarrier();
     cab->edicao[slotEscrita].quadro = n;
     ultimoPublicado = slotEscrita;

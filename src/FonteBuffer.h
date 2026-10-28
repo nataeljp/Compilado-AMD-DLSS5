@@ -52,7 +52,7 @@ class FonteBuffer
     // slot de edicao livre para escrever agora (nullptr = nenhum: pula a publicacao deste quadro)
     Tex* EdicaoLivre();
     // depois de submeter (na fila g.fila) a lista que escreveu a edicao do quadro n
-    void Publica(uint64_t n, bool luzLog);
+    void Publica(uint64_t n, int luz);
     std::string Exe() const { return cab ? std::string(cab->exe) : std::string(); }
     UINT CorW() const { return cab ? cab->corW : 0; }
     UINT CorH() const { return cab ? cab->corH : 0; }

@@ -1395,11 +1395,10 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         {
             Secao("COMPOSIÇÃO", false);
             {
-                const char* luzes[] = {"Luz linear", "Luz logarítmica"};
-                int il = cfg.temporal.luzLog ? 1 : 0;
-                if (Segmentos("luz", luzes, 2, &il, 30 * g_e))
-                    cfg.temporal.luzLog = il == 1;
-                Dica("Linear soma a luz; logaritmica multiplica a razao. Iguais em resolucao igual e forca 1.");
+                const char* luzes[] = {"Linear", "Logarítmica", "Mista"};
+                Segmentos("luz", luzes, 3, &cfg.temporal.luz, 30 * g_e);
+                Dica("Como a luz da rede chega a tela e ao jogo. Mista (padrao): na tela como a logaritmica; no jogo "
+                     "clarear soma (a logaritmica vira grao na borda do cabelo).");
             }
             const char* comps[] = {"Crua (resposta - proxy)", "Referencia NVIDIA/RenoDX"};
             ImGui::SetNextItemWidth(lc);
