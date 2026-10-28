@@ -958,12 +958,8 @@ FfxErrorCode Geracao::Impl::Gera(const FfxFrameGenerationDispatchDescription* d,
     else if (!p->UiAtiva()) // com a UI do jogo (textura ou callback) o quadro ja chega sem ela: nada a procurar
         p->Falta();
     p->semHudApresentado = semHud ? semHud : pr.semHud ? p->semHud[pr.id % kJogos].Get() : nullptr;
-    FfxResource corSemHud{};
-    if (semHud)
-        corSemHud = ffxGetResourceDX12(semHud, ffxGetResourceDescriptionDX12(semHud), L"imagem sem HUD",
-                                       FFX_RESOURCE_STATE_COMPUTE_READ);
-    // a neural (2x: o meio; 4x: o intercalado de dois contextos) com a camera deste quadro; sem camera ou se ela falhar,
-    // a analitica. 3x: o meio uma vez, apresentado duas (real > meio > meio > real), sem quadro de outro tempo
+    // a neural (2x: o meio; 4x: o intercalado de dois contextos) com a camera deste quadro. 3x: o meio uma vez,
+    // apresentado duas (real > meio > meio > real), sem quadro de outro tempo
     const uint32_t m = std::clamp<uint32_t>(d->numInterpolatedFrames, 1, 3);
     const uint32_t mg = m == 2 ? 1u : m; // os gerados de fato
     auto repete = [&] {
@@ -1023,65 +1019,10 @@ FfxErrorCode Geracao::Impl::Gera(const FfxFrameGenerationDispatchDescription* d,
     p->temCamAnterior = pr.temCam;
     if (pr.temCam)
         p->camAnterior = pr.qn.cam;
+    // so a neural (FSR 4 Redstone): sem ela (sem a camera do jogo, sem o provedor 4.x ou se falhar) vai so o real -- a
+    // analitica do FSR 3.1 saiu (blocos 8x8 no cabelo e no movimento rapido)
     ++p->quadrosAnalitica;
-    // quadros que foram pela neural nao passaram pela analitica: o anterior dela ficou velho
-    const bool resetFi = d->reset || pr.id != p->ultimoAnalitica + 1;
-    p->ultimoAnalitica = pr.id;
-    FfxOpticalflowDispatchDescription o{};
-    o.commandList = d->commandList;
-    o.color = semHud ? corSemHud : d->presentColor;
-    o.reset = resetFi;
-    o.backbufferTransferFunction = d->backBufferTransferFunction;
-    o.minMaxLuminance = {d->minMaxLuminance[0], d->minMaxLuminance[1]};
-    o.opticalFlowVector = p->Rec(R_FLUXO);
-    o.opticalFlowSCD = p->Rec(R_CORTE);
-    FfxErrorCode e = ffxOpticalflowContextDispatch(&p->of, &o);
-
-    FfxFrameInterpolationDispatchDescription f{};
-    f.commandList = d->commandList;
-    f.displaySize = {d->presentColor.description.width, d->presentColor.description.height};
-    f.currentBackBuffer = d->presentColor;
-    if (semHud)
-        f.currentBackBuffer_HUDLess = corSemHud;
-    f.reset = resetFi;
-    f.renderSize = pd.renderSize;
-    f.opticalFlowVector = p->Rec(R_FLUXO);
-    f.opticalFlowSceneChangeDetection = p->Rec(R_CORTE);
-    f.opticalFlowBlockSize = 8;
-    f.opticalFlowScale = {1.f / f.displaySize.width, 1.f / f.displaySize.height};
-    f.frameTimeDelta = pd.frameTimeDelta;
-    f.cameraNear = pd.cameraNear;
-    f.cameraFar = pd.cameraFar;
-    f.viewSpaceToMetersFactor = pd.viewSpaceToMetersFactor;
-    f.cameraFovAngleVertical = pd.cameraFovAngleVertical;
-    f.dilatedDepth = pd.dilatedDepth;
-    f.dilatedMotionVectors = pd.dilatedMotionVectors;
-    f.reconstructedPrevDepth = pd.reconstructedPrevDepth;
-    if (d->interpolationRect.width && d->interpolationRect.height)
-        f.interpolationRect = d->interpolationRect;
-    else
-        f.interpolationRect = {0, 0, int32_t(f.displaySize.width), int32_t(f.displaySize.height)};
-    f.backBufferTransferFunction = d->backBufferTransferFunction;
-    f.minMaxLuminance[0] = d->minMaxLuminance[0];
-    f.minMaxLuminance[1] = d->minMaxLuminance[1];
-    f.frameID = pr.id;
-    // diagnostico: DLSS5_GERACAO_DEPURA=1 desenha nos gerados a vista de depuracao da AMD (campo de movimento do jogo,
-    // prioridade de profundidade, fluxo optico, mascara de desoclusao, a fonte atual e a apresentada)
-    static const bool depura = std::getenv("DLSS5_GERACAO_DEPURA") != nullptr;
-    f.flags = depura ? FFX_FRAMEINTERPOLATION_DISPATCH_DRAW_DEBUG_VIEW : 0;
-    for (uint32_t k = 0; k < mg; ++k)
-    {
-        f.output = d->outputs[k];
-        f.interpolationT = float(k + 1) / float(mg + 1);
-        f.keepPreviousInterpolationSource = k + 1 < mg;
-        e |= ffxFrameInterpolationDispatch(&p->fic, &f);
-    }
-    p->gerados += m;
-    if (e == FFX_OK)
-        borra(), repete();
-    ++p->chamadas;
-    p->Despejo(d, pr.id);
-    return e;
+    return FFX_ERROR_INVALID_ARGUMENT;
 }
 
 namespace {

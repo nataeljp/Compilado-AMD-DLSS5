@@ -1361,13 +1361,14 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
 
                 // geracao de quadros da AMD: a DLL na pasta do jogo troca o swapchain na criacao
                 ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kTexto2), "Geração de quadros (AMD)");
-                // 2x: a geracao neural da AMD entre os reais; 3x: o mesmo gerado apresentado duas vezes (sem 4x: o
-                // intercalado nao resolveu o giro rapido)
-                const char* geracoes[] = {"Desligada", "2x", "3x"};
-                int ig = cfg.geracao >= 3 ? 2 : cfg.geracao == 2 ? 1 : 0;
-                if (Segmentos("geracao", geracoes, 3, &ig, 30 * g_e))
+                // so a geracao neural da AMD (FSR 4 Redstone): 2x o meio entre os reais; 3x o mesmo gerado
+                // apresentado duas vezes; 4x o intercalado de dois contextos (0,25 / 0,5 / 0,75)
+                const char* geracoes[] = {"Desligada", "2x", "3x", "4x"};
+                int ig = cfg.geracao >= 2 ? std::min(cfg.geracao, 4) - 1 : 0;
+                if (Segmentos("geracao", geracoes, 4, &ig, 30 * g_e))
                     cfg.geracao = ig ? ig + 1 : 0;
-                Dica("Geracao de quadros da AMD no jogo (2x, ou 3x com o gerado repetido), muda a qualquer momento. Na 1a vez pede reabrir o "
+                Dica("Geracao FSR 4 Redstone no jogo (2x; 3x com o gerado repetido; 4x intercalado), muda a qualquer "
+                     "momento. Precisa da geracao FSR do jogo ligada no menu dele (a camera vem dela). Na 1a vez pede reabrir o "
                      "jogo. Desligue o AFMF do driver.");
                 if (e.instaladoNoJogo && Botao("Remover do jogo"))
                     a.removerDoJogo = true;
