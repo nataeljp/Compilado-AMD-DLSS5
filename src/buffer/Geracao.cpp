@@ -238,7 +238,8 @@ struct Geracao::Impl
     ApiAmd api;
     GeracaoNeural neural;
 Reprojecao repro;
-float limiteRepro = 16.f; // pixels de movimento entre os reais em 1080p acima do qual entra a reprojecao; <0 = desligada
+float limiteRepro = -1.f; // pixels de movimento entre os reais em 1080p acima do qual entra a reprojecao; <0 = desligada
+                          // (padrao: no TLOU2 nao mudou o giro rapido; DLSS5_GERACAO_LIMITE liga)
     char erroNeural[160] = {};
     Microsoft::WRL::ComPtr<ID3D12Resource> anelProf[kJogos], anelMov[kJogos];
     std::deque<CameraJogo> cameras;
@@ -949,36 +950,56 @@ FfxErrorCode Geracao::Impl::Gera(const FfxFrameGenerationDispatchDescription* d,
     if (semHud)
         corSemHud = ffxGetResourceDX12(semHud, ffxGetResourceDescriptionDX12(semHud), L"imagem sem HUD",
                                        FFX_RESOURCE_STATE_COMPUTE_READ);
-    // a neural (2x: o meio; 4x: o intercalado de dois contextos) com a camera deste quadro; 3x, sem camera ou se ela falhar,
-    // a analitica
+    // a neural (2x: o meio; 4x: o intercalado de dois contextos) com a camera deste quadro; sem camera ou se ela falhar,
+    // a analitica. 3x: o meio uma vez, apresentado duas (real > meio > meio > real), sem quadro de outro tempo
     const uint32_t m = std::clamp<uint32_t>(d->numInterpolatedFrames, 1, 3);
+    const uint32_t mg = m == 2 ? 1u : m; // os gerados de fato
+    auto repete = [&] {
+        if (m != 2)
+            return;
+        auto* c = reinterpret_cast<ID3D12GraphicsCommandList*>(d->commandList);
+        auto* o0 = reinterpret_cast<ID3D12Resource*>(d->outputs[0].resource);
+        auto* o1 = reinterpret_cast<ID3D12Resource*>(d->outputs[1].resource);
+        D3D12_RESOURCE_BARRIER b[2] = {};
+        b[0].Type = b[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b[0].Transition = {o0, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                           D3D12_RESOURCE_STATE_COPY_SOURCE};
+        b[1].Transition = {o1, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                           D3D12_RESOURCE_STATE_COPY_DEST};
+        c->ResourceBarrier(2, b);
+        c->CopyResource(o1, o0);
+        for (auto& x : b)
+            std::swap(x.Transition.StateBefore, x.Transition.StateAfter);
+        c->ResourceBarrier(2, b);
+    };
     // a reprojecao nos gerados acima do limite de movimento (escala com a altura da tela)
     auto borra = [&] {
         if (!pr.neural || !p->repro.Pronta() || p->limiteRepro < 0.f)
             return;
         ID3D12Resource* saidas[3] = {};
-        for (uint32_t k = 0; k < m; ++k)
+        for (uint32_t k = 0; k < mg; ++k)
             saidas[k] = reinterpret_cast<ID3D12Resource*>(d->outputs[k].resource);
         p->repro.Gera(reinterpret_cast<ID3D12GraphicsCommandList*>(d->commandList), pr.id, pr.qn,
                       (p->flagsFi & FFX_FRAMEINTERPOLATION_ENABLE_DEPTH_INVERTED) != 0,
-                      reinterpret_cast<ID3D12Resource*>(d->presentColor.resource), semHud, saidas, m,
+                      reinterpret_cast<ID3D12Resource*>(d->presentColor.resource), semHud, saidas, mg,
                       p->limiteRepro * float(d->presentColor.description.height) / 1080.f, d->reset);
     };
-    if (pr.neural && pr.temCam && p->neural.Pronta() && (m == 1 || m == 3))
+    if (pr.neural && pr.temCam && p->neural.Pronta())
     {
         ID3D12Resource* saidas[3] = {};
-        for (uint32_t k = 0; k < m; ++k)
+        for (uint32_t k = 0; k < mg; ++k)
             saidas[k] = reinterpret_cast<ID3D12Resource*>(d->outputs[k].resource);
         if (p->neural.Gera(reinterpret_cast<ID3D12GraphicsCommandList*>(d->commandList), pr.id, pr.qn,
                            p->temCamAnterior ? p->camAnterior : pr.qn.cam,
                            reinterpret_cast<ID3D12Resource*>(d->presentColor.resource), uint32_t(d->presentColor.state),
                            semHud, uint32_t(FFX_RESOURCE_STATE_COMPUTE_READ), saidas,
-                           uint32_t(d->outputs[0].state), m, d->reset, uint32_t(d->backBufferTransferFunction),
+                           uint32_t(d->outputs[0].state), mg, d->reset, uint32_t(d->backBufferTransferFunction),
                            d->minMaxLuminance[1] > 0.f ? d->minMaxLuminance[0] : p->lumMinTela,
                            d->minMaxLuminance[1] > 0.f ? d->minMaxLuminance[1] : (p->lumMaxTela > 0.f ? p->lumMaxTela : 1000.f)))
         {
             p->camAnterior = pr.qn.cam, p->temCamAnterior = true;
             borra();
+            repete();
             p->gerados += m;
             ++p->chamadas;
             ++p->quadrosNeural;
@@ -1036,16 +1057,16 @@ FfxErrorCode Geracao::Impl::Gera(const FfxFrameGenerationDispatchDescription* d,
     // prioridade de profundidade, fluxo optico, mascara de desoclusao, a fonte atual e a apresentada)
     static const bool depura = std::getenv("DLSS5_GERACAO_DEPURA") != nullptr;
     f.flags = depura ? FFX_FRAMEINTERPOLATION_DISPATCH_DRAW_DEBUG_VIEW : 0;
-    for (uint32_t k = 0; k < m; ++k)
+    for (uint32_t k = 0; k < mg; ++k)
     {
         f.output = d->outputs[k];
-        f.interpolationT = float(k + 1) / float(m + 1);
-        f.keepPreviousInterpolationSource = k + 1 < m;
+        f.interpolationT = float(k + 1) / float(mg + 1);
+        f.keepPreviousInterpolationSource = k + 1 < mg;
         e |= ffxFrameInterpolationDispatch(&p->fic, &f);
-        ++p->gerados;
     }
+    p->gerados += m;
     if (e == FFX_OK)
-        borra();
+        borra(), repete();
     ++p->chamadas;
     p->Despejo(d, pr.id);
     return e;

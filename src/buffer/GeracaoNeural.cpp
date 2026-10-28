@@ -611,15 +611,15 @@ bool GeracaoNeural::Gera(ID3D12GraphicsCommandList* c, uint64_t id, const Quadro
         dg.frameID = fid;
         return r | despacha(&cx, &dg.header);
     };
-    if (semHud && !psoUi)
+    if (n == 3 && semHud && !psoUi)
         return false; // sem o passe do HUD, o 4x moveria o HUD: fica a analitica
     // A: o meio entre o real anterior e este (2x: o unico gerado, com a imagem sem HUD para a AMD por o HUD parado; 4x:
     // o do meio, da imagem sem HUD -- o HUD entra no fim)
     const bool resetA = reset || id != ultimoA + 1;
     ID3D12Resource* meio = n == 3 ? saidas[1] : saidas[0];
-    ID3D12Resource* fonte = semHud ? semHud : cor;
-    const uint32_t estadoFonte = semHud ? semHudEstado : corEstado;
-    ffxReturnCode_t r = um(a, id, fonte, estadoFonte, nullptr, meio, 1.f, q.cam, q.jitterX, q.jitterY,
+    ID3D12Resource* fonte = n == 3 && semHud ? semHud : cor;
+    const uint32_t estadoFonte = n == 3 && semHud ? semHudEstado : corEstado;
+    ffxReturnCode_t r = um(a, id, fonte, estadoFonte, n == 1 ? semHud : nullptr, meio, 1.f, q.cam, q.jitterX, q.jitterY,
                            q.msQuadro, resetA);
     ultimoA = id;
     if (n == 3)
@@ -632,7 +632,7 @@ bool GeracaoNeural::Gera(ID3D12GraphicsCommandList* c, uint64_t id, const Quadro
         r |= um(b, idR, fonte, estadoFonte, nullptr, saidas[2], 0.5f, q.cam, q.jitterX, q.jitterY, 0.5f * q.msQuadro, false);
         ultimoB = idR;
     }
-    if (semHud && r == FFX_API_RETURN_OK)
+    if (n == 3 && semHud && r == FFX_API_RETURN_OK)
         for (uint32_t k = 0; k < n; ++k)
             PoeUi(c, cor, semHud, saidas[k]);
     if (r != FFX_API_RETURN_OK)

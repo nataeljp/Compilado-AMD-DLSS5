@@ -108,8 +108,8 @@ void Config::Carrega(const std::wstring& arquivo)
     I("modo", modo);
     I("quadroGerado", gerado);
     I("geracaoQuadros", geracao);
-    if (geracao == 3)
-        geracao = 4; // sem 3x (so 2x e 4x)
+    if (geracao > 3)
+        geracao = 3; // sem 4x (so 2x e 3x)
     B("movimento", movimento);
     I("ritmo", ritmo);
     B("reusoVit", reusoVit);
