@@ -861,6 +861,10 @@ FfxErrorCode Geracao::Impl::Gera(const FfxFrameGenerationDispatchDescription* d,
     f.minMaxLuminance[0] = d->minMaxLuminance[0];
     f.minMaxLuminance[1] = d->minMaxLuminance[1];
     f.frameID = pr.id;
+    // diagnostico: DLSS5_GERACAO_DEPURA=1 desenha nos gerados a vista de depuracao da AMD (campo de movimento do jogo,
+    // prioridade de profundidade, fluxo optico, mascara de desoclusao, a fonte atual e a apresentada)
+    static const bool depura = std::getenv("DLSS5_GERACAO_DEPURA") != nullptr;
+    f.flags = depura ? FFX_FRAMEINTERPOLATION_DISPATCH_DRAW_DEBUG_VIEW : 0;
     const uint32_t m = std::clamp<uint32_t>(d->numInterpolatedFrames, 1, 3);
     for (uint32_t k = 0; k < m; ++k)
     {

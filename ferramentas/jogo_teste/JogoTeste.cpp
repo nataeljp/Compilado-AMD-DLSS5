@@ -195,10 +195,17 @@ int wmain(int argc, wchar_t** argv)
     bool hud = false, cubo = false;
     UINT64 verdade = 0; // --verdade Q (com --cubo --hud): grava a verdade dos instantes Q-1 + k/N (k = 0..N) e sai
     float giro = 120.f; // --giro G (com --cubo): graus por segundo da camera
+    bool pontilhado = false; // --pontilhado (com --cubo): os cubos que cruzam pontilhados, como cabelo
+    bool fundoLiso = false;  // --fundo-liso (com --cubo): a sala sem o xadrez
+    float cobertura = 0.5f;  // --cobertura C (com --pontilhado): fracao dos pixels que ficam
     for (int i = 3; i < argc; ++i)
     {
         hud |= !wcscmp(argv[i], L"--hud");
         cubo |= !wcscmp(argv[i], L"--cubo");
+        pontilhado |= !wcscmp(argv[i], L"--pontilhado");
+        fundoLiso |= !wcscmp(argv[i], L"--fundo-liso");
+        if (!wcscmp(argv[i], L"--cobertura") && i + 1 < argc)
+            cobertura = float(_wtof(argv[i + 1]));
         if (!wcscmp(argv[i], L"--verdade") && i + 1 < argc)
             verdade = UINT64(_wtoi64(argv[i + 1]));
         if (!wcscmp(argv[i], L"--giro") && i + 1 < argc)
@@ -350,6 +357,9 @@ int wmain(int argc, wchar_t** argv)
         if (!cena.Cria(dev.Get()))
             return 10;
         cena.giro = giro;
+        cena.pontilhado = pontilhado;
+        cena.fundoLiso = fundoLiso;
+        cena.cobertura = cobertura;
         cena.Alvos(0, cor.r.Get(), mov.r.Get(), prof.r.Get());
         printf("cena 3D: sala fechada, camera girando %.0f graus/s, cubos girando e cruzando (profundidade e movimento de "
                "verdade)\n", giro);

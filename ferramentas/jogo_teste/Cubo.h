@@ -4,7 +4,11 @@
 // contrario (o que fica escondido e aparece de repente: onde a geracao faz fantasma). Profundidade de verdade (Z
 // invertido e infinito, como o contexto do FSR do jogo de teste) e o movimento de cada pixel pela posicao anterior do
 // objeto e da camera (o que um motor entrega ao FSR: anterior - atual, em uv). O tempo vem do numero do quadro, entao
-// qualquer instante pode ser desenhado de novo: a verdade dos gerados.
+// qualquer instante pode ser desenhado de novo: a verdade dos gerados. --pontilhado: os 2 cubos que cruzam saem
+// pontilhados (metade dos pixels, sorteio novo a cada instante), como a transparencia do cabelo nos jogos (TLOU2): o
+// pixel ora e o objeto, ora o fundo, e o TAA do FSR junta -- onde a geracao trocava o movimento do jogo pelo do fluxo
+// optico e colava blocos do fundo. --fundo-liso: a sala sem o xadrez (o ceu e a neve lisos atras do cabelo no TLOU2,
+// onde qualquer bloco do fluxo optico "casa").
 #pragma once
 #include <d3d12.h>
 #include <d3dcompiler.h>
@@ -19,6 +23,9 @@ class CenaCubo
     static constexpr DXGI_FORMAT kCor = DXGI_FORMAT_R16G16B16A16_FLOAT, kMov = DXGI_FORMAT_R32G32_FLOAT;
     static constexpr int kObjetos = 14; // 6 da sala, 6 cubos em roda, 2 cruzando
     float giro = 120.f;                 // graus por segundo da camera
+    bool pontilhado = false;            // os cubos que cruzam pontilhados (--pontilhado)
+    bool fundoLiso = false;             // a sala sem o xadrez (--fundo-liso)
+    float cobertura = 0.5f;             // fracao dos pixels do pontilhado que ficam (--cobertura; fios soltos ~0,25)
 
     bool Cria(ID3D12Device* d)
     {
@@ -32,7 +39,7 @@ class CenaCubo
         }
         D3D12_ROOT_PARAMETER p{};
         p.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        p.Constants.Num32BitValues = 52;
+        p.Constants.Num32BitValues = 56;
         D3D12_ROOT_SIGNATURE_DESC rd{1, &p, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE};
         if (FAILED(D3D12SerializeRootSignature(&rd, D3D_ROOT_SIGNATURE_VERSION_1, &ser, &err)) ||
             FAILED(d->CreateRootSignature(0, ser->GetBufferPointer(), ser->GetBufferSize(), IID_PPV_ARGS(&raiz))))
@@ -103,12 +110,16 @@ class CenaCubo
         {
             float cor[4];
             const M4 m = Objeto(o, t, cor), mAnt = Objeto(o, tAnt, cor);
+            if (pontilhado && o >= 12) // cabelo: escuro sobre o fundo claro
+                cor[0] = 0.12f, cor[1] = 0.08f, cor[2] = 0.05f;
             struct
             {
                 M4 mvp, mvpAnt, mundo;
                 float cor[4];
-            } k{Mul(vpAtual, m), Mul(vpAnt, mAnt), m, {cor[0], cor[1], cor[2], cor[3]}};
-            c->SetGraphicsRoot32BitConstants(0, 52, &k, 0);
+                float pont, semente, pad[2];
+            } k{Mul(vpAtual, m), Mul(vpAnt, mAnt), m, {cor[0], cor[1], cor[2], cor[3]}, pontilhado && o >= 12 ? cobertura : 0.f,
+                float(std::fmod(t * 1000.0, 65536.0)), {fundoLiso && o < 6 ? 1.f : 0.f, 0.f}};
+            c->SetGraphicsRoot32BitConstants(0, 56, &k, 0);
             c->DrawInstanced(o < 6 ? 6 : 36, 1, 0, 0);
         }
     }
@@ -245,7 +256,8 @@ class CenaCubo
     UINT incRtv = 0, incDsv = 0;
 
     static constexpr char kHlsl[] = R"(
-cbuffer o : register(b0) { row_major float4x4 mvp; row_major float4x4 mvpAnt; row_major float4x4 mundo; float4 corBase; };
+cbuffer o : register(b0) { row_major float4x4 mvp; row_major float4x4 mvpAnt; row_major float4x4 mundo; float4 corBase;
+                           float pont; float semente; float liso; float pad; };
 struct V { float4 pos : SV_Position; float4 atual : TEXCOORD0; float4 ant : TEXCOORD1; float3 n : NORMAL; float3 local : TEXCOORD2; float3 w : TEXCOORD3; };
 static const float3 kCubo[8] = { float3(-.5,-.5,-.5), float3(.5,-.5,-.5), float3(.5,.5,-.5), float3(-.5,.5,-.5),
                                  float3(-.5,-.5,.5), float3(.5,-.5,.5), float3(.5,.5,.5), float3(-.5,.5,.5) };
@@ -277,9 +289,18 @@ V VSCubo(uint v : SV_VertexID)
 struct S { float4 cor : SV_Target0; float2 mov : SV_Target1; };
 S PSCubo(V i)
 {
+    if (pont > 0.0)
+    {
+        // pontilhado: a fracao pont dos pixels fica, sorteio (PCG) por pixel e por instante; o descartado deixa o fundo (cor,
+        // profundidade e movimento dele)
+        uint h = (uint(i.pos.x) * 1973u + uint(i.pos.y) * 9277u + uint(semente) * 26699u) | 1u;
+        h = h * 747796405u + 2891336453u;
+        h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
+        if (float(((h >> 22u) ^ h) & 65535u) / 65536.0 >= pont) discard;
+    }
     const float3 c = corBase.w < 0.5 ? i.w : i.local * 4;
     const int3 k = int3(floor(c + 0.0001));
-    const float xadrez = ((k.x + k.y + k.z) & 1) ? 1.0 : 0.3;
+    const float xadrez = liso > 0.5 ? 1.4 : ((k.x + k.y + k.z) & 1) ? 1.0 : 0.3;
     const float luz = 0.3 + 0.7 * saturate(dot(normalize(i.n), normalize(float3(0.4, 1.0, -0.6))));
     S s;
     s.cor = float4(corBase.rgb * xadrez * luz * 2.0, 1);
