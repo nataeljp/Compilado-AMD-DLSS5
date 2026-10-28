@@ -246,6 +246,10 @@ float limiteRepro = -1.f; // pixels de movimento entre os reais em 1080p acima d
     CameraJogo camAnterior{};
     bool temCamAnterior = false;
     uint64_t quadrosNeural = 0, quadrosAnalitica = 0, ultimoAnalitica = 0;
+    // o ultimo quadro real apresentado e as apresentacoes sem gerado por salto (o real anterior nao era o quadro do jogo
+    // logo antes deste: o movimento do jogo cobre so 1 quadro e a geracao interpolava por cima de varios -- no TLOU2 a
+    // 83 q/s em 4x so 1 de cada ~3 reais chegava a tela, e os gerados saiam com fantasma e o fundo duplicado)
+    uint64_t idApresentado = 0, saltos = 0;
     // a luminancia do monitor (nits), para a neural quando o jogo nao passa metadados HDR ao swapchain (a analitica ignora o
     // 0..0 no scRGB; a neural saia 1,5% mais escura no jogo de teste)
     float lumMinTela = 0.f, lumMaxTela = 0.f;
@@ -904,6 +908,14 @@ FfxErrorCode Geracao::Impl::Gera(const FfxFrameGenerationDispatchDescription* d,
         p->aFrenteSoma += aFrente;
         ++p->aFrenteN;
         p->aFrenteMax = std::max(p->aFrenteMax, aFrente);
+        // entre reais que nao sao seguidos no jogo, sem gerado (so o real): nunca interpolar por cima de quadros pulados
+        const bool salto = p->idApresentado && pr.id != p->idApresentado + 1 && !d->reset;
+        p->idApresentado = pr.id;
+        if (salto)
+        {
+            ++p->saltos;
+            return FFX_ERROR_INVALID_ARGUMENT;
+        }
     }
     // o backend da AMD e o do preparo: um de cada vez (fiMx). Com o contexto sendo refeito (estado 1) nao ha o que gerar
     std::unique_lock<std::mutex> lf(p->fiMx, std::try_to_lock);
@@ -1379,6 +1391,18 @@ uint32_t Geracao::Impl::NEmUso(uint32_t pedido)
         const double fps = 1000.0 / msJogo;
         const auto agora = std::chrono::steady_clock::now();
         novo = nEmUso;
+        // o jogo entrega (com a espera do limitador) mais reais do que cabem na tela com este N: o limitador nao o segurou
+        // (TLOU2: 83 q/s em 4x a 120 Hz) e a tela pulava reais. Desce ja, ate 2
+        const double entregue = 1000.0 / msAtual;
+        if (nEmUso > 2 && entregue * nEmUso > taxa * 1.15)
+        {
+            uint32_t k = nEmUso;
+            while (k > 2 && entregue * k > taxa * 1.15)
+                --k;
+            ++trocasN;
+            provaDe = 0, trocaDesde = {};
+            return nEmUso = k;
+        }
         if (provaDe)
         {
             const double entregue = 1000.0 / msAtual; // com a espera do limitador: o que a tela recebe de fato
