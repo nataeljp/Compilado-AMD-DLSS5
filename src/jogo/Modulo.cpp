@@ -914,7 +914,7 @@ uint32_t GeracaoPedidaPainel()
     dlss5ov::Cabecalho* cab = g_clienteOk ? g_cli.Cab() : nullptr;
     if (cab && cab->ativo && GetTickCount64() - cab->batimentoOverlay < 1000)
         ultimo = cab->geracaoQuadros;
-    const uint32_t u = ultimo;
+    const uint32_t u = ultimo != 3 ? ultimo.load() : 4; // sem 3x: um overlay antigo pedindo 3x ganha 4x
     return u != UINT32_MAX ? u : g_geracaoLancamento;
 }
 

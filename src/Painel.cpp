@@ -1361,11 +1361,12 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
 
                 // geracao de quadros da AMD: a DLL na pasta do jogo troca o swapchain na criacao
                 ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kTexto2), "Geração de quadros (AMD)");
-                const char* geracoes[] = {"Desligada", "2x", "3x", "4x"};
-                int ig = cfg.geracao >= 2 ? std::min(cfg.geracao, 4) - 1 : 0;
-                if (Segmentos("geracao", geracoes, 4, &ig, 30 * g_e))
-                    cfg.geracao = ig ? ig + 1 : 0;
-                Dica("Geracao de quadros da AMD no jogo (2x a 4x), muda a qualquer momento. Na 1a vez pede reabrir o "
+                // sem 3x: a geracao neural da AMD so faz metades (2x, e 4x intercalado); 3x caia na analitica (blocos 8x8)
+                const char* geracoes[] = {"Desligada", "2x", "4x"};
+                int ig = cfg.geracao >= 3 ? 2 : cfg.geracao == 2 ? 1 : 0;
+                if (Segmentos("geracao", geracoes, 3, &ig, 30 * g_e))
+                    cfg.geracao = ig * 2;
+                Dica("Geracao de quadros da AMD no jogo (2x ou 4x), muda a qualquer momento. Na 1a vez pede reabrir o "
                      "jogo. Desligue o AFMF do driver.");
                 if (e.instaladoNoJogo && Botao("Remover do jogo"))
                     a.removerDoJogo = true;
