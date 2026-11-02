@@ -1,5 +1,6 @@
 #include "FonteBuffer.h"
 #include <algorithm>
+#include <cstring>
 
 namespace ov {
 
@@ -30,10 +31,8 @@ bool FonteBuffer::Abre(Gpu& g, DWORD pid_)
     dlss5ov::NomeEventoPublica(nome, 96, pid_);
     evPublica = OpenEventW(EVENT_MODIFY_STATE, FALSE, nome);
     Log("buffer", Fmt("conectado ao modulo do jogo %s (pid %lu, protocolo %u)", cab->exe, (unsigned long)pid, v));
-    if (ModuloAntigo())
-        Log("buffer", Fmt("modulo do jogo da versao anterior (protocolo %u): a luz mista vai como logaritmica ate o "
-                          "jogo reabrir com a DLL nova",
-                          v));
+    if (!evPublica) // Batimento nao pede a espera sem ele: o jogo mostra a edicao com atraso em vez de travar
+        Log("buffer", Fmt("sem o evento de publicacao do jogo (erro %lu): o modo sem atraso fica desligado", GetLastError()));
     return true;
 }
 
@@ -50,18 +49,10 @@ void FonteBuffer::Fecha()
     if (mapa)
         CloseHandle(mapa);
     mapa = nullptr;
-    geracao = 0;
+    erroAbre.clear();
     pid = 0;
-    cercaJogo.Reset();
-    cercaOverlay.Reset();
-    for (auto& t : cor)
-        t.r.Reset();
-    for (auto& t : mov)
-        t.r.Reset();
-    for (auto& t : prof)
-        t.r.Reset();
-    for (auto& t : edicao)
-        t.r.Reset();
+    geracao = 0; // quem fecha ja parou a GPU (e na saida do programa ela pode nem existir mais)
+    SoltaTexturas();
     if (evento)
         CloseHandle(evento);
     evento = nullptr;
@@ -70,8 +61,23 @@ void FonteBuffer::Fecha()
     evPublica = nullptr;
 }
 
-void FonteBuffer::Batimento(bool querQuadros, bool aplica, uint32_t espera, uint32_t repete, uint32_t gerado,
-                            uint32_t geracao)
+void FonteBuffer::DefineDenoise(float reconstrucao, float acumulacao, float recorte, float bordas, float sigma,
+                                uint32_t passes, float divisao, uint32_t grao, bool economia)
+{
+    if (!cab)
+        return;
+    cab->dnReconstrucao = reconstrucao;
+    cab->dnAcumulacao = acumulacao;
+    cab->dnRecorte = recorte;
+    cab->dnBordas = bordas;
+    cab->dnBordasSigma = sigma;
+    cab->dnBordasPasses = passes;
+    cab->dnDivisao = divisao;
+    cab->dnGrao = grao;
+    cab->dnEconomia = economia ? 1u : 0u;
+}
+
+void FonteBuffer::Batimento(bool querQuadros, bool aplica, uint32_t espera, uint32_t repete, uint32_t gerado)
 {
     if (!cab)
         return;
@@ -80,7 +86,6 @@ void FonteBuffer::Batimento(bool querQuadros, bool aplica, uint32_t espera, uint
     cab->espera = evPublica ? espera : 0;
     cab->repete = repete;
     cab->gerado = gerado;
-    cab->geracaoQuadros = geracao;
     cab->batimentoOverlay = GetTickCount64();
 }
 
@@ -94,20 +99,54 @@ bool FonteBuffer::AbreRecurso(const wchar_t* qual, uint32_t slot, REFIID iid, vo
     wchar_t nome[128];
     dlss5ov::NomeRecurso(nome, 128, pid, geracao, qual, slot);
     HANDLE h = nullptr;
-    if (FAILED(gpu->dev->OpenSharedHandleByName(nome, GENERIC_ALL, &h)) || !h)
-        return false;
-    const HRESULT hr = gpu->dev->OpenSharedHandle(h, iid, p);
-    CloseHandle(h);
+    HRESULT hr = gpu->dev->OpenSharedHandleByName(nome, GENERIC_ALL, &h);
+    if (SUCCEEDED(hr) && h)
+    {
+        hr = gpu->dev->OpenSharedHandle(h, iid, p);
+        CloseHandle(h);
+    }
+    else if (SUCCEEDED(hr))
+        hr = E_HANDLE;
+    if (FAILED(hr))
+        erroAbre = Utf8(qual) + Fmt(": 0x%08lx", (unsigned long)hr);
     return SUCCEEDED(hr);
+}
+
+std::string FonteBuffer::Erro() const
+{
+    if (cab && cab->erroJogo[0])
+        return std::string("no jogo: ") + std::string(cab->erroJogo, strnlen(cab->erroJogo, sizeof cab->erroJogo));
+    return erroAbre.empty() ? std::string() : "no overlay: " + erroAbre;
+}
+
+// o que este processo segura da geracao: enquanto houver referencia aqui, a VRAM dela nao volta, mesmo depois de o jogo soltar
+void FonteBuffer::SoltaTexturas()
+{
+    if (gpu && geracao)
+        gpu->Espera();
+    geracao = 0;
+    cercaJogo.Reset();
+    cercaOverlay.Reset();
+    for (Tex* v : {cor, mov, prof})
+        for (uint32_t s = 0; s < dlss5ov::kSlotsEntrada; ++s)
+            v[s].r.Reset();
+    for (Tex* v : {edicao, edicaoA})
+        for (uint32_t s = 0; s < dlss5ov::kSlotsEdicao; ++s)
+            v[s].r.Reset();
 }
 
 bool FonteBuffer::AbreGeracao()
 {
     const uint32_t g = cab->geracao;
     if (!g)
+    {
+        if (geracao)
+            SoltaTexturas(); // o jogo soltou (formato ou tamanho novo, ou sem overlay): aqui tambem
         return false;
+    }
     if (g == geracao)
         return true;
+    SoltaTexturas(); // nunca a velha e a nova juntas neste processo
     geracao = g;
     auto tex = [&](Tex& t, const wchar_t* qual, uint32_t s, UINT w, UINT h, DXGI_FORMAT f) {
         t.r.Reset();
@@ -119,17 +158,22 @@ bool FonteBuffer::AbreGeracao()
     bool ok = AbreRecurso(L"cercaJogo", 0, IID_PPV_ARGS(&cercaJogo)) &&
               AbreRecurso(L"cercaOverlay", 0, IID_PPV_ARGS(&cercaOverlay));
     for (uint32_t s = 0; ok && s < dlss5ov::kSlotsEntrada; ++s)
-        ok = tex(cor[s], L"cor", s, cab->corW, cab->corH, DXGI_FORMAT_R16G16B16A16_FLOAT) &&
+        ok = tex(cor[s], L"cor", s, cab->corW, cab->corH, DXGI_FORMAT(cab->fmtCorSlot)) &&
              tex(mov[s], L"mov", s, cab->movW, cab->movH, DXGI_FORMAT_R32G32_FLOAT) &&
              tex(prof[s], L"prof", s, cab->profW, cab->profH, DXGI_FORMAT_R32_FLOAT);
     for (uint32_t s = 0; ok && s < dlss5ov::kSlotsEdicao; ++s)
-        ok = tex(edicao[s], L"edicao", s, cab->corW, cab->corH, DXGI_FORMAT_R16G16B16A16_FLOAT);
+        ok = tex(edicao[s], L"edicao", s, cab->corW, cab->corH, DXGI_FORMAT(cab->fmtEdicaoSlot)) &&
+             (cab->fmtEdicaoSlot != DXGI_FORMAT_R10G10B10A2_UNORM ||
+              tex(edicaoA[s], L"edicaoA", s, cab->corW, cab->corH, DXGI_FORMAT_R8_UNORM));
     if (!ok)
     {
-        Log("buffer", Fmt("geracao %u: nao abriu as texturas do jogo", g));
+        if (geracaoRecusada != g) // tenta de novo a cada quadro: o registro diz uma vez
+            Log("buffer", Fmt("geracao %u: nao abriu as texturas do jogo (%s)", g, erroAbre.c_str()));
+        geracaoRecusada = g;
         geracao = 0;
         return false;
     }
+    erroAbre.clear();
     valorOverlay = cercaOverlay->GetCompletedValue();
     ultimoPego = 0;
     slotEscrita = ultimoPublicado = -1;

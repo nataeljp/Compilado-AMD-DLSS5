@@ -10,6 +10,10 @@ Copy-Item "$raiz\bin\DLSS5Overlay.exe" $pasta
 # captura de buffer: o modulo que o overlay coloca no jogo aberto
 New-Item -ItemType Directory -Force "$pasta\captura" | Out-Null
 Copy-Item "$raiz\bin\captura\DLSS5Buffer.dll" "$pasta\captura"
+# captura da API no Vulkan: a camada e o manifesto dela
+Copy-Item "$raiz\bin\captura\DLSS5Camada.dll", "$raiz\bin\captura\DLSS5Camada.json" "$pasta\captura"
+# os shaders do modulo ja compilados: sem eles a primeira abertura leva 15-20 s (a chave e o hash do codigo, velho nao atrapalha)
+if (Test-Path "$raiz\bin\captura\cache") { Copy-Item "$raiz\bin\captura\cache" "$pasta\captura\cache" -Recurse }
 Copy-Item "$raiz\README.md" $pasta
 Copy-Item "$raiz\licencas" "$pasta\licencas" -Recurse
 # runtime sem logs nem caches (as variantes e a pasta montada da rede pequena sao refeitas pelo programa)

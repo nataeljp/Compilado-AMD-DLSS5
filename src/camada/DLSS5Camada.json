@@ -1,0 +1,12 @@
+{
+    "file_format_version": "1.1.2",
+    "layer": {
+        "name": "VK_LAYER_DLSS5OV_captura",
+        "type": "GLOBAL",
+        "library_path": ".\\DLSS5Camada.dll",
+        "api_version": "1.4.357",
+        "implementation_version": "1",
+        "description": "DLSS5 Overlay: copia o quadro apresentado para o overlay",
+        "disable_environment": { "DISABLE_DLSS5OV_CAPTURA": "1" }
+    }
+}

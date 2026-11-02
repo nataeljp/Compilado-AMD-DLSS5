@@ -41,11 +41,19 @@ struct Config
     int alturaRede = 1080;  // altura em que a rede roda (720..2160); a largura segue a proporcao da janela
     bool redePequena = false; // a rede pequena da 310.9.16 (31 blocos, mais rapida) no lugar da grande (71 blocos)
     float forca = 1.f;      // quanto da edicao final entra no quadro (0..4)
-    float bilateral = 0.f; // denoise bilateral guiado por bordas, so no lado da rede: 0..1 a mistura, 1..2 a tolerancia de cor
-    int raioBilateral = 2; // o raio do bilateral em pixels (1 a 8)
-    float denoiseTemporal = 0.f; // denoise temporal: o resultado anterior reprojetado pelo movimento, 0..1 (1 = 90% do historico)
-    float rcas = 0.f;    // RCAS (FSR 1) depois do denoise: 0..1 a forca do maximo do algoritmo, 1..2 amplificado (0 = desligado)
-    float nitidez = 0.f;    // nitidez CAS depois da composicao, so no lado da rede (0 = desligada, 1 = o maximo do CAS)
+    // denoise depois da composicao, fora da rede (so no lado da rede na comparacao). Tudo em 0 = desligado, sem custo
+    int formatoCor = 0; // formato da cor e da edicao (main.cpp FormatosAgora, Painel kFormatos); 0 = R16G16B16A16_FLOAT
+    // denoise do grao da rede, na ideia do NRD/RELAX da NVIDIA; os padroes vem do NRDSettings.h (ver DenoiseHlsl.h)
+    bool dnAtivo = false;       // liga e desliga o conjunto sem perder os ajustes
+    bool dnJogo = false;        // processa o jogo junto da rede: o filtro no quadro pronto, na resolucao da tela, em vez de so na edicao
+    float dnCas = 0.f;          // CAS na imagem final, depois do denoise (0 = desligado)
+    int dnVista = 0;            // visao de depuracao (so nesta sessao, nao vai para o config): 0 imagem, 1 edicao antes, 2 depois, 3 o que saiu x8, 4 quadros acumulados
+    float dnReconstrucao = 1.f; // reconstrucao: troca so o pixel fora da faixa dos vizinhos pela estimativa dela, 0..1
+    float dnAcumulacao = 1.f;   // acumulacao temporal: o resultado anterior reprojetado pelo movimento, 0..1 (1 = ate 95%)
+    float dnRecorte = 2.f;      // quantos desvios da vizinhanca o historico pode se afastar (fastHistoryClampingSigmaScale)
+    float dnBordas = 1.f;       // filtro que para nas bordas (a-trous guiado por profundidade e luminancia), 0..1
+    int dnBordasPasses = 2;     // 1..3 (cada um dobra o alcance: 2, 4, 8 pixels da rede)
+    float dnBordasSigma = 2.f;  // tolerancia de luminancia do filtro (diffusePhiLuminance)
     int ponte = -1;         // ponte do quadro para a rede: -1 auto (SDR direto, HDR SoftKnee), 0 direto, 1 SoftKnee, 2 ACES,
                             // 3 curva do jogo, 4 luz de cena direta (so o ombro do codificador da NVIDIA)
     float brancoNits = 0.f; // branco de papel em nits (0 = o branco SDR do Windows)
@@ -56,17 +64,11 @@ struct Config
     float preCor = 0.f;     // antes da rede: saturacao (-1..2)
     CorMatiz matiz;         // depois da rede: saturacao e brilho por matiz
     int modo = 0;           // 0 rede, 1 original, 2 comparacao, 3 so a edicao, 4 movimento
+    bool sincronizaRedeLenta = false; // captura de buffer: o jogo espera a rede mesmo acima de 95 ms por quadro (sem rastro, com input lag)
+    int limiteFpsJogo = 0;  // teto de FPS do jogo na captura de buffer e da API (o que sobra de GPU fica para a rede); 0 = sem teto
     int fonte = 0;          // Modo de Rede: 0 captura de video (WGC), 1 captura de buffer (cor sem HUD, profundidade e
                             // movimento do upscaler do proprio jogo, pela DLSS5Buffer.dll colocada no jogo aberto)
-    // quadros gerados (Ritmo 2..4, como o AMD Fluid Motion Frames): 0 repetido (o quadro processado se repete; sem atraso
-    // extra), 1 mesclado (os N quadros do ciclo misturam so o processado atual e o proximo, peso do proximo em passos
-    // iguais: 2x 50/50, 3x 25/50/75%, 4x 20/40/60/80%; comeca no quadro em que o proximo fica pronto: 1 quadro de atraso)
-    int gerado = 0;
-    // geracao de quadros da AMD na captura de buffer (a DLL na pasta do jogo troca o swapchain na criacao):
-    // 0 desligada, 2 = 2x (um quadro gerado por quadro do jogo), 3 = 3x, 4 = 4x
-    int geracao = 0;
     bool movimento = true;  // movimento simulado por fluxo optico (as guias do historico da propria rede)
-    int ritmo = 1;          // a rede edita 1 de cada N quadros; os outros sao gerados dos processados (1 = todo quadro)
     int profundidade = 0;   // blocos da rede grande: 0 = 71, 1 = 68, 2 = 63, 3 = 55, 4 = 47 (residuais pulados); mais rapido
     bool profundidadeAuto = false; // a profundidade segue a velocidade (medido: corta no maximo ~4,7 ms e estraga a imagem)
     int profundidadeMax = 3;      // no automatico, o nivel mais raso permitido

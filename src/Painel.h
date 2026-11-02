@@ -24,7 +24,6 @@ struct EstadoPainel
     bool redeOk = false;
     UINT janelaW = 0, janelaH = 0, redeW = 0, redeH = 0;
     double msMedio = 0, fps = 0;
-    double vfps = 0;             // quadros na tela com a geracao de quadros (0 = sem geracao)
     double fracaoRede = 1; // fracao dos quadros com resposta nova da rede
     int fonte = 0;               // Modo de Rede: 0 captura de video, 1 captura de buffer
     std::string estadoBuffer;    // estado da captura de buffer
@@ -37,10 +36,10 @@ struct EstadoPainel
     bool historicoAtivo = false; // DLSS5_TEMPORAL_MODE=1 nesta sessao (a forca do historico vale)
     std::string memoria;         // uso e orcamento de VRAM do overlay
     std::string avisoMemoria;    // VRAM acima do orcamento (so aviso: a rede continua); "" = dentro
-    // geracao de quadros (captura de buffer): estado do lancamento/swapchain e o ultimo jogo aberto pelo overlay
-    std::string estadoGeracao;
-    bool geracaoPronta = false;  // o jogo conectado esta com o swapchain da AMD
-    bool instaladoNoJogo = false; // a DLL esta na pasta do jogo conectado (como dxgi.dll)
+    std::string avisoPastaJogo; // o que saiu da pasta do jogo (a DLL antiga da geracao de quadros)
+    std::string exeEscolhido;   // o executavel escolhido: o overlay liga sozinho quando ele abrir ("" = nenhum)
+    std::string formatoAgora;   // os formatos em uso neste quadro
+    bool camadaVulkan = false;  // a camada Vulkan registrada enquanto o overlay esta aberto
 };
 
 struct AcoesPainel
@@ -57,7 +56,10 @@ struct AcoesPainel
     bool redefinir = false;    // padroes do programa
     bool zeraHistorico = false;
     bool ocultaMudou = false;
-    bool removerDoJogo = false; // tirar a dxgi.dll da pasta do jogo conectado (para a Lixeira)
+    std::wstring exeNovo;      // escolheu um executavel na janela de arquivos
+    bool exeEsquecer = false;
+    bool camadaMudou = false;
+    bool camadaValor = false;
 };
 
 class Painel
@@ -74,6 +76,7 @@ class Painel
     void Alterna();
     void Esconde(bool devolveFoco = true);
     void DefineJogo(HWND j) { jogo = j; }
+    void DefineAtalhos(const UINT vk[6]) { gancho.DefineAtalhos(vk); }
     void DefineAutoOculto(bool sim);  // some enquanto o jogo esta fora de foco (Alt+Tab, minimizado)
     // captura de buffer: o modulo dentro do jogo entrega o mouse ao painel (o jogo le entrada bruta e o cursor do
     // sistema nem anda); nullptr = sem modulo

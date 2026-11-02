@@ -62,7 +62,11 @@ void LogAbre(const std::wstring& pasta)
 {
     std::lock_guard<std::mutex> l(g_logMutex);
     if (!g_log)
+    {
+        // o da sessao anterior fica: depois de uma queda, abrir de novo apagava a unica prova
+        MoveFileExW((pasta + L"\\overlay.jsonl").c_str(), (pasta + L"\\overlay.anterior.jsonl").c_str(), MOVEFILE_REPLACE_EXISTING);
         g_log = _wfsopen((pasta + L"\\overlay.jsonl").c_str(), L"w", _SH_DENYNO); // legivel com o programa aberto
+    }
 }
 
 void Log(const char* tipo, const std::string& msg)

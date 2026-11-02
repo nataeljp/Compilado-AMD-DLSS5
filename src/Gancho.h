@@ -3,6 +3,7 @@
 // jogo em primeiro plano, um gancho de mouse de baixo nivel (WH_MOUSE_LL, numa thread propria) fica com o mouse: o
 // jogo nao recebe movimento nem clique (a mira nao anda), o foco continua nele e o painel desenha o proprio cursor,
 // preso na area do painel. Esc (engolida tambem) ou Ctrl+Shift+P devolvem o mouse ao jogo.
+// Do teclado, so o Esc e o que se digita num campo de texto ficam com o painel: o resto segue (print, atalhos).
 // Seguranca: sem batimento do laco principal por 1 s (laco travado), o gancho deixa tudo passar.
 #pragma once
 #include <windows.h>
@@ -46,9 +47,11 @@ class Gancho
     void EngoleMouse(bool sim);
     // movimento bruto (do modulo do jogo): anda o cursor virtual e devolve a posicao
     POINT MoveBruto(int dx, int dy);
-    // com o painel digitando (um campo de texto ativo): todas as teclas ficam com o painel, inclusive o Esc (cancela o
-    // campo em vez de fechar o painel); o jogo nao recebe nenhuma
+    // com o painel digitando (um campo de texto ativo): as teclas levam o caractere, inclusive o Alt Gr, e o Esc cancela o
+    // campo em vez de fechar o painel
     void CapturaTeclado(bool sim);
+    // as teclas dos atalhos Ctrl+Shift+<tecla>, na ordem dos ids do RegisterHotKey (1 a 6)
+    void DefineAtalhos(const UINT vk[6]);
     std::vector<EventoTecla> ColetaTeclas();
 
   private:

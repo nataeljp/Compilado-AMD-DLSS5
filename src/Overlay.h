@@ -15,8 +15,11 @@ class Overlay
     void Destroi();
     // cobre o retangulo (pixels de tela); recria a swapchain quando o tamanho muda
     // hdr: swapchain FP16 scRGB (G10, P709); senao R8G8B8A8 sRGB
-    void Posiciona(const RECT& r, bool hdr);
+    // bw, bh: quadro de outro tamanho que o retangulo (back buffer do jogo): o compositor estica
+    void Posiciona(const RECT& r, bool hdr, UINT bw = 0, UINT bh = 0);
     void Mostra(bool sim);
+    // devolve a VRAM da swapchain (captura de buffer: nao apresenta nada aqui); Posiciona recria
+    void SoltaSwapchain();
     // ordem das janelas: o overlay logo acima do jogo e abaixo de `acima` (o painel), os dois "sempre no topo".
     // Jogos que se poem no topo ao ganhar foco passariam por cima do overlay; por isso e reafirmado de tempos em tempos.
     void Ordena(HWND acima);
@@ -40,6 +43,7 @@ class Overlay
     ComPtr<IDCompositionVisual> visual;
     ComPtr<ID3D12Resource> buffers[2];
     UINT w = 0, h = 0;
+    float escX = 1.f, escY = 1.f;
     RECT ultimo{};
     bool visivel = false;
 };

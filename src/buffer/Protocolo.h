@@ -30,14 +30,15 @@ namespace dlss5ov {
 // desconhecido ou absurdo (os shaders comparam o Z, como antes)
 inline float TanMeioFov(float fovY) { return fovY > 0.01f && fovY < 3.1f ? std::tan(0.5f * fovY) : 0.f; }
 
-constexpr uint32_t kVersao = 10; // 2: movimento RG32F acumulado ate a exportacao anterior; 3: espera (sem atraso);
+constexpr uint32_t kVersao = 15; // 2: movimento RG32F acumulado ate a exportacao anterior; 3: espera (sem atraso);
                                  // 4: quadros repetidos; 5: modo dos quadros gerados (repetido / mesclado);
                                  // 6: a luz de cada edicao (linear / logaritmica); 7: geracao de quadros da AMD;
                                  // 8: a geracao em uso, a taxa do monitor e o ritmo do jogo; 9: quadros na tela e 1% low;
-                                 // 10: luz mista
-// o modulo mais antigo com que o overlay ainda fala: o v9 tem o mesmo layout e so nao conhece a luz mista (recebe a
-// logaritmica). Um jogo aberto antes da atualizacao fica com o modulo antigo carregado ate reabrir
-constexpr uint32_t kVersaoMinima = 9;
+                                 // 10: luz mista; 11: sem a geracao de quadros, com o denoise no jogo;
+                                 // 12: o jogo diz por que nao criou as texturas (erroJogo); 13: tamanho do grao e formato do denoise;
+                                 // 14: formato da cor e da edicao escolhido no painel; 15: prazo da espera medido no overlay
+// o modulo mais antigo com que o overlay ainda fala: um jogo aberto antes da atualizacao fica com o modulo antigo ate reabrir
+constexpr uint32_t kVersaoMinima = 15;
 constexpr uint32_t kSlotsEntrada = 2;
 constexpr uint32_t kSlotsEdicao = 3;
 
@@ -45,17 +46,7 @@ inline void NomeMapa(wchar_t* b, size_t n, uint32_t pid) { swprintf(b, n, L"Loca
 // evento (auto-reset, criado pelo jogo): o overlay dispara depois de cada Publica
 inline void NomeEventoPublica(wchar_t* b, size_t n, uint32_t pid) { swprintf(b, n, L"Local\\DLSS5Ov.Publica.%u", pid); }
 
-// Jogo aberto pelo overlay ja com o modulo (geracao de quadros: o swapchain do jogo e trocado pelo da AMD na criacao).
-// O overlay cria o lancamento antes de carregar a DLL; o modulo le no carregamento, engancha a criacao do swapchain e
-// dispara o evento pronto -- so entao o overlay solta o jogo (que nasceu suspenso).
-struct Lancamento
-{
-    uint32_t versao;  // kVersao
-    uint32_t geracao; // quadros apresentados por quadro do jogo pedidos no lancamento (0/1 = sem geracao, 2..4)
-};
-inline void NomeLancamento(wchar_t* b, size_t n, uint32_t pid) { swprintf(b, n, L"Local\\DLSS5Ov.Lancamento.%u", pid); }
-inline void NomeEventoPronto(wchar_t* b, size_t n, uint32_t pid) { swprintf(b, n, L"Local\\DLSS5Ov.Pronto.%u", pid); }
-// o modulo esta neste processo (instalado na pasta do jogo como dxgi.dll, ou injetado): nao colocar outro
+// o modulo esta neste processo: nao colocar outro
 inline void NomeModulo(wchar_t* b, size_t n, uint32_t pid) { swprintf(b, n, L"Local\\DLSS5Ov.Modulo.%u", pid); }
 // qual: L"cor", L"mov", L"prof", L"exp", L"edicao", L"cercaJogo", L"cercaOverlay"
 inline void NomeRecurso(wchar_t* b, size_t n, uint32_t pid, uint32_t geracao, const wchar_t* qual, uint32_t slot)
@@ -106,24 +97,24 @@ struct Cabecalho
     volatile uint32_t aplica;           // o jogo soma a edicao (0: so exporta; ex. modo "original" no painel)
     volatile uint32_t espera;           // sem atraso: 1 = o quadro seguinte a cada exportacao espera a edicao dela (e
                                         // nao exporta: a rede roda a cada 2 quadros); 2 = todo quadro espera e exporta
-    volatile uint32_t repete;           // sem atraso (espera > 0): quadros repetidos N = 2..4. O jogo exporta 1 de cada N
+    volatile uint32_t prazoEspera;      // ms que o jogo espera a edicao, pelo tempo que a rede esta levando (0 = o minimo do modulo)
+    volatile uint32_t repete;          // sem atraso (espera > 0): quadros repetidos N = 2..4. O jogo exporta 1 de cada N
                                         // quadros, guarda a cor dele e mostra esse quadro com a edicao exata dele (sem
                                         // movimento) nos N quadros seguintes, no lugar do quadro novo sem rede (1 = todo
                                         // quadro processado, sem repeticao)
     volatile uint32_t gerado;           // com repete >= 2: 0 = quadro repetido; 1 = mesclado: entre o processado anterior
                                         // e o novo, os N-1 quadros gerados misturam os dois (50/50, 40/60, 30/70) e o novo
                                         // vem depois deles (o novo aparece N quadros depois, nao 1)
-    volatile uint32_t geracaoQuadros;   // overlay -> jogo: geracao de quadros da AMD (0/1 = desligada, 2..4 quadros
-                                        // apresentados por quadro do jogo)
-    volatile uint32_t geracaoPronta;    // jogo -> overlay: o swapchain da AMD esta em uso (a DLL entrou antes do DirectX)
-    volatile uint32_t geracaoEmUso;     // jogo -> overlay: quadros apresentados por quadro do jogo de fato (pode ser menos
-                                        // que o pedido: a tela nunca recebe mais quadros por segundo que a taxa do monitor)
-    volatile uint32_t hzMonitor;        // jogo -> overlay: a taxa atual do monitor do jogo (0 = desconhecida)
-    volatile uint32_t hzMaximo;         // jogo -> overlay: a maior taxa que o monitor aceita nesta resolucao
+    // overlay -> jogo: o denoise no proprio quadro do jogo (buffer/DenoiseHlsl.h). Forcas em 0 = desligado
+    volatile float dnReconstrucao, dnAcumulacao, dnRecorte, dnBordas, dnBordasSigma;
+    volatile uint32_t dnBordasPasses;
+    volatile float dnDivisao;           // comparacao lado a lado: so de divisao x largura em diante; < 0 = a tela toda
+    volatile uint32_t dnGrao;           // o tamanho do grao da rede em pixels da cor: largura da cor / largura da rede
+    volatile uint32_t dnEconomia;       // 1 = cor e historico em R11G11B10; 0 = RGBA16F
+    // overlay -> jogo: os formatos pedidos (DXGI_FORMAT; 0 = RGBA16F). Jogo -> overlay: os desta geracao
+    volatile uint32_t fmtCorPedido, fmtEdicaoPedido;
+    uint32_t fmtCorSlot, fmtEdicaoSlot;
     volatile uint32_t fpsJogo10;        // jogo -> overlay: quadros do jogo por segundo x 10
-    volatile uint32_t apresentados10;   // jogo -> overlay: quadros na tela por segundo (reais + gerados) x 10, a cada 5 s
-    volatile uint32_t baixo1pct10;      // jogo -> overlay: "1% low" dos quadros na tela x 10 (1000 / o intervalo que so
-                                        // 1% das apresentacoes passa), a cada 5 s; 0 = sem apresentacoes da AMD
     volatile uint64_t consumido;        // ultimo quadro de entrada que o overlay ja copiou (o slot pode ser reescrito)
     volatile uint64_t lido[kSlotsEdicao]; // ultimo quadro do jogo que gravou leitura do slot de edicao k
     volatile uint64_t quadroJogo;         // ultimo quadro gravado pelo jogo
@@ -136,6 +127,9 @@ struct Cabecalho
     volatile int32_t mouseRoda;              // entalhes x 120
     volatile uint32_t botaoDesce[3], botaoSobe[3]; // contadores (esquerdo, direito, meio)
     volatile uint32_t mouseEventos;          // eventos de mouse que o jogo leu (diagnostico)
+    // (o formato da edicao tem sinal por codigo: y = e / (1 + |e|); R10G10B10A2_UNORM: u = (512 + 511 y) / 1023, o zero exato, e a
+    // distancia (log2 + 8) / 32 na textura "edicaoA" em R8_UNORM; R8G8B8A8_SNORM: y direto, e a distancia 2 d - 1 no alfa)
+    char erroJogo[160];                      // jogo -> overlay: por que as texturas nao foram criadas ("" = sem erro)
     SlotEntrada entrada[kSlotsEntrada];
     SlotEdicao edicao[kSlotsEdicao];
 };

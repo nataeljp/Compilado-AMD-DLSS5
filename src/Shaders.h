@@ -10,6 +10,7 @@
 // ACES: o ajuste RRT+ODT de Stephen Hill que o RenoDX usa (clshortfuse/renodx, MIT, tonemap.hlsl ACESFittedAP1).
 // Implementacao propria; nenhum codigo GPL.
 #pragma once
+#include "buffer/DenoiseHlsl.h"
 
 namespace ov::hlsl {
 
@@ -188,6 +189,24 @@ Texture2D<float4> src : register(t0);
 RWTexture2D<float4> dst : register(u0);
 RWTexture2D<float4> dstProxy : register(u1);
 SamplerState s : register(s0);
+// o formato escolhido no painel: prePad1 = sem alfa (R11G11B10_FLOAT): a folga vai no R8_UNORM ao lado (u1), como 1 / folga;
+// prePad2 = R8G8B8A8 gravado em sRGB (a leitura pela vista _SRGB devolve linear; em 8 bits lineares o escuro viraria faixas)
+void GravaInteiro(uint2 p, float3 l, float folga)
+{
+    dst[p] = float4(prePad2 ? Srgb(l) : l, folga);
+    if (prePad1)
+        dstProxy[p] = float4(saturate(1.0 / max(folga, 1e-3)), 0.0, 0.0, 1.0);
+}
+
+// HDR10 -> scRGB (1 = 80 nits): SMPTE ST 2084 inversa e BT.2020 -> BT.709 (BT.2087)
+float3 PqParaScRgb(float3 c)
+{
+    const float m1 = 2610.0 / 16384.0, m2 = 2523.0 / 32.0, c1 = 3424.0 / 4096.0, c2 = 2413.0 / 128.0, c3 = 2392.0 / 128.0;
+    const float3 e = pow(saturate(c), 1.0 / m2);
+    const float3 n = pow(max(e - c1, 0.0) / (c2 - c3 * e), 1.0 / m1) * (10000.0 / 80.0);
+    return float3(dot(n, float3(1.660491, -0.587641, -0.072850)), dot(n, float3(-0.124550, 1.132900, -0.008349)),
+                  dot(n, float3(-0.018151, -0.100579, 1.118730)));
+}
 
 [numthreads(8, 8, 1)] void CSInteiro(uint2 p : SV_DispatchThreadID)
 {
@@ -195,9 +214,15 @@ SamplerState s : register(s0);
     float4 c = src.Load(int3(p, 0));
     // reproducao de gravacao (--reproduz): a entrada ja e o quadro do overlay (luz de cena), sem conversao. No sanduiche o
     // gravado esta na tela SDR equivalente e o quadro inteiro guarda luz linear: volta pela inversa (CSReduz refaz o joelho)
-    if (passa) { dst[p] = float4(hdr != 0 && ponte == 1 ? SoftKneeInv(c.rgb) : c.rgb, 1.0); return; }
+    if (passa & 1) { GravaInteiro(p, hdr != 0 && ponte == 1 ? SoftKneeInv(c.rgb) : c.rgb, 1.0); return; }
     // HDR: scRGB dividido pelo branco de papel; SDR: sRGB -> linear (ponte 3: e desfaz a curva do jogo, luz de cena)
     float3 l = hdr ? max(c.rgb, 0.0) / escala : Linear(saturate(c.rgb));
+    // captura da API: o back buffer vem como o jogo o escreveu, nao no formato que a tela pediu. 1 = sRGB (jogo SDR, mesmo com o
+    // monitor em HDR); 2 = HDR10; 3 = linear num monitor SDR
+    const uint entrada = passa >> 1;
+    if (entrada == 1) l = Linear(saturate(c.rgb));
+    else if (entrada == 2) l = max(PqParaScRgb(c.rgb), 0.0) / escala;
+    else if (entrada == 3) l = saturate(c.rgb);
     float folga = 1.0;
     if (ponte == 3)
     {
@@ -219,7 +244,7 @@ SamplerState s : register(s0);
     // contra a NVIDIA: 43,8 dB em HDR contra 47,4 em SDR). O quadro inteiro guarda a luz linear; o joelho e a folga sao
     // feitos na leitura (Sanduiche, no CSReduz e no CSCompoe).
     // (luzes/sombras/cor antes da rede: no CSReduz e no resultado do CSCompoe; o quadro inteiro fica intacto)
-    dst[p] = float4(l, folga);
+    GravaInteiro(p, l, folga);
 }
 
 [numthreads(8, 8, 1)] void CSReduz(uint2 p : SV_DispatchThreadID)
@@ -257,7 +282,8 @@ cbuffer C : register(b0) { uint fw; uint fh; uint dw; uint dh; float forca; uint
                            uint pad3; uint pad4;
                            float satR; float satY; float satG; float satC; float satB; float satM;
                            float luzR; float luzY; float luzG; float luzC; float luzB; float luzM;
-                           uint usaMatiz; uint temCrua; uint luz; uint padA1; };
+                           uint usaMatiz; uint temCrua; uint luz; uint alfaFora; };
+Texture2D<float> inteiroA : register(t6); // alfaFora: 1 / folga, quando o quadro inteiro nao tem alfa (R11G11B10_FLOAT)
 Texture2D<float4> inteiro : register(t0);
 Texture2D<float4> fed : register(t1);
 Texture2D<float4> edicao : register(t2);
@@ -354,7 +380,7 @@ float3 CorPorMatiz(float3 c)
     if (p.x >= fw || p.y >= fh) return;
     const float4 oi = inteiro.Load(int3(p, 0));
     float3 o = oi.rgb;
-    float folga = oi.a;
+    float folga = alfaFora ? 1.0 / max(inteiroA.Load(int3(p, 0)), 1e-3) : oi.a;
     if (sanduiche) o = Sanduiche(oi.rgb, folga);
     float3 e = 0;
     if (usaEdicao)
@@ -402,143 +428,8 @@ float3 CorPorMatiz(float3 c)
 }
 )";
 
-// Depois da composicao, so no lado da rede (denoise): CSBilateral (bilateral guiado por bordas: peso espacial gaussiano
-// de raio = raioB e peso de cor que cai com a diferenca para o centro -- suaviza o ruido sem atravessar as bordas; bil
-// 0..1 a mistura, 1..2 a tolerancia de cor ate o dobro), CSTemporal (o resultado anterior reprojetado pelo movimento,
-// preso ao minimo/maximo 3x3 do atual para nao deixar rastro, misturado ate 90%) e CSNitidez (RCAS do FSR 1 e, se cas
-// > 0, o CAS -- AMD FidelityFX, licenca MIT, escritos a partir dos algoritmos publicados: 1 = o maximo do algoritmo,
-// 2 = a diferenca amplificada ao dobro). SDR: nos valores sRGB; HDR: pesos e nitidez em c / (1 + c) por canal (c em
-// brancos de papel). Modo Original, metade original da comparacao e diagnosticos ficam como estao.
-inline const char* Nitidez = R"(
-cbuffer C : register(b0) { uint w; uint h; uint hdr; float bil; uint modo; float divisao; float escala; float rcas;
-                           float cas; uint raioB; float temporal; uint histValida; uint movW; uint movH; uint pad0; uint pad1; };
-Texture2D<float4> ent : register(t0);
-Texture2D<float4> hist : register(t1);
-Texture2D<float2> mov : register(t2);
-RWTexture2D<float4> sai : register(u0);
-RWTexture2D<float4> histNovo : register(u1);
-bool Rede(uint2 p) { return modo == 0 || modo == 5 || (modo == 2 && (float)p.x >= divisao * w + 1.0); }
-float3 Comp(float3 c)
-{
-    if (hdr)
-    {
-        c = max(c, 0.0) / escala;
-        c = c / (1.0 + c);
-    }
-    return saturate(c);
-}
-[numthreads(8, 8, 1)] void CSBilateral(uint2 p : SV_DispatchThreadID)
-{
-    if (p.x >= w || p.y >= h) return;
-    const float4 c4 = ent.Load(int3(p, 0));
-    if (!Rede(p))
-    {
-        sai[p] = c4;
-        return;
-    }
-    const float b = clamp(bil, 0.0, 2.0);
-    const float raio = max(1.0, (float)raioB);
-    const int n = min(4, (int)ceil(raio));
-    const float passo = raio / n, ss = 0.85 * raio, sr = 0.03 + 0.06 * b;
-    const float3 ce = Comp(c4.rgb);
-    float3 s = 0;
-    float ws = 0;
-    for (int j = -n; j <= n; ++j)
-        for (int i = -n; i <= n; ++i)
-        {
-            const float2 o = float2(i, j) * passo;
-            const float3 x = ent.Load(int3(clamp(int2(p) + int2(round(o)), int2(0, 0), int2(w, h) - 1), 0)).rgb;
-            const float3 dc = Comp(x) - ce;
-            const float wt = exp(-dot(o, o) / (2.0 * ss * ss) - dot(dc, dc) / (2.0 * sr * sr));
-            s += wt * x;
-            ws += wt;
-        }
-    sai[p] = float4(lerp(c4.rgb, s / ws, min(b, 1.0)), c4.a);
-}
-[numthreads(8, 8, 1)] void CSTemporal(uint2 p : SV_DispatchThreadID)
-{
-    if (p.x >= w || p.y >= h) return;
-    const float4 c4 = ent.Load(int3(p, 0));
-    if (!Rede(p))
-    {
-        sai[p] = c4;
-        histNovo[p] = c4;
-        return;
-    }
-    float3 mn = c4.rgb, mx = c4.rgb;
-    for (int j = -1; j <= 1; ++j)
-        for (int i = -1; i <= 1; ++i)
-        {
-            const float3 x = ent.Load(int3(clamp(int2(p) + int2(i, j), int2(0, 0), int2(w, h) - 1), 0)).rgb;
-            mn = min(mn, x), mx = max(mx, x);
-        }
-    // o movimento (pixels da textura dele, atual -> anterior) na resolucao da saida
-    float2 mv = 0;
-    if (movW && movH)
-        mv = mov.Load(int3(min(uint2((float2(p) + 0.5) * float2(movW, movH) / float2(w, h)), uint2(movW, movH) - 1), 0)) *
-             float2(w, h) / float2(movW, movH);
-    const float2 q = float2(p) + 0.5 + mv;
-    const bool dentro = all(q >= 0.0) && all(q < float2(w, h));
-    float3 o = c4.rgb;
-    if (histValida && dentro)
-    {
-        const float3 hc = clamp(hist.Load(int3(int2(q), 0)).rgb, mn, mx);
-        o = lerp(c4.rgb, hc, 0.9 * saturate(temporal));
-    }
-    sai[p] = float4(o, c4.a);
-    histNovo[p] = float4(o, c4.a);
-}
-float3 Ld(int2 q) { return ent.Load(int3(clamp(q, int2(0, 0), int2(w, h) - 1), 0)).rgb; }
-float3 Le(int2 q) { return Comp(Ld(q)); }
-[numthreads(8, 8, 1)] void CSNitidez(uint2 p : SV_DispatchThreadID)
-{
-    if (p.x >= w || p.y >= h) return;
-    const float4 c4 = ent.Load(int3(p, 0));
-    if (!Rede(p))
-    {
-        sai[p] = c4;
-        return;
-    }
-    const int2 q = int2(p);
-    // a b c
-    // d e f
-    // g k i
-    const float3 a = Le(q + int2(-1, -1)), b = Le(q + int2(0, -1)), c = Le(q + int2(1, -1));
-    const float3 d = Le(q + int2(-1, 0)), e = Le(q), f = Le(q + int2(1, 0));
-    const float3 g = Le(q + int2(-1, 1)), k = Le(q + int2(0, 1)), i = Le(q + int2(1, 1));
-    float3 delta = 0;
-    if (cas > 0)
-    {
-        float3 mn = min(min(min(d, e), min(f, b)), k);
-        float3 mx = max(max(max(d, e), max(f, b)), k);
-        mn += min(mn, min(min(a, c), min(g, i)));
-        mx += max(mx, max(max(a, c), max(g, i)));
-        const float3 amp = sqrt(saturate(min(mn, 2.0 - mx) / max(mx, 1e-5)));
-        const float n = saturate(cas);
-        const float3 wv = amp * (-n / lerp(8.0, 5.0, n));
-        delta += ((b * wv + d * wv + f * wv + k * wv + e) / (1.0 + 4.0 * wv) - e) * max(cas, 1.0);
-    }
-    if (rcas > 0)
-    {
-        const float3 mn4 = min(min(b, d), min(f, k)), mx4 = max(max(b, d), max(f, k));
-        const float3 hitMin = min(mn4, e) / (4.0 * max(mx4, 1e-5));
-        const float3 hitMax = (1.0 - max(mx4, e)) / min(4.0 * mn4 - 4.0, -1e-5);
-        const float3 lobe3 = max(-hitMin, hitMax);
-        const float lobe = max(-(0.25 - 1.0 / 16.0), min(max(lobe3.r, max(lobe3.g, lobe3.b)), 0.0));
-        delta += ((lobe * (b + d + f + k) + e) / (4.0 * lobe + 1.0) - e) * rcas;
-    }
-    const float3 r = saturate(e + delta);
-    if (!hdr)
-    {
-        sai[p] = float4(r, c4.a);
-        return;
-    }
-    // HDR: so a diferenca volta a luz linear e soma no valor original (o scRGB tem canais negativos fora do sRGB, que
-    // o dominio [0,1] cortaria; numa area lisa a diferenca e zero e o pixel fica identico)
-    const float3 r1 = min(r, 0.999), e1 = min(e, 0.999);
-    sai[p] = float4(c4.rgb + (r1 / (1.0 - r1) - e1 / (1.0 - e1)) * escala, c4.a);
-}
-)";
+// o denoise fora da rede: o mesmo HLSL do modulo do jogo (buffer/DenoiseHlsl.h)
+inline const char* const Denoise = dlss5ov::kDenoiseHlsl;
 
 // captura de buffer: a edicao que o jogo soma no quadro seguinte, no espaco comprimido (C(x) = x / (1 + luma), o mesmo
 // do Temporal e do modulo do jogo): C(saida) - C(cor do jogo); na luz logaritmica e na mista, CodificaLuz
@@ -546,11 +437,12 @@ float3 Le(int2 q) { return Comp(Ld(q)); }
 // (onde o objeto acabou de sair, o vetor aponta para o objeto; sem o teste, a edicao dele virava rastro no fundo).
 inline const char* Exporta = R"(
 cbuffer C : register(b0) { uint w; uint h; uint profW; uint profH; float perto; float longe; uint invertida; uint infinita;
-                           float tanY; float aspecto; uint luz; uint pad1; };
+                           float tanY; float aspecto; uint luz; uint cod; };
 Texture2D<float4> cor : register(t0);   // a cor que o jogo mandou (linear x exposicao)
 Texture2D<float4> saida : register(t1); // o resultado no mesmo espaco
 Texture2D<float> prof : register(t2);   // a profundidade que o jogo mandou
 RWTexture2D<float4> edicao : register(u0);
+RWTexture2D<float> edicaoA : register(u1); // cod 1: a distancia em R8_UNORM (Protocolo.h)
 float3 Comprime(float3 x) { return x / (1.0 + max(Lum(x), 0.0)); }
 static const float CEU = 1e6;
 // profundidade do jogo -> distancia da camera (a mesma conta no overlay e no jogo: Fluxo/DoJogo, Exporta, CSCor)
@@ -595,7 +487,22 @@ float Radial(float z, float2 uv)
     const float z = Radial(Dist(prof.Load(int3(pp, 0))), (p + 0.5) / float2(w, h));
     // luz linear: a diferenca no espaco comprimido; logaritmica e mista: CodificaLuz
     const float3 ed = luz != 0 ? CodificaLuz(o, r, luz) : Comprime(r) - Comprime(o);
-    edicao[p] = float4(ed, log2(max(z, 1e-6)));
+    const float dist = log2(max(z, 1e-6));
+    if (cod == 0)
+    {
+        edicao[p] = float4(ed, dist);
+        return;
+    }
+    // formato sem o alcance do float16: a edicao comprimida com o zero exato (o pixel sem edicao fica intacto)
+    const float3 y = ed / (1.0 + abs(ed));
+    const float d = saturate((dist + 8.0) / 32.0);
+    if (cod == 1)
+    {
+        edicao[p] = float4((512.0 + 511.0 * y) / 1023.0, 1.0);
+        edicaoA[p] = d;
+    }
+    else
+        edicao[p] = float4(y, d * 2.0 - 1.0);
 }
 )";
 

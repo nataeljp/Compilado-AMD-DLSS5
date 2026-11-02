@@ -31,7 +31,7 @@ std::string Rede::Status()
 
 // Pasta de assets da rede pequena: hardlinks dos assets da grande (copia se o hardlink falhar), menos os pesos que a
 // pequena troca (runtime\pequena, com o network-layout.txt: blocos ausentes e deslocamentos). Refeita so quando o
-// network-layout.txt da pequena muda.
+// conteudo de runtime\pequena muda (nome, tamanho e data de cada arquivo: pesos trocados sem mexer no layout tambem).
 static bool MontaAssetsPequena(const std::wstring& pasta, std::wstring& saida)
 {
     namespace fs = std::filesystem;
@@ -41,10 +41,29 @@ static bool MontaAssetsPequena(const std::wstring& pasta, std::wstring& saida)
     if (!fs::exists(peq / L"network-layout.txt") || !fs::exists(base))
         return false;
     saida = dst.wstring();
-    const auto marca = dst / L"network-layout.txt";
-    if (fs::exists(marca) && fs::file_size(marca, ec) == fs::file_size(peq / L"network-layout.txt", ec) &&
-        fs::last_write_time(marca, ec) == fs::last_write_time(peq / L"network-layout.txt", ec))
-        return true;
+    const auto marca = dst / L"montagem.txt";
+    std::vector<std::string> linhas;
+    for (auto& e : fs::directory_iterator(peq, ec))
+        if (e.is_regular_file())
+            linhas.push_back(Fmt("%s %llu %lld\n", Utf8(e.path().filename().wstring()).c_str(),
+                                 (unsigned long long)e.file_size(ec),
+                                 (long long)e.last_write_time(ec).time_since_epoch().count()));
+    std::sort(linhas.begin(), linhas.end());
+    std::string assinatura;
+    for (const auto& l : linhas)
+        assinatura += l;
+    {
+        std::string atual;
+        if (FILE* f = _wfopen(marca.c_str(), L"rb"))
+        {
+            char b[4096];
+            for (size_t n; (n = fread(b, 1, sizeof b, f)) > 0;)
+                atual.append(b, n);
+            fclose(f);
+        }
+        if (atual == assinatura && fs::exists(dst / L"network-layout.txt"))
+            return true;
+    }
     fs::remove_all(dst, ec);
     fs::create_directories(dst, ec);
     std::set<std::wstring> proprios; // nomes (sem .f16/.f32) que a pequena traz: o da grande nao entra em nenhuma extensao
@@ -67,7 +86,7 @@ static bool MontaAssetsPequena(const std::wstring& pasta, std::wstring& saida)
         if (ec)
         {
             ec.clear();
-            fs::copy_file(it->path(), alvo, fs::copy_options::overwrite_existing, ec);
+            fs::copy_file(it->path(), alvo, fs::copy_options::none, ec); // nunca por cima: o que ficou pode ser um hardlink
         }
     }
     // remove antes de copiar: se o destino for um hardlink da grande, sobrescrever alteraria a grande tambem
@@ -75,19 +94,39 @@ static bool MontaAssetsPequena(const std::wstring& pasta, std::wstring& saida)
         if (e.is_regular_file())
         {
             fs::remove(dst / e.path().filename(), ec);
-            fs::copy_file(e.path(), dst / e.path().filename(), fs::copy_options::overwrite_existing, ec);
+            if (fs::exists(dst / e.path().filename()))
+            {
+                Log("rede", "nao troquei " + Utf8(e.path().filename().wstring()) + " na rede pequena (arquivo preso por outro overlay?)");
+                return false; // copiar por cima alteraria a rede grande, se ele for um hardlink dela
+            }
+            fs::copy_file(e.path(), dst / e.path().filename(), fs::copy_options::none, ec);
         }
-    fs::last_write_time(marca, fs::last_write_time(peq / L"network-layout.txt", ec), ec);
+    if (FILE* f = _wfopen(marca.c_str(), L"wb"))
+    {
+        fwrite(assinatura.data(), 1, assinatura.size(), f);
+        fclose(f);
+    }
     Log("rede", "assets da rede pequena montados: " + Utf8(saida));
-    return fs::exists(marca);
+    return fs::exists(dst / L"network-layout.txt");
 }
 
 bool Rede::Inicia(Gpu& g, const std::wstring& pasta, bool pequena)
 {
     // tamanho livre da rede (ate 3840x2176 de superficie): o tamanho que o overlay entrega e o que a rede roda
     SetEnvironmentVariableW(L"DLSS5_NETWORK_FREE_RES", L"1");
+    // o cache de recursos do HIP segura a memoria da rede que ja saiu: em 1080p depois de 2160p, 3271 MB contra 2347 MB sem ele, no
+    // mesmo tempo de rede (28 ms). Lido quando o HIP carrega
+    SetEnvironmentVariableW(L"GPU_RESOURCE_CACHE_SIZE", L"0");
+    SetEnvironmentVariableW(L"GPU_MAX_RESOURCE_CACHE_SIZE", L"0");
+    // a pasta do runtime na busca de DLLs so enquanto ele carrega (a busca e do processo inteiro); uma referencia so: a
+    // troca de rede passa aqui de novo com a DLL ja carregada
     SetDllDirectoryW(pasta.c_str());
-    mod = LoadLibraryW((pasta + L"\\LmxxfNrRuntime.dll").c_str());
+    struct Restaura
+    {
+        ~Restaura() { SetDllDirectoryW(nullptr); }
+    } restaura;
+    if (!mod)
+        mod = LoadLibraryW((pasta + L"\\LmxxfNrRuntime.dll").c_str());
     if (!mod)
     {
         Log("rede", Fmt("LoadLibrary(LmxxfNrRuntime.dll) falhou: %lu", GetLastError()));
@@ -149,7 +188,11 @@ bool Rede::Inicia(Gpu& g, const std::wstring& pasta, bool pequena)
         return false;
     }
     if (Erro(api.PrepareSession(ctx), "PrepareSession"))
+    {
+        api.Destroy(ctx); // sem isso Pronta() dizia que sim com a sessao incompleta
+        ctx = nullptr;
         return false;
+    }
     Log("rede", "runtime pronto: " + Utf8(assets));
     return true;
 }

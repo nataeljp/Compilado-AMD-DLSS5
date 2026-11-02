@@ -13,6 +13,7 @@
 #include "Abertura.h"
 #include "Captura.h"
 #include "Config.h"
+#include "FonteApi.h"
 #include "FonteBuffer.h"
 #include "Fluxo.h"
 #include "Injecao.h"
@@ -30,7 +31,6 @@
 #include <cwctype>
 #include <deque>
 #include <mutex>
-#include <set>
 #include <thread>
 
 using namespace ov;
@@ -104,96 +104,96 @@ struct App
     Painel painel;
     bool comPainel = true;
     double fps = 0, msMedio = 0;
-    double vfps = 0; // quadros na tela (processados + gerados) por segundo
     std::chrono::steady_clock::time_point marcaFps = std::chrono::steady_clock::now();
-    UINT64 quadrosMarca = 0, apresentados = 0, apresentadosMarca = 0;
+    UINT64 quadrosMarca = 0;
     Config cfg;
-    Passe pInteiro, pReduz, pCompoe, pExporta, pGuias, pNitidez, pBilateral, pTemporal;
+    Passe pInteiro, pReduz, pCompoe, pExporta, pGuias, pDnNor, pDnRec, pDnAcu, pDnBor;
     // ---- captura de buffer (Modo de Rede): a DLSS5Buffer.dll no jogo aberto entrega cor sem HUD, movimento e
     // profundidade do upscaler dele; a edicao volta para o jogo, que a soma no quadro seguinte ----
     FonteBuffer fb;
     bool buffer = false;        // ligado pela captura de buffer (sem WGC e sem a janela do overlay)
-    HWND alvoBuffer = nullptr;
+    bool redeLenta = false;     // a rede passou do prazo do jogo: ele so espera se o painel pedir
+    HWND alvoBuffer = nullptr;  // o jogo, nas duas capturas com a DLL
+    FonteApi fa;
+    bool captApi = false;       // ligado pela captura da API (DLL no Present; o resto como a captura de video)
+    uint64_t quadroApi = 0;     // o quadro em uso, ate a GPU terminar de le-lo
+    ULONGLONG apiDesde = 0;
     std::string estadoBuffer;   // linha de estado no painel
-    // geracao de quadros: o jogo aberto pelo overlay (com o modulo dentro antes do D3D12)
-    std::wstring jogoLancado;   // caminho do executavel
-    DWORD pidLancado = 0;       // 0 = nada a vigiar
-    std::chrono::steady_clock::time_point tLancado{};
-    bool janelaLancado = false; // a janela do jogo ja apareceu (ligou a captura de buffer)
-    std::string estadoGeracao;
+    std::string avisoPastaJogo; // o que saiu da pasta do jogo (a DLL antiga da geracao de quadros)
     DWORD pidBuffer = 0;                       // processo do jogo conectado pela captura de buffer
     DWORD pidRecusado = 0;                     // desligado pelo usuario: nao reconecta sozinho nesse processo
     std::wstring exeJogo;                      // caminho completo do executavel do jogo conectado
-    Instalacao instalacao = Instalacao::Nenhuma; // a DLL na pasta do jogo conectado (como dxgi.dll)
-    bool tentouInstalar = false;               // uma tentativa por conexao
-    std::string erroInstalacao;
     std::wstring Dll() const { return pasta + L"\\captura\\DLSS5Buffer.dll"; }
-    int geracaoTeste = -1;      // --lanca-jogo --fica: a geracao pedida (aplicada depois do config)
     int fonteLigada = 0;        // a fonte com que ligou (trocar no painel religa)
     uint64_t quadroJogo = 0;    // numero do quadro do jogo em processamento (gravacao: alinha com o jogo)
     int gravaEm = 0;            // --grava-em N: comeca a gravar no quadro N (testes)
     bool invertidaUsada = true; // Z invertido em uso (do jogo, ou medido quando ele nao diz)
-    bool Ligado() const { return cap.Ativa() || buffer; }
-    HWND Alvo() const { return buffer ? alvoBuffer : cap.Alvo(); }
+    bool Ligado() const { return cap.Ativa() || buffer || captApi; }
+    HWND Alvo() const { return buffer || captApi ? alvoBuffer : cap.Alvo(); }
     Tex inteiro, orig, fed, saida, fedAnt, saidaAnt; // orig: quadro no tamanho da rede; fed: o proxy dele
-    Tex comBilateral, comTemporal; // os passos do denoise antes do seguinte
-    Tex hist[2];                   // o denoise temporal: o resultado anterior e o deste quadro (alternados)
+    Tex dnTmp[2]; // os passos do denoise antes do ultimo (alternados)
+    Tex dnNormais; // normais derivadas da profundidade (reproducao de uma gravacao do modo buffer)
+    Tex hist[2];  // o denoise temporal: o resultado anterior e o deste quadro (alternados)
+    Tex histN[2]; // os quadros acumulados de cada pixel, ao lado de cada historico (R8: R11G11B10 nao tem alfa)
     int histI = 0;
     bool histValida = false;
-    Tex semNitidez; // a composicao antes da nitidez CAS (criada na primeira vez que a nitidez liga)
-    // quadros mesclados na captura de video: o processado anterior, o novo, a mistura e as misturas que faltam mostrar
-    // (peso do novo; 1 = o novo sozinho), uma por quadro capturado sem rede
-    Tex geradoAnt, geradoAtual, saidaGerada;
-    bool temGerado = false;
-    std::vector<float> geradosPendentes;
-    Passe pMistura;
-    // saidaGerada = geradoAnt * (1 - peso) + geradoAtual * peso
-    void Mistura(ID3D12GraphicsCommandList* c, float peso)
+    // ---- denoise: CAS na imagem final e visao de depuracao, para ajustar o filtro vendo o que ele faz ----
+    Passe pCas, pDnVista;
+    Tex saidaCas;
+    Tex* dnBruta = nullptr; // a edicao deste quadro antes do denoise
+    void CasNaSaida(ID3D12GraphicsCommandList* c)
     {
         const D3D12_RESOURCE_STATES SRV =
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-        geradoAnt.Para(c, SRV);
-        geradoAtual.Para(c, SRV);
-        saidaGerada.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        if (saidaCas.w != saida.w || saidaCas.h != saida.h || saidaCas.fmt != saida.fmt)
+            saidaCas.Cria(gpu.dev.Get(), saida.w, saida.h, saida.fmt, L"CAS do denoise");
+        saida.Para(c, SRV);
+        saidaCas.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         struct
         {
-            UINT w, h;
-            float peso;
-            UINT pad;
-        } k{saidaGerada.w, saidaGerada.h, peso, 0};
-        pMistura.Roda(c, desc, gpu.dev.Get(), {{geradoAnt.r.Get(), geradoAnt.fmt}, {geradoAtual.r.Get(), geradoAtual.fmt}},
-                      {{saidaGerada.r.Get(), saidaGerada.fmt}}, &k, (saidaGerada.w + 7) / 8, (saidaGerada.h + 7) / 8);
+            UINT w, h, hdr;
+            float nitidez;
+        } k{saida.w, saida.h, hdr ? 1u : 0u, std::clamp(cfg.dnCas, 0.f, 1.f)};
+        pCas.Roda(c, desc, gpu.dev.Get(), {{saida.r.Get(), saida.fmt}}, {{saidaCas.r.Get(), saidaCas.fmt}}, &k, (saida.w + 7) / 8, (saida.h + 7) / 8);
+        saidaCas.Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        saida.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
+        c->CopyResource(saida.r.Get(), saidaCas.r.Get());
     }
-    // um quadro capturado sem rede (mesclado): a proxima mistura da fila, ou o processado novo, vai para a tela
-    void ApresentaGerado()
+    void VistaDenoise(ID3D12GraphicsCommandList* c, Tex* depois)
     {
-        if (geradosPendentes.empty() || !temGerado)
-            return;
-        ID3D12Resource* bb = ov.Buffer();
-        if (!bb || ov.Largura() != geradoAtual.w || ov.Altura() != geradoAtual.h)
-            return;
-        const float peso = geradosPendentes.front();
-        geradosPendentes.erase(geradosPendentes.begin());
-        desc.Reinicia();
-        Ck(al[0]->Reset(), "reset(gerado)");
-        Ck(cl[0]->Reset(al[0].Get(), nullptr), "list(gerado)");
-        auto* c = cl[0].Get();
-        Tex* tela = &geradoAtual;
-        if (peso < 1.f)
+        const D3D12_RESOURCE_STATES SRV =
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        Tex* conta = cfg.dnVista == 4 && histN[histI].r ? &histN[histI] : depois;
+        // numa textura ao lado: processando o jogo junto, o "antes" e a propria saida
+        if (saidaCas.w != saida.w || saidaCas.h != saida.h || saidaCas.fmt != saida.fmt)
+            saidaCas.Cria(gpu.dev.Get(), saida.w, saida.h, saida.fmt, L"CAS do denoise");
+        dnBruta->Para(c, SRV);
+        depois->Para(c, SRV);
+        conta->Para(c, SRV);
+        saidaCas.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        struct
         {
-            Mistura(c, peso);
-            tela = &saidaGerada;
-        }
-        Barreira(c, bb, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST);
-        tela->Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
-        c->CopyResource(bb, tela->r.Get());
-        Barreira(c, bb, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
-        Ck(c->Close(), "close(gerado)");
-        ID3D12CommandList* l[] = {c};
-        gpu.fila->ExecuteCommandLists(1, l);
-        ov.Apresenta();
-        ++apresentados;
-        gpu.Espera();
+            UINT w, h, vista, hdr;
+            float escala;
+            UINT temConta, p1, p2;
+        } k{saida.w, saida.h, UINT(std::clamp(cfg.dnVista, 1, 4)), hdr ? 1u : 0u, escalaUsada, conta != depois ? 1u : 0u, 0, 0};
+        pDnVista.Roda(c, desc, gpu.dev.Get(), {{dnBruta->r.Get(), dnBruta->fmt}, {depois->r.Get(), depois->fmt}, {conta->r.Get(), conta->fmt}},
+                      {{saidaCas.r.Get(), saidaCas.fmt}}, &k, (saida.w + 7) / 8, (saida.h + 7) / 8);
+        saidaCas.Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        saida.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
+        c->CopyResource(saida.r.Get(), saidaCas.r.Get());
+    }
+    // ---- a GPU para a rede: o teto de FPS do jogo. A prioridade nao adianta: D3DKMTSetProcessSchedulingPriorityClass (alta e tempo
+    // real, aceitas) e hipStreamCreateWithPriority deram os mesmos 10,3 fps de rede com a GPU cheia; o teto em 30 deu 17,4 ----
+    LimiteJogo limiteJogo;
+    void AplicaTetoDoJogo()
+    {
+        DWORD pid = 0;
+        if (buffer)
+            pid = pidBuffer;
+        else if (captApi)
+            GetWindowThreadProcessId(alvoBuffer, &pid);
+        limiteJogo.Define(pid, UINT(cfg.limiteFpsJogo));
     }
     std::wstring dumpPasta;
     std::wstring pastaRuntime; // --runtime: outra pasta do runtime (testes)
@@ -211,7 +211,8 @@ struct App
     bool PrecisaMovimento() const
     {
         return HistoricoRede() || cfg.modo == 4 || gravando > 0 || gravaEm > 0 || !dumpPasta.empty() ||
-               cfg.profundidadeAuto;
+               cfg.profundidadeAuto || (cfg.dnAtivo && cfg.dnAcumulacao > 0.f) ||
+               (cfg.dnAtivo && (buffer || !pastaReproducao.empty()) && (cfg.dnReconstrucao > 0.f || cfg.dnBordas > 0.f)); // a profundidade gravada guia os dois
     }
     std::wstring PastaRede() const { return pastaRuntime.empty() ? pasta + L"\\runtime" : pastaRuntime; }
     // A rede da sessao: tamanho, rede grande ou pequena, passes e rede completa valem do Liga ate o proximo Liga; mudar
@@ -262,7 +263,6 @@ struct App
     bool redeOk = false;
     bool zeraHistorico = true;
     UINT64 quadros = 0;
-    UINT64 capturados = 0; // quadros capturados (quadros repetidos na captura de video sem atraso)
     // teste
     int quadrosTeste = 0;
     std::wstring gravaArquivo;
@@ -297,27 +297,82 @@ struct App
         }
         const std::string prepara = std::string(hlsl::Comum) + hlsl::Prepara;
         const std::string compoe = std::string(hlsl::Comum) + hlsl::Compoe;
-        pInteiro.Cria(gpu.dev.Get(), prepara.c_str(), "CSInteiro", 1, 1, 16, "inteiro");
+        pInteiro.Cria(gpu.dev.Get(), prepara.c_str(), "CSInteiro", 1, 2, 16, "inteiro");
         pReduz.Cria(gpu.dev.Get(), prepara.c_str(), "CSReduz", 1, 2, 16, "reduz");
-        pCompoe.Cria(gpu.dev.Get(), compoe.c_str(), "CSCompoe", 6, 1, 40, "compoe");
-        pExporta.Cria(gpu.dev.Get(), (std::string(hlsl::Comum) + hlsl::Exporta).c_str(), "CSExporta", 3, 1, 12,
+        pCompoe.Cria(gpu.dev.Get(), compoe.c_str(), "CSCompoe", 7, 1, 40, "compoe");
+        pExporta.Cria(gpu.dev.Get(), (std::string(hlsl::Comum) + hlsl::Exporta).c_str(), "CSExporta", 3, 2, 12,
                       "edicao para o jogo");
         pGuias.Cria(gpu.dev.Get(), hlsl::Guias, "CSGuias", 2, 2, 4, "guias do historico da rede");
-        pNitidez.Cria(gpu.dev.Get(), hlsl::Nitidez, "CSNitidez", 1, 1, 16, "RCAS");
-        pBilateral.Cria(gpu.dev.Get(), hlsl::Nitidez, "CSBilateral", 1, 1, 16, "denoise bilateral");
-        pTemporal.Cria(gpu.dev.Get(), hlsl::Nitidez, "CSTemporal", 3, 2, 16, "denoise temporal");
-        pMistura.Cria(gpu.dev.Get(), R"(
-cbuffer C : register(b0) { uint w; uint h; float peso; uint pad; };
-Texture2D<float4> anterior : register(t0);
-Texture2D<float4> novo : register(t1);
-RWTexture2D<float4> saida : register(u0);
-[numthreads(8, 8, 1)] void CSMistura(uint2 p : SV_DispatchThreadID)
+        pDnNor.Cria(gpu.dev.Get(), hlsl::Denoise, "CSNormais", dlss5ov::kDnSrvs, 1, dlss5ov::kDnConstantes, "denoise: normais");
+        pDnRec.Cria(gpu.dev.Get(), hlsl::Denoise, "CSReconstrucao", dlss5ov::kDnSrvs, 1, dlss5ov::kDnConstantes, "denoise: reconstrucao");
+        pDnAcu.Cria(gpu.dev.Get(), hlsl::Denoise, "CSAcumulacao", dlss5ov::kDnSrvs, 3, dlss5ov::kDnConstantes, "denoise: acumulacao");
+        pDnBor.Cria(gpu.dev.Get(), hlsl::Denoise, "CSBordas", dlss5ov::kDnSrvs, 1, dlss5ov::kDnConstantes, "denoise: filtro de bordas");
+        // AMD FidelityFX CAS (MIT): nitidez que recua onde o contraste ja e alto. Em HDR, no espaco comprimido: a conta supoe 0..1
+        pCas.Cria(gpu.dev.Get(), R"(
+cbuffer C : register(b0) { uint w; uint h; uint hdr; float nitidez; };
+Texture2D<float4> src : register(t0);
+RWTexture2D<float4> dst : register(u0);
+float3 L(int2 p)
 {
-    if (p.x >= w || p.y >= h) return;
-    saida[p] = lerp(anterior.Load(int3(p, 0)), novo.Load(int3(p, 0)), peso);
+    const float3 c = max(src.Load(int3(clamp(p, int2(0, 0), int2(w, h) - 1), 0)).rgb, 0.0);
+    return hdr ? c / (1.0 + c) : saturate(c);
+}
+[numthreads(8, 8, 1)] void CSCas(int2 p : SV_DispatchThreadID)
+{
+    if (p.x >= int(w) || p.y >= int(h)) return;
+    const float3 a = L(p + int2(-1, -1)), b = L(p + int2(0, -1)), c = L(p + int2(1, -1));
+    const float3 d = L(p + int2(-1, 0)), e = L(p), f = L(p + int2(1, 0));
+    const float3 g = L(p + int2(-1, 1)), h2 = L(p + int2(0, 1)), i = L(p + int2(1, 1));
+    float3 mn = min(min(min(d, e), min(f, b)), h2);
+    const float3 mn2 = min(mn, min(min(a, c), min(g, i)));
+    mn += mn2;
+    float3 mx = max(max(max(d, e), max(f, b)), h2);
+    const float3 mx2 = max(mx, max(max(a, c), max(g, i)));
+    mx += mx2;
+    const float3 amp = sqrt(saturate(min(mn, 2.0 - mx) / max(mx, 1e-5)));
+    const float3 w8 = amp * (-1.0 / lerp(8.0, 5.0, nitidez));
+    float3 r = saturate((b * w8 + d * w8 + f * w8 + h2 * w8 + e) / (1.0 + 4.0 * w8));
+    if (hdr)
+        r = r / max(1.0 - r, 1e-4);
+    dst[p] = float4(r, src.Load(int3(p, 0)).a);
 }
 )",
-                      "CSMistura", 2, 1, 4, "quadro mesclado");
+                  "CSCas", 1, 1, 4, "CAS do denoise");
+        pDnVista.Cria(gpu.dev.Get(), R"(
+cbuffer C : register(b0) { uint w; uint h; uint vista; uint hdr; float escala; uint temConta; uint p1; uint p2; };
+Texture2D<float4> bruta : register(t0);
+Texture2D<float4> depois : register(t1);
+Texture2D<float> conta : register(t2);
+RWTexture2D<float4> saida : register(u0);
+SamplerState s : register(s0);
+// cinza = nao mexeu; mais claro ou mais escuro = o que a edicao faz nesse ponto
+[numthreads(8, 8, 1)] void CSVista(uint2 p : SV_DispatchThreadID)
+{
+    if (p.x >= w || p.y >= h) return;
+    const float2 uv = (float2(p) + 0.5) / float2(w, h);
+    float3 v;
+    // a edicao passa de 1 nos realces: comprimida, para nao estourar a imagem inteira
+    if (vista == 1)
+    {
+        const float3 e = bruta.SampleLevel(s, uv, 0).rgb;
+        v = 0.5 + 0.5 * e / (1.0 + abs(e));
+    }
+    else if (vista == 2)
+    {
+        const float3 e = depois.SampleLevel(s, uv, 0).rgb;
+        v = 0.5 + 0.5 * e / (1.0 + abs(e));
+    }
+    else if (vista == 3)
+        v = 0.5 + 8.0 * (bruta.SampleLevel(s, uv, 0).rgb - depois.SampleLevel(s, uv, 0).rgb);
+    else
+        v = temConta ? conta.SampleLevel(s, uv, 0).xxx : float3(0.0, 0.0, 0.0);
+    v = saturate(v);
+    if (hdr)
+        v = pow(v, 2.2) * escala;
+    saida[p] = float4(v, 1.0);
+}
+)",
+                      "CSVista", 3, 1, 8, "visao de depuracao do denoise");
         fluxo.Cria(gpu.dev.Get());
         temporal.Cria(gpu.dev.Get());
         EsperaPasses();
@@ -365,6 +420,8 @@ RWTexture2D<float4> saida : register(u0);
         rede.Encerra();
         cap.Para();
         FechaFonte();
+        fa.Fecha();
+        AplicaCamada(false);
         painel.Destroi();
         ov.Destroi();
         GravaDestino();
@@ -777,8 +834,13 @@ RWTexture2D<float4> saida : register(u0);
     void SegueJanela()
     {
         RECT r{};
-        if (imagem || buffer || !inteiro.w || !Captura::RetanguloCliente(cap.Alvo(), r))
+        if (imagem || buffer || !inteiro.w || !Captura::RetanguloCliente(Alvo(), r))
             return;
+        if (captApi)
+        {
+            ov.Posiciona(r, hdr, inteiro.w, inteiro.h); // o back buffer nao precisa ter o tamanho da janela
+            return;
+        }
         const LONG cw = r.right - r.left, ch = r.bottom - r.top;
         if (std::abs(cw - LONG(inteiro.w)) > 2 || std::abs(ch - LONG(inteiro.h)) > 2)
         {
@@ -794,10 +856,22 @@ RWTexture2D<float4> saida : register(u0);
     {
         if (!h || h == ov.Janela() || h == painel.Janela())
             return;
+        // janela que ja fechou: GetWindowThreadProcessId deixa o pid como estava (0) e OpenProcess(0) e o erro 87
+        if (!IsWindow(h))
+        {
+            estadoBuffer = "nao conectou: a janela escolhida nao existe mais (o jogo fechou). Escolha de novo ou use Ctrl+Shift+D no jogo";
+            Log("buffer", estadoBuffer);
+            return;
+        }
         fonteLigada = cfg.fonte;
         if (cfg.fonte == 1)
         {
             LigaBuffer(h);
+            return;
+        }
+        if (cfg.fonte == 2)
+        {
+            LigaApi(h);
             return;
         }
         CarregaPerfil(h);
@@ -826,6 +900,14 @@ RWTexture2D<float4> saida : register(u0);
     }
     void Desliga()
     {
+        // o que o usuario desligou fica desligado: nem o modulo dentro dele nem o exe escolhido religam sozinhos
+        if (HWND h = Alvo())
+        {
+            DWORD p = 0;
+            GetWindowThreadProcessId(h, &p);
+            if (p)
+                pidRecusado = p;
+        }
         cap.Para();
         if (buffer)
         {
@@ -838,18 +920,42 @@ RWTexture2D<float4> saida : register(u0);
             temporal.Reinicia();
             zeraHistorico = true;
         }
+        if (captApi)
+        {
+            gpu.Espera();
+            fa.Fecha(); // sem batimento o modulo para de copiar e, em 5 s, solta a VRAM
+            captApi = false;
+            quadroApi = 0;
+            alvoBuffer = nullptr;
+            estadoBuffer.clear();
+            fluxo.Reinicia();
+            temporal.Reinicia();
+            zeraHistorico = true;
+        }
         ov.Mostra(false);
     }
-    // ---- geracao de quadros: a DLL na pasta do jogo (dxgi.dll) entra antes do DirectX em toda abertura ----
-    // jogo com o modulo dentro (instalado na pasta dele, ou injetado antes) e o FSR rodando: com o Modo de Rede em
+    // jogo com o modulo dentro (injetado antes) e o FSR rodando: com o Modo de Rede em
     // buffer o overlay conecta sozinho, sem Ctrl+Shift+D (o que o usuario desligou fica desligado)
     void ProcuraJogo()
     {
         static auto ultima = std::chrono::steady_clock::now();
         const auto agora = std::chrono::steady_clock::now();
-        if (Ligado() || cfg.fonte != 1 || pidLancado || agora - ultima < std::chrono::seconds(1))
+        if (Ligado() || agora - ultima < std::chrono::seconds(1))
             return;
         ultima = agora;
+        // o executavel escolhido no painel: liga sozinho quando ele abrir
+        if (!exeEscolhido.empty())
+            if (const DWORD pid = ProcessoDoExe(exeEscolhido, pidRecusado))
+                if (HWND h = JanelaDoProcesso(pid))
+                {
+                    Log("app", Fmt("%s aberto (pid %lu): ligando", Utf8(exeEscolhido).c_str(), (unsigned long)pid));
+                    Liga(h);
+                    if (!Ligado())
+                        pidRecusado = pid;
+                    return;
+                }
+        if (cfg.fonte != 1)
+            return;
         if (const DWORD pid = ProcessoComModulo(pidRecusado))
             if (HWND h = JanelaDoProcesso(pid))
             {
@@ -859,23 +965,19 @@ RWTexture2D<float4> saida : register(u0);
                     pidRecusado = pid; // nao conectou: nao tenta de novo a cada segundo
             }
     }
-    void VigiaGeracao()
+    std::wstring exeEscolhido; // bin\jogo_escolhido.txt: fora do config (que muda com o perfil do jogo)
+    void LeExeEscolhido() { exeEscolhido = Largo(LeTexto(pasta + L"\\jogo_escolhido.txt")); }
+    void DefineExeEscolhido(const std::wstring& exe)
     {
-        if (buffer && fb.Conectada() && fb.JogoVivo() && !fb.GeracaoPronta() && cfg.geracao >= 2)
-            InstalaGeracao();
-        ProcuraJogo();
-    }
-    // liga a geracao com o jogo conectado sem o swapchain da AMD: a DLL vai para a pasta dele, uma vez
-    void InstalaGeracao()
-    {
-        if (tentouInstalar || exeJogo.empty() || instalacao == Instalacao::Nossa || instalacao == Instalacao::Outra)
-            return;
-        tentouInstalar = true;
-        erroInstalacao = InstalaNoJogo(exeJogo, Dll());
-        instalacao = EstadoInstalacao(exeJogo, Dll());
-        Log("geracao", erroInstalacao.empty() ? "DLL instalada na pasta do jogo como " + Utf8(NomeProxy(exeJogo)) + ": " +
-                                                    Utf8(exeJogo)
-                                              : "nao instalou na pasta do jogo: " + erroInstalacao);
+        exeEscolhido = exe;
+        pidRecusado = 0;
+        if (FILE* f = _wfopen((pasta + L"\\jogo_escolhido.txt").c_str(), L"wb"))
+        {
+            const std::string t = Utf8(exe);
+            fwrite(t.data(), 1, t.size(), f);
+            fclose(f);
+        }
+        Log("app", exe.empty() ? std::string("exe esquecido") : "exe escolhido: " + Utf8(exe));
     }
     static HWND JanelaDoProcesso(DWORD pid)
     {
@@ -901,47 +1003,6 @@ RWTexture2D<float4> saida : register(u0);
             reinterpret_cast<LPARAM>(&b));
         return b.achou;
     }
-    // o jogo aberto pelo overlay: liga a captura de buffer quando a janela aparece; se o processo sair sem janela logo
-    // depois de abrir (a Steam fecha e reabre o jogo pelo cliente dela), entra no processo novo assim que ele nasce
-    void VigiaLancamento()
-    {
-        if (!pidLancado)
-            return;
-        const auto agora = std::chrono::steady_clock::now();
-        const double seg = std::chrono::duration<double>(agora - tLancado).count();
-        HANDLE p = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pidLancado);
-        const bool vivo = p && WaitForSingleObject(p, 0) == WAIT_TIMEOUT;
-        if (p)
-            CloseHandle(p);
-        if (vivo)
-        {
-            if (!janelaLancado)
-                if (HWND h = JanelaDoProcesso(pidLancado))
-                {
-                    janelaLancado = true;
-                    if (!buffer)
-                        LigaBuffer(h);
-                }
-            return;
-        }
-        const std::wstring nome = jogoLancado.substr(jogoLancado.find_last_of(L"\\/") + 1);
-        if (!janelaLancado && seg < 60.0)
-        {
-            if (DWORD novo = ProcuraProcesso(nome, pidLancado))
-            {
-                const ResultadoInjecao r = EntraNoInicio(novo, pasta + L"\\captura\\DLSS5Buffer.dll",
-                                                         uint32_t(std::clamp(cfg.geracao, 2, 4)));
-                estadoGeracao = r.ok ? "o jogo foi reaberto pela Steam: módulo dentro logo no início; esperando a janela"
-                                     : "o jogo foi reaberto pela Steam e o módulo não entrou: " + r.motivo;
-                Log("geracao", estadoGeracao);
-                pidLancado = novo;
-                tLancado = agora;
-            }
-            return;
-        }
-        pidLancado = 0; // o jogo fechou
-    }
-
     // captura de buffer: coloca a DLSS5Buffer.dll no jogo aberto (sem gravar nada na pasta dele) e espera o modulo
     // aparecer (ele cria a memoria compartilhada no primeiro quadro do FSR/XeSS do jogo)
     void LigaBuffer(HWND h)
@@ -950,11 +1011,10 @@ RWTexture2D<float4> saida : register(u0);
         GetWindowThreadProcessId(h, &pid);
         pidBuffer = pid;
         exeJogo = ExeDoProcesso(pid);
-        instalacao = EstadoInstalacao(exeJogo, Dll());
-        if (instalacao == Instalacao::Nossa || instalacao == Instalacao::Desatualizada)
-            GaranteAlvo(exeJogo); // instalacoes de antes da lista: a DLL passa a agir so neste executavel
-        tentouInstalar = false;
-        erroInstalacao.clear();
+        // a DLL que as versoes com a geracao de quadros deixaram na pasta do jogo: sem isso o jogo seguiria abrindo com ela
+        avisoPastaJogo = LimpaPastaDoJogo(exeJogo);
+        if (!avisoPastaJogo.empty())
+            Log("buffer", avisoPastaJogo);
         CarregaPerfil(h);
         painel.Ancora(h);
         painel.DefineJogo(h);
@@ -969,31 +1029,16 @@ RWTexture2D<float4> saida : register(u0);
                            fb.VersaoRecusada(), dlss5ov::kVersaoMinima, dlss5ov::kVersao);
         else
             r = InjetaBuffer(pid, Dll());
-        // o overlay foi atualizado: a copia na pasta do jogo tambem, conectando ou nao (com o jogo aberto a DLL em uso
-        // e renomeada e a nova vale ao reabrir; antes a falha da conexao saia daqui sem atualizar, e o jogo seguia
-        // abrindo com a antiga)
-        bool atualizou = false;
-        if (instalacao == Instalacao::Desatualizada)
-        {
-            const std::string m = InstalaNoJogo(exeJogo, Dll());
-            instalacao = EstadoInstalacao(exeJogo, Dll());
-            atualizou = m.empty();
-            Log("geracao", m.empty() ? "DLL da pasta do jogo atualizada (" + Utf8(NomeProxy(exeJogo)) +
-                                           "; vale na proxima abertura do jogo)"
-                                     : "nao atualizou a DLL da pasta do jogo: " + m);
-        }
         if (!r.ok)
         {
             estadoBuffer = "nao conectou: " + r.motivo;
             if (fb.VersaoRecusada())
-                estadoBuffer += atualizou ? " | DLL do jogo atualizada: feche e abra o jogo" : " | feche e abra o jogo";
+                estadoBuffer += " | feche e abra o jogo";
             Log("buffer", estadoBuffer);
             return;
         }
         if (!r.motivo.empty())
             Log("buffer", r.motivo);
-        if (fb.ModuloAntigo())
-            r.motivo = "modulo do jogo da versao anterior: reabra o jogo para a luz mista";
         IniciaSessao();
         buffer = true;
         alvoBuffer = h;
@@ -1007,7 +1052,144 @@ RWTexture2D<float4> saida : register(u0);
         temporal.Reinicia();
         zeraHistorico = true;
         ov.Mostra(false);
+        // o que a captura de buffer nao usa sai da VRAM: o jogo fica no limite do orcamento (quem precisar recria)
+        gpu.Espera();
+        ov.SoltaSwapchain();
+        fedAnt.Solta();
+        fluxo.Libera();
         Log("buffer", "ligado em " + Utf8(exeAlvo));
+    }
+
+    // captura da API: a mesma DLL no jogo, mas a copia sai do Present (D3D11 e D3D12, com ou sem upscaler). Daqui em diante e o
+    // caminho da captura de video: janela do overlay, fluxo optico e o quadro ja com o HUD
+    void LigaApi(HWND h)
+    {
+        DWORD pid = 0;
+        GetWindowThreadProcessId(h, &pid);
+        exeJogo = ExeDoProcesso(pid);
+        avisoPastaJogo = LimpaPastaDoJogo(exeJogo);
+        if (!avisoPastaJogo.empty())
+            Log("api", avisoPastaJogo);
+        CarregaPerfil(h);
+        painel.Ancora(h);
+        painel.DefineJogo(h);
+        // Vulkan com a camada, ou o modulo que ja estava no jogo: a memoria ja existe e nao ha o que injetar
+        ResultadoInjecao r;
+        r.ok = fa.Abre(gpu, pid, h);
+        if (!r.ok)
+        {
+            r = InjetaBuffer(pid, Dll(), true);
+            if (r.ok && !fa.Abre(gpu, pid, h))
+            {
+                r.ok = false;
+                r.motivo = "o modulo dentro do jogo e de uma versao antiga: feche e abra o jogo";
+            }
+        }
+        // jogo Vulkan com a camada ligada: ela abre a memoria no primeiro swapchain, e Quadro tenta de novo ate la
+        const bool esperaCamada = !r.ok && r.vulkan && camadaVulkan;
+        if (!r.ok && !esperaCamada)
+        {
+            estadoBuffer = "nao conectou: " + r.motivo;
+            Log("api", estadoBuffer);
+            return;
+        }
+        if (esperaCamada)
+            r.motivo.clear();
+        if (!r.motivo.empty())
+            Log("api", r.motivo);
+        IniciaSessao();
+        float esc = 1.f;
+        hdr = MonitorHdr(gpu, h, esc);
+        escalaSdr = esc;
+        Log("app", hdr ? Fmt("monitor em HDR: branco SDR = %.0f nits", esc * 80.f) : std::string("monitor em SDR"));
+        captApi = true;
+        alvoBuffer = h;
+        quadroApi = 0;
+        apiDesde = GetTickCount64();
+        estadoBuffer = "esperando o primeiro quadro do jogo";
+        if (!r.motivo.empty())
+            estadoBuffer += " | " + r.motivo;
+        fluxo.Reinicia();
+        temporal.Reinicia();
+        zeraHistorico = true;
+        Log("api", "ligado em " + Utf8(exeAlvo));
+    }
+    // A camada Vulkan: registrada so enquanto o overlay esta aberto com a opcao ligada (camada_vulkan.txt: fora do config, que muda
+    // com o perfil do jogo). Sem o evento ela recusa carregar, entao um registro que sobrou de uma queda nao faz nada; a proxima
+    // abertura do overlay o tira.
+    bool camadaVulkan = false;
+    HANDLE camadaEvento = nullptr;
+    void LeCamada() { camadaVulkan = LeTexto(pasta + L"\\camada_vulkan.txt").rfind("1", 0) == 0; }
+    void AplicaCamada(bool liga)
+    {
+        static const wchar_t* const kChave = L"SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers";
+        const std::wstring manifesto = pasta + L"\\captura\\DLSS5Camada.json";
+        HKEY k = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, kChave, 0, KEY_QUERY_VALUE | KEY_SET_VALUE, &k) == ERROR_SUCCESS)
+        {
+            // os nossos, inclusive de outra pasta (o overlay foi movido): as camadas de outros programas ficam
+            std::vector<std::wstring> nossos;
+            wchar_t nome[1024];
+            for (DWORD i = 0;; ++i)
+            {
+                DWORD n = 1024;
+                if (RegEnumValueW(k, i, nome, &n, nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
+                    break;
+                const std::wstring v = nome;
+                static const std::wstring kFim = L"\\DLSS5Camada.json";
+                if (v.size() >= kFim.size() && !_wcsicmp(v.c_str() + v.size() - kFim.size(), kFim.c_str()))
+                    nossos.push_back(v);
+            }
+            for (const auto& v : nossos)
+                if (!(liga && !_wcsicmp(v.c_str(), manifesto.c_str())))
+                    RegDeleteValueW(k, v.c_str());
+            RegCloseKey(k);
+        }
+        if (!liga)
+        {
+            if (camadaEvento)
+                CloseHandle(camadaEvento);
+            camadaEvento = nullptr;
+            return;
+        }
+        if (GetFileAttributesW(manifesto.c_str()) == INVALID_FILE_ATTRIBUTES)
+        {
+            Log("api", "camada Vulkan: DLSS5Camada.json nao encontrado em " + Utf8(manifesto));
+            return;
+        }
+        if (!camadaEvento)
+            camadaEvento = CreateEventW(nullptr, TRUE, FALSE, dlss5ov::kEventoCamada);
+        const DWORD zero = 0; // 0 = o carregador abre o manifesto
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, kChave, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &k, nullptr) == ERROR_SUCCESS)
+        {
+            RegSetValueExW(k, manifesto.c_str(), 0, REG_DWORD, reinterpret_cast<const BYTE*>(&zero), sizeof zero);
+            RegCloseKey(k);
+            Log("api", "camada Vulkan registrada: vale para o que abrir daqui em diante");
+        }
+    }
+    void DefineCamada(bool liga)
+    {
+        camadaVulkan = liga;
+        if (FILE* f = _wfopen((pasta + L"\\camada_vulkan.txt").c_str(), L"wb"))
+        {
+            fputs(liga ? "1" : "0", f);
+            fclose(f);
+        }
+        if (liga)
+            DeleteFileW((pasta + L"\\captura\\DLSS5Camada.log").c_str());
+        AplicaCamada(liga);
+    }
+    // o back buffer vem como o jogo o escreveu: como ler (o passa do CSInteiro)
+    UINT EntradaApi(DXGI_FORMAT f) const
+    {
+        constexpr UINT kPq = DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 + 1;
+        const UINT e = fa.EspacoCor();
+        if (f == DXGI_FORMAT_R16G16B16A16_FLOAT)
+            return hdr ? 0u : 3u;
+        // 10 bits sem o jogo ter dito (ele escolheu antes do gancho): HDR10 se o monitor esta em HDR
+        if (f == DXGI_FORMAT_R10G10B10A2_UNORM && (e == kPq || (!e && hdr)))
+            return 2u;
+        return hdr ? 1u : 0u;
     }
 
     // tamanho em que a rede roda: altura configurada (ou a da janela, se menor), largura pela proporcao, pares
@@ -1025,16 +1207,26 @@ RWTexture2D<float4> saida : register(u0);
         UINT dw, dh;
         TamanhoRede(fw, fh, dw, dh);
         const DXGI_FORMAT fmtSaida = hdr ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R8G8B8A8_UNORM;
-        if (inteiro.w == fw && inteiro.h == fh && fed.w == dw && fed.h == dh && saida.fmt == fmtSaida)
+        const FormatosCor ff = FormatosAgora();
+        if (inteiro.w == fw && inteiro.h == fh && fed.w == dw && fed.h == dh && saida.fmt == fmtSaida && inteiro.fmt == ff.inteiro &&
+            (inteiroA.r != nullptr) == ff.alfaFora)
             return;
+        formatos = ff;
         gpu.Espera();
         rede.Descarta(); // a resposta em voo e do tamanho antigo
-        inteiro.Cria(gpu.dev.Get(), fw, fh, DXGI_FORMAT_R16G16B16A16_FLOAT, L"inteiro");
+        // a sessao HIP fica com os buffers de todo tamanho que ja rodou (2160p -> 720p seguia com 2,3 GB): so o Destroy devolve
+        if (redeOk && fed.w && (fed.w != dw || fed.h != dh))
+            RecriaSessaoRede();
+        inteiro.Cria(gpu.dev.Get(), fw, fh, ff.inteiro, L"inteiro"); // a GPU parada: a textura velha sai antes de a nova entrar
+        if (ff.alfaFora)
+            inteiroA.Cria(gpu.dev.Get(), fw, fh, DXGI_FORMAT_R8_UNORM, L"inteiro: folga");
+        else
+            inteiroA.Solta();
         orig.Cria(gpu.dev.Get(), dw, dh, DXGI_FORMAT_R16G16B16A16_FLOAT, L"original no tamanho da rede");
         fed.Cria(gpu.dev.Get(), dw, dh, DXGI_FORMAT_R16G16B16A16_FLOAT, L"proxy (alimentado)", true, true);
         saida.Cria(gpu.dev.Get(), fw, fh, fmtSaida, L"saida");
-        semNitidez.Solta(); // recriada no tamanho novo quando a nitidez estiver ligada (a GPU ja esta parada aqui)
-        comBilateral.Solta(), comTemporal.Solta(), hist[0].Solta(), hist[1].Solta();
+        // recriadas no tamanho novo quando o denoise estiver ligado (a GPU ja esta parada aqui)
+        dnTmp[0].Solta(), dnTmp[1].Solta(), hist[0].Solta(), hist[1].Solta(), histN[0].Solta(), histN[1].Solta(), dnNormais.Solta();
         histValida = false;
         if (!dumpPasta.empty())
             saidaAnt.Cria(gpu.dev.Get(), fw, fh, fmtSaida, L"saida anterior", false);
@@ -1045,14 +1237,193 @@ RWTexture2D<float4> saida : register(u0);
         temporal.Reinicia();
         zeraHistorico = true;
         Log("app", Fmt("janela %ux%u, rede %ux%u", fw, fh, dw, dh));
-        if (tamanhosRede.insert(uint64_t(dw) << 32 | dh).second)
+    }
+    // Os formatos escolhidos no painel. A cor (quadro inteiro e o que o jogo exporta) e a edicao que vai para o jogo.
+    // Quadro com realce (HDR ou buffer): os UNORM cortariam acima de 1, a cor fica em float. A edicao e relativa, vale nos dois
+    struct FormatosCor
+    {
+        DXGI_FORMAT inteiro, inteiroUav, inteiroSrv, corJogo, edicaoJogo;
+        bool alfaFora, srgb;
+    };
+    FormatosCor formatos{DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
+                         DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT, false, false};
+    Tex inteiroA; // a folga do quadro inteiro quando ele nao tem alfa (R11G11B10_FLOAT)
+    int ciclaFormato = 0; // --cicla-formato Q: troca o formato a cada Q quadros (o teste de que a troca nao acumula VRAM)
+    FormatosCor FormatosAgora() const
+    {
+        const DXGI_FORMAT f16 = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        const int op = std::clamp(cfg.formatoCor, 0, 4);
+        FormatosCor f{f16, f16, f16, f16, f16, false, false};
+        f.edicaoJogo = op == 1 || op == 2 ? DXGI_FORMAT_R10G10B10A2_UNORM : op == 4 ? DXGI_FORMAT_R8G8B8A8_SNORM : f16;
+        // (na ponte 3 e na reproducao o quadro inteiro passa de 1 mesmo em SDR)
+        const bool soFloat = buffer || hdr || cfg.ponte == 3 || !pastaReproducao.empty();
+        if (op == 1)
         {
-            // estimativa pelo codigo da ponte do lmxxf: entrada e historico de 16 bytes por pixel e saida de 12
-            mbPresos += double(dw) * dh * 44.0 / (1024.0 * 1024.0);
-            Log("memoria", Fmt("tamanho de rede novo neste processo (%ux%u): ~%.0f MB presos pelo driver HIP ate fechar o "
-                               "overlay (%zu tamanhos, ~%.0f MB no total; estimativa de 44 bytes por pixel)",
-                               dw, dh, double(dw) * dh * 44.0 / (1024.0 * 1024.0), tamanhosRede.size(), mbPresos));
+            f.inteiro = f.inteiroUav = f.inteiroSrv = f.corJogo = DXGI_FORMAT_R11G11B10_FLOAT;
+            f.alfaFora = true;
         }
+        else if (!soFloat && op == 2)
+            f.inteiro = f.inteiroUav = f.inteiroSrv = DXGI_FORMAT_R10G10B10A2_UNORM;
+        else if (!soFloat && op == 3)
+            f.inteiro = f.inteiroUav = f.inteiroSrv = DXGI_FORMAT_R16G16B16A16_UNORM;
+        else if (!soFloat && op == 4)
+        {
+            // gravado em sRGB, a mesma coisa que a captura de 8 bits; a vista _SRGB devolve linear
+            f.inteiro = DXGI_FORMAT_R8G8B8A8_TYPELESS, f.inteiroUav = DXGI_FORMAT_R8G8B8A8_UNORM, f.inteiroSrv = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+            f.srgb = true;
+        }
+        return f;
+    }
+    static const char* NomeFormato(DXGI_FORMAT f)
+    {
+        switch (f)
+        {
+        case DXGI_FORMAT_R11G11B10_FLOAT: return "R11G11B10_FLOAT";
+        case DXGI_FORMAT_R10G10B10A2_UNORM: return "R10G10B10A2_UNORM";
+        case DXGI_FORMAT_R16G16B16A16_UNORM: return "R16G16B16A16_UNORM";
+        case DXGI_FORMAT_R8G8B8A8_SNORM: return "R8G8B8A8_SNORM";
+        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: return "R8G8B8A8_UNORM";
+        default: return "R16G16B16A16_FLOAT";
+        }
+    }
+    std::string TextoFormatos() const
+    {
+        std::string t = std::string("Em uso: cor ") + NomeFormato(formatos.inteiroSrv) + (formatos.alfaFora ? " + R8_UNORM" : "");
+        if (buffer)
+            t += std::string(", edição ") + NomeFormato(formatos.edicaoJogo) +
+                 (formatos.edicaoJogo == DXGI_FORMAT_R10G10B10A2_UNORM ? " + R8_UNORM" : "");
+        return t;
+    }
+    // O denoise do grao da rede: filtra a edicao dela (o sinal ruidoso, com sinal, log2(saida / cor)) no tamanho da rede, onde o
+    // grao tem 1 pixel, com a imagem do jogo so como guia, antes de ela ser ampliada e composta. Como o NRD pede ("de-modulated
+    // before denoising"): onde a rede nao mexeu a edicao e zero e nada muda, e o detalhe do jogo nao passa pelo filtro.
+    // reconstrucao -> acumulacao -> filtro de bordas. Devolve a edicao filtrada, em SRV
+    uint64_t quadroDnEdicao = 0;
+    // jogo: o sinal e o quadro pronto (jogo + rede), na resolucao da tela, no lugar da edicao no tamanho da rede
+    Tex* DenoiseEdicao(ID3D12GraphicsCommandList* c, Tex* ed, bool temMov, bool jogo = false)
+    {
+        const D3D12_RESOURCE_STATES SRV = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        const bool dnRec = cfg.dnReconstrucao > 0.f, dnAcu = cfg.dnAcumulacao > 0.f && temMov, dnBor = cfg.dnBordas > 0.f;
+        // um quadro sem resposta da rede no meio: o movimento deste quadro nao chega a edicao anterior
+        if (!dnAcu || quadroDnEdicao + 1 != quadros)
+            histValida = false;
+        quadroDnEdicao = quadros;
+        const int passesBordas = dnBor ? std::clamp(cfg.dnBordasPasses, 1, 3) : 0;
+        if (!dnRec && !dnAcu && !passesBordas)
+            return ed;
+        const UINT w = ed->w, h = ed->h;
+        dlss5ov::ConstantesDenoise kn{};
+        kn.w = w, kn.h = h, kn.hdr = jogo ? (hdr ? 1u : 0u) : 2u, kn.escala = jogo ? escalaUsada : 1.f, kn.divisao = -1.f, kn.sigma = 1.f, kn.passo = 1;
+        // o grao da rede tem 1 pixel dela: na tela, tantos pixels quanto a rede foi ampliada
+        kn.grao = jogo ? UINT(std::clamp(int(float(h) / float(std::max(fed.h, 1u)) + 0.5f), 1, 4)) : 1u;
+        kn.aspecto = float(w) / float(h);
+        kn.temGuia = jogo ? 0 : 1, kn.tolGuia = 0.1f; // em log2 da luminancia do jogo
+        orig.Para(c, SRV);
+        Tex* profDn = temMov ? fluxo.DistanciaAtual() : nullptr; // so na captura de buffer e na reproducao dela
+        if (profDn)
+            kn.profW = profDn->w, kn.profH = profDn->h, kn.temGeo = 1, profDn->Para(c, SRV);
+        if (temMov)
+        {
+            kn.movW = fluxo.Movimento().w, kn.movH = fluxo.Movimento().h;
+            kn.movMulX = float(w) / float(kn.movW), kn.movMulY = float(h) / float(kn.movH);
+            fluxo.Movimento().Para(c, SRV);
+            fluxo.Confianca().Para(c, SRV);
+        }
+        using Par = std::pair<ID3D12Resource*, DXGI_FORMAT>;
+        const Par pGuia{orig.r.Get(), orig.fmt};
+        const UINT gx = (w + 7) / 8, gy = (h + 7) / 8;
+        Tex* fonte = ed;
+        Tex* histDn = nullptr; // os quadros acumulados de cada pixel, para o filtro de bordas
+        auto etapa = [&](Passe& p, Tex* histAnt, Tex* novo) {
+            Tex* d = fonte == &dnTmp[0] ? &dnTmp[1] : &dnTmp[0];
+            const DXGI_FORMAT fmtD = jogo ? ed->fmt : DXGI_FORMAT_R16G16B16A16_FLOAT;
+            if (d->w != w || d->h != h || d->fmt != fmtD)
+                d->Cria(gpu.dev.Get(), w, h, fmtD, L"denoise");
+            fonte->Para(c, SRV);
+            Tex* contaAnt = histAnt ? &histN[histAnt - hist] : nullptr;
+            if (histAnt)
+                histAnt->Para(c, SRV), contaAnt->Para(c, SRV);
+            d->Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            const Par mudo{fonte->r.Get(), fonte->fmt}; // o que a etapa nao le: o SRV so precisa existir
+            std::vector<Par> u{{d->r.Get(), d->fmt}};
+            if (novo)
+            {
+                Tex* contaNova = &histN[novo - hist];
+                novo->Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                contaNova->Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                u.push_back({novo->r.Get(), novo->fmt});
+                u.push_back({contaNova->r.Get(), contaNova->fmt});
+            }
+            p.Roda(c, desc, gpu.dev.Get(),
+                   {mudo, profDn ? Par{profDn->r.Get(), profDn->fmt} : mudo, histAnt ? Par{histAnt->r.Get(), histAnt->fmt} : mudo,
+                    temMov ? Par{fluxo.Movimento().r.Get(), fluxo.Movimento().fmt} : mudo,
+                    temMov ? Par{fluxo.Confianca().r.Get(), fluxo.Confianca().fmt} : mudo,
+                    kn.temGeo ? Par{dnNormais.r.Get(), dnNormais.fmt} : mudo,
+                    contaAnt ? Par{contaAnt->r.Get(), contaAnt->fmt} : mudo, pGuia},
+                   u, &kn, gx, gy);
+            fonte = d;
+        };
+        if (profDn && (dnRec || dnBor))
+        {
+            // as normais da profundidade do jogo (na captura de video nao ha profundidade: a guia e a imagem)
+            if (dnNormais.w != profDn->w || dnNormais.h != profDn->h)
+                dnNormais.Cria(gpu.dev.Get(), profDn->w, profDn->h, DXGI_FORMAT_R16G16B16A16_FLOAT, L"denoise: normais");
+            dnNormais.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            const Par mudo{ed->r.Get(), ed->fmt};
+            pDnNor.Roda(c, desc, gpu.dev.Get(), {mudo, Par{profDn->r.Get(), profDn->fmt}, mudo, mudo, mudo, mudo, mudo, pGuia},
+                        {{dnNormais.r.Get(), dnNormais.fmt}}, &kn, (profDn->w + 7) / 8, (profDn->h + 7) / 8);
+            dnNormais.Para(c, SRV);
+        }
+        else
+            kn.temGeo = 0;
+        if (dnRec)
+        {
+            kn.forca = std::clamp(cfg.dnReconstrucao, 0.f, 1.f);
+            etapa(pDnRec, nullptr, nullptr);
+        }
+        if (dnAcu)
+        {
+            for (auto& hx : hist)
+                if (hx.w != w || hx.h != h)
+                    hx.Cria(gpu.dev.Get(), w, h, DXGI_FORMAT_R16G16B16A16_FLOAT, L"denoise: historico"), histValida = false;
+            for (auto& hx : histN)
+                if (hx.w != w || hx.h != h)
+                    hx.Cria(gpu.dev.Get(), w, h, DXGI_FORMAT_R8_UNORM, L"denoise: quadros acumulados");
+            kn.forca = std::clamp(cfg.dnAcumulacao, 0.f, 1.f);
+            kn.sigma = std::clamp(cfg.dnRecorte, 0.5f, 3.f);
+            kn.histValida = histValida ? 1u : 0u;
+            etapa(pDnAcu, &hist[histI], &hist[histI ^ 1]);
+            histI ^= 1;
+            histValida = true;
+            histDn = &hist[histI];
+            kn.histValida = 0;
+        }
+        if (dnBor)
+        {
+            kn.forca = std::clamp(cfg.dnBordas, 0.f, 1.f);
+            kn.sigma = std::clamp(cfg.dnBordasSigma, 0.5f, 4.f);
+            kn.tolGuia = 0.05f * kn.sigma;
+            // sobre a edicao da rede o filtro nao recua com o historico (o grao dela nao muda de um quadro para o outro)
+            Tex* histBor = jogo ? histDn : nullptr;
+            kn.temHist = histBor ? 1u : 0u;
+            for (int i = 0; i < passesBordas; ++i)
+            {
+                kn.passo = 1u << i;
+                etapa(pDnBor, histBor, nullptr);
+            }
+        }
+        fonte->Para(c, SRV);
+        return fonte;
+    }
+    void RecriaSessaoRede()
+    {
+        const auto t0 = std::chrono::steady_clock::now();
+        rede.Encerra();
+        redeOk = rede.Inicia(gpu, PastaRede(), redePequenaAtiva);
+        nivelAtual = -1;
+        Log("rede", redeOk ? Fmt("sessao recriada para o tamanho novo em %.2f s",
+                                 std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count())
+                           : std::string("a rede nao subiu depois de mudar de tamanho"));
     }
 
     // ---- modo imagem (comparacao com as fotos da NVIDIA): um arquivo no lugar da captura, sem overlay ----
@@ -1390,14 +1761,31 @@ RWTexture2D<float4> saida : register(u0);
             }
             // sem atraso: o jogo espera a edicao do quadro exportado antes (cab->espera 2) e mostra o quadro processado
             // repetido em 1..4 quadros (o Ritmo vira os quadros repetidos)
-            const bool espera = atraso < 0;
-            // sem quadros repetidos/mesclados no jogo: a geracao de verdade e a da AMD (o ritmo vale so na captura de video)
-            fb.Batimento(true, cfg.modo != 1 && redeOk, espera ? 2u : 0u, espera ? 1u : 0u, 0u,
-                         uint32_t(cfg.geracao >= 2 ? std::clamp(cfg.geracao, 2, 4) : 0));
+            // Rede mais lenta que o prazo do jogo (em 2160): preso a ela, o quadro leva o tempo da rede e o input lag fica grotesco. Sem o
+            // pedido no painel o jogo roda solto e a edicao chega atrasada (sem os 2 estouros de 100 ms a cada suspensao, que engasgavam)
+            if (msMedio > 95.0)
+                redeLenta = true;
+            else if (msMedio < 70.0)
+                redeLenta = false;
+            const bool espera = atraso < 0 && (!redeLenta || cfg.sincronizaRedeLenta);
+            fb.Batimento(true, cfg.modo != 1 && redeOk, espera ? 2u : 0u, espera ? 1u : 0u, 0u);
+            // preso a rede lenta: o jogo espera o tempo que ela esta levando, com folga; o teto fica abaixo do 1 s sem batimento
+            fb.DefinePrazo(cfg.sincronizaRedeLenta ? uint32_t(std::clamp(msMedio * 3.0, 100.0, 900.0)) : 100u);
+            if (ciclaFormato && quadros && quadros % ciclaFormato == 0)
+            {
+                cfg.formatoCor = (cfg.formatoCor + 1) % 5;
+                Log("memoria", Fmt("teste: formato %d", cfg.formatoCor));
+            }
+            {
+                const FormatosCor ff = FormatosAgora();
+                fb.DefineFormatos(ff.corJogo, ff.edicaoJogo);
+            }
             if (!fb.Pega(qb))
             {
                 if (fb.Aberta() && !fb.JogoVivo())
                     estadoBuffer = "o jogo parou de mandar quadros (FSR/XeSS desligado ou jogo pausado)";
+                else if (const std::string e = fb.Erro(); !e.empty())
+                    estadoBuffer = "nao conectou: texturas da captura nao criadas " + e;
                 return false;
             }
             quadroJogo = qb.n;
@@ -1422,25 +1810,76 @@ RWTexture2D<float4> saida : register(u0);
             q.h = imgH;
             q.cercaValor = 0;
         }
+        else if (captApi)
+        {
+            if (!IsWindow(alvoBuffer))
+            {
+                Desliga();
+                estadoBuffer = "o jogo fechou";
+                return false;
+            }
+            if (!fa.Aberta())
+            {
+                // jogo Vulkan esperando a camada abrir a memoria (no primeiro swapchain)
+                static ULONGLONG tentaEm = 0;
+                const ULONGLONG agora = GetTickCount64();
+                if (agora >= tentaEm)
+                {
+                    tentaEm = agora + 500;
+                    DWORD pid = 0;
+                    GetWindowThreadProcessId(alvoBuffer, &pid);
+                    fa.Abre(gpu, pid, alvoBuffer);
+                }
+                if (!fa.Aberta())
+                {
+                    if (agora - apiDesde > 8000)
+                        estadoBuffer = "nao conectou: o jogo abriu antes da camada Vulkan. Feche e abra o jogo com o overlay aberto";
+                    return false;
+                }
+            }
+            fa.Batimento();
+            // saiu antes de usar o quadro passado (Ritmo, janela minimizada): o slot volta ao jogo
+            if (quadroApi)
+            {
+                fa.Consumido(quadroApi);
+                quadroApi = 0;
+            }
+            if (HWND j = fa.JanelaSwap(); j && j != alvoBuffer && IsWindow(j))
+            {
+                Log("api", "o jogo apresenta em outra janela: seguindo ela");
+                alvoBuffer = j;
+                fa.DefineAlvo(j);
+            }
+            Tex* t = nullptr;
+            if (!fa.Pega(t, quadroApi))
+            {
+                if (*fa.Erro())
+                    estadoBuffer = std::string("nao conectou: ") + fa.Erro();
+                else if (!fa.JogoVivo() && GetTickCount64() - apiDesde > 3000)
+                    estadoBuffer = "o jogo nao esta apresentando quadros (pausado, ou a tela dele nao e DirectX 11, 12 nem Vulkan)";
+                return false;
+            }
+            q.tex = t->r.Get();
+            q.fmt = t->fmt;
+            q.w = t->w;
+            q.h = t->h;
+            q.cercaValor = 0; // so pega o que a GPU do jogo ja terminou
+            estadoBuffer = (fa.Api() == dlss5ov::kApiVulkan ? std::string("conectado: Vulkan") : Fmt("conectado: DirectX %u", fa.Api())) +
+                           Fmt(", %ux%u, com HUD, movimento por fluxo optico", q.w, q.h);
+        }
         else if (!cap.Pega(q))
             return false;
-        // captura de video sem atraso, quadros repetidos (Ritmo N): so 1 de cada N quadros capturados e processado; nos
-        // outros a tela fica com o ultimo quadro processado (a edicao exata dele), nunca um quadro novo com edicao velha
-        if (!imagem && !buffer && atraso < 0 && cfg.ritmo > 1 &&
-            capturados++ % UINT64(std::clamp(cfg.ritmo, 1, 4)) != 0)
-        {
-            ApresentaGerado(); // mesclado: a proxima mistura (ou o processado novo) neste quadro sem rede
-            return false;
-        }
         const auto t0 = std::chrono::steady_clock::now();
         RECT r{};
-        if (!imagem && !buffer && (IsIconic(cap.Alvo()) || !Captura::RetanguloCliente(cap.Alvo(), r)))
+        if (!imagem && !buffer && (IsIconic(Alvo()) || !Captura::RetanguloCliente(Alvo(), r)))
         {
             ov.Mostra(false);
             return false;
         }
         Garante(q.w, q.h);
-        if (!imagem && !buffer)
+        if (captApi)
+            ov.Posiciona(r, hdr, q.w, q.h);
+        else if (!imagem && !buffer)
         {
             // o overlay cobre a area cliente
             r.right = r.left + LONG(q.w);
@@ -1471,19 +1910,29 @@ RWTexture2D<float4> saida : register(u0);
         UINT k[16] = {inteiro.w, inteiro.h, fed.w, fed.h, hdr ? 1u : 0u, 0, ponte, 0, 0, 0, 0, 0, 0, 0, 0, 0};
         memcpy(&k[11], &cfg.preLimiarSombra, 4);
         memcpy(&k[12], &cfg.preCor, 4);
-        k[13] = reproducao ? 1u : 0u;
+        k[13] = (reproducao ? 1u : 0u) | ((captApi ? EntradaApi(q.fmt) : 0u) << 1);
         memcpy(&k[8], &cfg.preLuz, 4);
         memcpy(&k[9], &cfg.preSombra, 4);
         memcpy(&k[10], &cfg.preLimiar, 4);
         memcpy(&k[5], &escK, 4);
         const float expK = std::max(cfg.temporal.exposicao, 1e-3f);
         memcpy(&k[7], &expK, 4);
+        k[14] = formatos.alfaFora ? 1u : 0u;
+        k[15] = formatos.srgb ? 1u : 0u;
+        if (formatos.alfaFora)
+            inteiroA.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        // (sem alfa fora o u1 nao e escrito)
         pInteiro.Roda(c, desc, gpu.dev.Get(), {{q.tex, q.fmt}},
-                      {{inteiro.r.Get(), inteiro.fmt}}, k, (inteiro.w + 7) / 8, (inteiro.h + 7) / 8);
+                      {{inteiro.r.Get(), formatos.inteiroUav},
+                       formatos.alfaFora ? std::pair<ID3D12Resource*, DXGI_FORMAT>{inteiroA.r.Get(), inteiroA.fmt}
+                                         : std::pair<ID3D12Resource*, DXGI_FORMAT>{inteiro.r.Get(), formatos.inteiroUav}},
+                      k, (inteiro.w + 7) / 8, (inteiro.h + 7) / 8);
+        if (formatos.alfaFora)
+            inteiroA.Para(c, SRV);
         inteiro.Para(c, SRV);
         orig.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         fed.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        pReduz.Roda(c, desc, gpu.dev.Get(), {{inteiro.r.Get(), inteiro.fmt}},
+        pReduz.Roda(c, desc, gpu.dev.Get(), {{inteiro.r.Get(), formatos.inteiroSrv}},
                     {{orig.r.Get(), orig.fmt}, {fed.r.Get(), fed.fmt}}, k, (fed.w + 7) / 8, (fed.h + 7) / 8);
         orig.Para(c, SRV);
         fed.Para(c, SRV);
@@ -1586,6 +2035,7 @@ RWTexture2D<float4> saida : register(u0);
             temporal.GaranteCrua(gpu.dev.Get());
         Tex* edicao = ultimaEdicao =
             usa ? temporal.Edicao(c, desc, gpu.dev.Get(), orig, rede.Entrada(), rede.Resposta(), tp, comCrua) : nullptr;
+        dnBruta = edicao; // a edicao deste quadro antes do denoise
         if (usa)
         {
             if (cfg.modo == 5)
@@ -1605,6 +2055,8 @@ RWTexture2D<float4> saida : register(u0);
             // de volta ao estado em que a fila da rede pega
             rede.Entrada().Para(c, D3D12_RESOURCE_STATE_COMMON);
             rede.Resposta().Para(c, D3D12_RESOURCE_STATE_COMMON);
+            if (cfg.dnAtivo && !cfg.dnJogo && (cfg.modo == 0 || cfg.modo == 2 || cfg.modo == 5))
+                edicao = ultimaEdicao = DenoiseEdicao(c, edicao, temMov);
         }
         // gradacao do Model B/C (constantes do kernel da NVIDIA), escalada pelo tom local
         const float tg = std::clamp(cfg.ngx.tomLocal, 0.f, 2.f);
@@ -1619,15 +2071,7 @@ RWTexture2D<float4> saida : register(u0);
                           temporal.Crua().w == fed.w && temporal.Crua().h == fed.h;
         if (crua)
             temporal.Crua().Para(c, SRV);
-        // nitidez CAS depois da composicao: o CSCompoe grava no semNitidez e o CSNitidez dele na saida
-        const bool bilat = cfg.bilateral > 0.f, tempo = cfg.denoiseTemporal > 0.f, afia = cfg.rcas > 0.f,
-                   nitida = bilat || tempo || afia;
-        if (!tempo)
-            histValida = false;
-        if (nitida && semNitidez.w == 0)
-            semNitidez.Cria(gpu.dev.Get(), saida.w, saida.h, saida.fmt, L"saida antes da nitidez");
-        Tex& alvo = nitida ? semNitidez : saida;
-        alvo.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        saida.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         struct
         {
             UINT fw, fh, dw, dh;
@@ -1646,7 +2090,7 @@ RWTexture2D<float4> saida : register(u0);
              edicao ? 1u : 0u, hdr ? 1u : 0u, escalaUsada, kExp, kCon, kSat, grada ? 1u : 0u,
              pontePassada == 3 ? 1u : 0u, (hdr && pontePassada == 1) ? 1u : 0u, cfg.preLuz, cfg.preSombra, cfg.preLimiar, cfg.preLimiarSombra, cfg.preCor,
              0, 0, 0, {}, {}, cfg.matiz.Ativa() ? 1u : 0u, (cfg.modo == 5 && crua) ? 1u : 0u,
-             LuzNaTela(cfg.temporal.luz), 0};
+             LuzNaTela(cfg.temporal.luz), formatos.alfaFora ? 1u : 0u};
         static_assert(sizeof(kc) == 40 * 4, "constantes: o mesmo layout do cbuffer do CSCompoe");
         for (int i = 0; i < 6; ++i)
         {
@@ -1656,77 +2100,34 @@ RWTexture2D<float4> saida : register(u0);
         using Par = std::pair<ID3D12Resource*, DXGI_FORMAT>;
         const Par vazio{fed.r.Get(), fed.fmt};
         pCompoe.Roda(c, desc, gpu.dev.Get(),
-                     {{inteiro.r.Get(), inteiro.fmt},
+                     {{inteiro.r.Get(), formatos.inteiroSrv},
                       vazio,
                       edicao ? Par{edicao->r.Get(), edicao->fmt} : vazio,
                       temMov ? Par{fluxo.Movimento().r.Get(), fluxo.Movimento().fmt} : vazio,
                       crua ? Par{origCrua.r.Get(), origCrua.fmt} : vazio,
-                      crua ? Par{temporal.Crua().r.Get(), temporal.Crua().fmt} : vazio},
-                     {{alvo.r.Get(), alvo.fmt}}, &kc, (saida.w + 7) / 8, (saida.h + 7) / 8);
-        if (nitida)
+                      crua ? Par{temporal.Crua().r.Get(), temporal.Crua().fmt} : vazio,
+                      formatos.alfaFora ? Par{inteiroA.r.Get(), inteiroA.fmt} : vazio},
+                     {{saida.r.Get(), saida.fmt}}, &kc, (saida.w + 7) / 8, (saida.h + 7) / 8);
+        if (cfg.dnAtivo && edicao && dnBruta)
         {
-            // bilateral -> temporal -> RCAS: semNitidez -> ... -> saida
-            struct
+            Tex* depois = edicao;
+            if (cfg.dnJogo)
             {
-                UINT w, h, hdr;
-                float bil;
-                UINT modo;
-                float divisao, escala, rcas, cas;
-                UINT raio;
-                float temporal;
-                UINT histValida, movW, movH, pad0, pad1;
-            } kn{saida.w, saida.h, hdr ? 1u : 0u, std::clamp(cfg.bilateral, 0.f, 2.f), (UINT)cfg.modo, cfg.divisao,
-                 escalaUsada, std::clamp(cfg.rcas, 0.f, 2.f), 0.f, (UINT)std::clamp(cfg.raioBilateral, 1, 8),
-                 std::clamp(cfg.denoiseTemporal, 0.f, 1.f), histValida ? 1u : 0u, temMov ? fluxo.Movimento().w : 0u,
-                 temMov ? fluxo.Movimento().h : 0u, 0, 0};
-            static_assert(sizeof(kn) == 16 * 4, "constantes: o mesmo layout do cbuffer do denoise");
-            auto passo = [&](Tex& t, bool ultimo, const wchar_t* nome) -> Tex& {
-                if (ultimo)
-                    return saida;
-                if (t.w == 0)
-                    t.Cria(gpu.dev.Get(), saida.w, saida.h, saida.fmt, nome);
-                return t;
-            };
-            const UINT gx = (saida.w + 7) / 8, gy = (saida.h + 7) / 8;
-            Tex* fonte = &semNitidez;
-            if (bilat)
-            {
-                Tex& d = passo(comBilateral, !tempo && !afia, L"denoise bilateral");
-                fonte->Para(c, SRV);
-                d.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-                pBilateral.Roda(c, desc, gpu.dev.Get(), {{fonte->r.Get(), fonte->fmt}}, {{d.r.Get(), d.fmt}}, &kn, gx, gy);
-                fonte = &d;
+                dnBruta = &saida;
+                depois = DenoiseEdicao(c, &saida, temMov, true);
             }
-            if (tempo)
+            if (cfg.dnVista > 0)
+                VistaDenoise(c, depois);
+            else
             {
-                for (auto& hx : hist)
-                    if (hx.w == 0)
-                        hx.Cria(gpu.dev.Get(), saida.w, saida.h, saida.fmt, L"denoise temporal (historico)"), histValida = false;
-                kn.histValida = histValida ? 1u : 0u;
-                Tex& hAnt = hist[histI];
-                Tex& hNovo = hist[histI ^ 1];
-                Tex& d = passo(comTemporal, !afia, L"denoise temporal");
-                fonte->Para(c, SRV);
-                hAnt.Para(c, SRV);
-                if (temMov)
-                    fluxo.Movimento().Para(c, SRV);
-                d.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-                hNovo.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-                pTemporal.Roda(c, desc, gpu.dev.Get(),
-                               {{fonte->r.Get(), fonte->fmt},
-                                {hAnt.r.Get(), hAnt.fmt},
-                                temMov ? std::pair<ID3D12Resource*, DXGI_FORMAT>{fluxo.Movimento().r.Get(), fluxo.Movimento().fmt}
-                                       : std::pair<ID3D12Resource*, DXGI_FORMAT>{fonte->r.Get(), fonte->fmt}},
-                               {{d.r.Get(), d.fmt}, {hNovo.r.Get(), hNovo.fmt}}, &kn, gx, gy);
-                histI ^= 1;
-                histValida = true;
-                fonte = &d;
-            }
-            if (afia)
-            {
-                fonte->Para(c, SRV);
-                saida.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-                pNitidez.Roda(c, desc, gpu.dev.Get(), {{fonte->r.Get(), fonte->fmt}}, {{saida.r.Get(), saida.fmt}}, &kn, gx, gy);
+                if (depois != edicao && depois != &saida)
+                {
+                    depois->Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                    saida.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
+                    c->CopyResource(saida.r.Get(), depois->r.Get());
+                }
+                if (cfg.dnCas > 0.f)
+                    CasNaSaida(c);
             }
         }
         // captura de buffer: a edicao (C(saida) - C(cor do jogo)) vai para o slot que o jogo soma no quadro seguinte
@@ -1743,14 +2144,23 @@ RWTexture2D<float4> saida : register(u0);
                 float perto, longe;
                 UINT invertida, infinita;
                 float tanY, aspecto;
-                UINT luz, pad1;
+                UINT luz, cod;
             } ke{saida.w, saida.h, qb.prof->w, qb.prof->h, qb.perto, qb.longe, invertidaUsada ? 1u : 0u,
                  qb.profInfinita ? 1u : 0u, dlss5ov::TanMeioFov(qb.fovY), float(saida.w) / float(saida.h),
-                 (UINT)std::clamp(fb.LuzDoModulo(cfg.temporal.luz), 0, 2), 0};
+                 (UINT)std::clamp(cfg.temporal.luz, 0, 2),
+                 edJogo->fmt == DXGI_FORMAT_R10G10B10A2_UNORM ? 1u : edJogo->fmt == DXGI_FORMAT_R8G8B8A8_SNORM ? 2u : 0u};
+            Tex* edAlfa = fb.EdicaoAlfaLivre();
+            if (edAlfa)
+                edAlfa->Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             pExporta.Roda(c, desc, gpu.dev.Get(),
                           {{qb.cor->r.Get(), qb.cor->fmt}, {saida.r.Get(), saida.fmt}, {qb.prof->r.Get(), qb.prof->fmt}},
-                          {{edJogo->r.Get(), edJogo->fmt}}, &ke, (saida.w + 7) / 8, (saida.h + 7) / 8);
+                          {{edJogo->r.Get(), edJogo->fmt},
+                           edAlfa ? std::pair<ID3D12Resource*, DXGI_FORMAT>{edAlfa->r.Get(), edAlfa->fmt}
+                                  : std::pair<ID3D12Resource*, DXGI_FORMAT>{edJogo->r.Get(), edJogo->fmt}},
+                          &ke, (saida.w + 7) / 8, (saida.h + 7) / 8);
             edJogo->Para(c, D3D12_RESOURCE_STATE_COMMON);
+            if (edAlfa)
+                edAlfa->Para(c, D3D12_RESOURCE_STATE_COMMON);
             qb.cor->Para(c, D3D12_RESOURCE_STATE_COMMON);
             qb.prof->Para(c, D3D12_RESOURCE_STATE_COMMON);
         }
@@ -1764,50 +2174,11 @@ RWTexture2D<float4> saida : register(u0);
         const bool apresenta = !imagem && !buffer && bb && ov.Largura() == saida.w && ov.Altura() == saida.h;
         if (apresenta)
         {
-            // quadro mesclado (captura de video sem atraso, Ritmo 2..4): na tela vai a primeira mistura do processado
-            // anterior com este; as outras vao nos quadros capturados sem rede que vem a seguir
-            const bool mescla = atraso < 0 && cfg.gerado == 1 && cfg.ritmo > 1;
-            Tex* tela = &saida;
-            geradosPendentes.clear();
-            if (mescla)
-            {
-                if (geradoAtual.w != saida.w || geradoAtual.h != saida.h || geradoAtual.fmt != saida.fmt)
-                {
-                    geradoAnt.Cria(gpu.dev.Get(), saida.w, saida.h, saida.fmt, L"quadro gerado: processado anterior");
-                    geradoAtual.Cria(gpu.dev.Get(), saida.w, saida.h, saida.fmt, L"quadro gerado: processado novo");
-                    saidaGerada.Cria(gpu.dev.Get(), saida.w, saida.h, saida.fmt, L"quadro gerado: mistura");
-                    temGerado = false;
-                }
-                if (temGerado)
-                {
-                    geradoAtual.Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
-                    geradoAnt.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
-                    c->CopyResource(geradoAnt.r.Get(), geradoAtual.r.Get());
-                }
-                saida.Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
-                geradoAtual.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
-                c->CopyResource(geradoAtual.r.Get(), saida.r.Get());
-                if (temGerado)
-                {
-                    // os N quadros do ciclo sao todos misturas so do processado atual com o proximo (este), com o peso
-                    // do proximo em passos iguais: 2x 50/50; 3x 25/50/75%; 4x 20/40/60/80%. O proximo sozinho nao
-                    // aparece: o ciclo seguinte ja o mistura com o que vem depois dele (1 quadro de atraso)
-                    static const float kPesos[3][4] = {{0.5f, 0.5f}, {0.25f, 0.5f, 0.75f}, {0.2f, 0.4f, 0.6f, 0.8f}};
-                    const int n = std::clamp(cfg.ritmo, 2, 4);
-                    for (int i = 1; i < n; ++i)
-                        geradosPendentes.push_back(kPesos[n - 2][i]);
-                    Mistura(c, kPesos[n - 2][0]);
-                    tela = &saidaGerada;
-                }
-                temGerado = true;
-            }
             Barreira(c, bb, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST);
-            tela->Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
-            c->CopyResource(bb, tela->r.Get());
+            saida.Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
+            c->CopyResource(bb, saida.r.Get());
             Barreira(c, bb, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
         }
-        else
-            temGerado = false;
         if (!dumpPasta.empty() && quadrosTeste > 0 && quadros + 1 >= (UINT64)quadrosTeste)
             ultimoTemMov = temMov; // o ultimo quadro do dump: fedAnt guarda o anterior
         else if (fedAnt.r)
@@ -1821,18 +2192,22 @@ RWTexture2D<float4> saida : register(u0);
         ID3D12CommandList* l1[] = {c};
         gpu.fila->ExecuteCommandLists(1, l1);
         if (edJogo)
-            fb.Publica(qb.n, fb.LuzDoModulo(cfg.temporal.luz));
+            fb.Publica(qb.n, cfg.temporal.luz);
         const UINT64 fim = gpu.Sinaliza();
         if (apresenta)
         {
             ov.Apresenta();
-            ++apresentados;
             ov.Mostra(true);
         }
         gpu.EsperaValor(fim);
         VigiaMemoria();
         if (buffer)
             fb.Consumido(qb.n);
+        if (captApi)
+        {
+            fa.Consumido(quadroApi);
+            quadroApi = 0;
+        }
         estat = temMov ? fluxo.LeEstatisticas() : Fluxo::Estat{};
         if (!comCrua && temporal.Crua().r)
             temporal.SoltaCrua();
@@ -1877,10 +2252,8 @@ RWTexture2D<float4> saida : register(u0);
             if (dt >= 0.5)
             {
                 fps = double(quadros - quadrosMarca) / dt;
-                vfps = double(apresentados - apresentadosMarca) / dt;
                 marcaFps = agora;
                 quadrosMarca = quadros;
-                apresentadosMarca = apresentados;
             }
             msMedio = msMedio * 0.95 + ms * 0.05;
         }
@@ -1888,11 +2261,11 @@ RWTexture2D<float4> saida : register(u0);
         {
             Log("tempo", Fmt("quadros %llu: media %.2f ms, pior %.2f ms (captura -> overlay) | resposta da rede em %.0f%% "
                              "dos quadros, %.1f quadros / %.1f ms depois do envio | confianca %.3f, luz %.4f, vel %.1f px | "
-                             "%.1f fps / %.1f na tela",
+                             "%.1f fps",
                              (unsigned long long)quadros, somaMs / 60.0, maxMs,
                              100.0 * double(quadrosComRede - comRedeMarca) / 60.0,
                              chegadas ? somaAtrasoQ / chegadas : 0.0, chegadas ? somaAtrasoMs / chegadas : 0.0,
-                             1.0 - estat.semConfianca, estat.mudancaLuz, estat.velocidade, fps, vfps));
+                             1.0 - estat.semConfianca, estat.mudancaLuz, estat.velocidade, fps));
             fracaoRede = double(quadrosComRede - comRedeMarca) / 60.0;
             comRedeMarca = quadrosComRede;
             somaMs = maxMs = 0;
@@ -1997,8 +2370,6 @@ RWTexture2D<float4> saida : register(u0);
     // So mostra e registra. Acima do orcamento (pico do jogo, jogo pesado) o Windows move para a RAM o que estiver menos
     // em uso; a rede segue rodando (antes ela era desligada de vez depois de 2 s acima do orcamento, e desligava em todo
     // pico). A parte do overlay (texturas dele) e a do resto (rede, runtime HIP, captura) aparecem separadas.
-    std::set<uint64_t> tamanhosRede; // tamanhos de rede ja usados neste processo (cada um prende buffers da ponte HIP)
-    double mbPresos = 0;
     double texListadas = -1;       // o total da ultima lista de texturas no registro
     std::string memoriaTexto;      // linha do painel
     std::string emergenciaMemoria; // aviso de VRAM acima do orcamento ("" = dentro)
@@ -2020,8 +2391,8 @@ RWTexture2D<float4> saida : register(u0);
         {
             registroMemoria = agora;
             Log("memoria", Fmt("VRAM do processo %.0f MB (texturas do overlay %.0f MB), orcamento %.0f MB, memoria de video "
-                               "na RAM %.0f MB, presos pela ponte HIP ~%.0f MB (%zu tamanhos)",
-                               uso / mb, tex / mb, orcamento / mb, naRam / mb, mbPresos, tamanhosRede.size()));
+                               "na RAM %.0f MB",
+                               uso / mb, tex / mb, orcamento / mb, naRam / mb));
             if (tex != texListadas)
             {
                 texListadas = tex;
@@ -2058,11 +2429,9 @@ RWTexture2D<float4> saida : register(u0);
             e.redeW = fed.w;
             e.redeH = fed.h;
             e.msMedio = msMedio;
-            // reais / com a geracao: na captura de buffer os do jogo (o modulo conta), com a geracao da AMD em uso; na de
-            // video os processados pela rede e os que vao a tela com os quadros gerados (Ritmo 2-4)
-            const bool gerBuffer = buffer && fb.GeracaoEmUso() >= 2 && fb.FpsTela() > 0;
+            // na captura de buffer os do jogo (o modulo conta); na de video os processados pela rede e os que vao a tela
+            // com os quadros gerados (Ritmo 2-4)
             e.fps = buffer && fb.FpsJogo() > 0 ? fb.FpsJogo() : fps;
-            e.vfps = gerBuffer ? fb.FpsTela() : !buffer && cfg.ritmo > 1 ? vfps : 0.0;
             e.fracaoRede = fracaoRede;
             e.alturaSessao = sessao.alturaRede;
             e.pequenaSessao = sessao.redePequena;
@@ -2095,52 +2464,12 @@ RWTexture2D<float4> saida : register(u0);
         e.perfilAlterado = configArq.empty() && cfg.Texto() != textoSalvo;
         e.perfilExiste = !perfilJogo.empty() && Existe(PerfilArq(perfilJogo));
         e.historicoAtivo = temporalSessao == 1;
-        e.geracaoPronta = buffer && fb.Conectada() && fb.GeracaoPronta();
-        e.estadoGeracao = estadoGeracao;
-        if (buffer && fb.Conectada() && fb.JogoVivo())
-        {
-            const int pedida = std::min(cfg.geracao, 4);
-            const uint32_t emUso = fb.GeracaoEmUso(), hz = fb.HzMonitor(), hzMax = fb.HzMaximo();
-            const double fpsJogo = fb.FpsJogo();
-            e.estadoGeracao =
-                e.geracaoPronta && cfg.geracao >= 2 && emUso && int(emUso) < pedida
-                    ? (emUso >= 2 ? Fmt("geração %dx pedida, %ux em uso: o monitor está a %u Hz e o jogo a %.0f q/s (a tela "
-                                        "não mostra mais que %u quadros por segundo; acima disso é rasgo)",
-                                        pedida, emUso, hz, fpsJogo, hz)
-                                  : Fmt("geração %dx pedida e nenhuma em uso: o monitor está a %u Hz e o jogo já faz %.0f q/s, "
-                                        "não cabe quadro gerado. ",
-                                        pedida, hz, fpsJogo) +
-                                        (hzMax > hz ? Fmt("O monitor aceita %u Hz: troque em Configurações > Sistema > Tela > "
-                                                          "Tela avançada > taxa de atualização.",
-                                                          hzMax)
-                                                    : std::string("Limite o jogo a 30 ou 40 q/s para usar 3x ou 2x.")))
-                : e.geracaoPronta        ? (cfg.geracao >= 2 ? "geração " + std::to_string(pedida) +
-                                                                   "x ligada (swapchain da AMD em uso)" +
-                                                                   (fb.FpsTela() > 0
-                                                                        ? Fmt(": jogo %.0f q/s, tela %.0f q/s, 1%% low %.0f q/s",
-                                                                              fpsJogo, fb.FpsTela(), fb.Baixo1pct())
-                                                                        : std::string())
-                                                             : std::string("geração desligada (liga aqui, sem reabrir o jogo)"))
-                : cfg.geracao < 2        ? ""
-                : instalacao == Instalacao::Outra
-                    ? "a pasta do jogo já tem version.dll e dxgi.dll de outros programas (Cyber Engine Tweaks, ReShade, "
-                      "OptiScaler?): não substituí; tire uma delas para usar a geração"
-                : !erroInstalacao.empty() ? "não instalou na pasta do jogo: " + erroInstalacao
-                                          : "DLL instalada na pasta do jogo: feche e abra o jogo uma vez (pela Steam ou como "
-                                            "quiser); daí em diante ele já abre com ela e é só ajustar aqui";
-        }
-        e.instaladoNoJogo = buffer && (instalacao == Instalacao::Nossa || instalacao == Instalacao::Desatualizada);
+        e.avisoPastaJogo = avisoPastaJogo;
+        e.formatoAgora = Ligado() ? TextoFormatos() : std::string();
+        e.exeEscolhido = exeEscolhido.empty() ? std::string() : Utf8(exeEscolhido.substr(exeEscolhido.find_last_of(L"\\/") + 1));
+        e.camadaVulkan = camadaVulkan;
         painel.DefineMouseJogo(buffer && fb.Conectada() && fb.JogoVivo() ? fb.Cab() : nullptr);
         const AcoesPainel a = painel.Quadro(cfg, e);
-        if (a.removerDoJogo && !exeJogo.empty())
-        {
-            const std::string m = RemoveDoJogo(exeJogo);
-            instalacao = EstadoInstalacao(exeJogo, Dll());
-            estadoGeracao = m.empty() ? "DLL do overlay tirada da pasta do jogo (está na Lixeira); a geração sai na "
-                                        "próxima abertura do jogo"
-                                      : m;
-            Log("geracao", estadoGeracao);
-        }
         // perfis (na ordem: salvar antes de carregar, para o "salvar e carregar")
         if (a.perfilSalvar)
             SalvaPerfil();
@@ -2158,6 +2487,12 @@ RWTexture2D<float4> saida : register(u0);
             AplicaConfig(Config{});
             Log("app", "ajustes redefinidos para os padroes");
         }
+        if (!a.exeNovo.empty())
+            DefineExeEscolhido(a.exeNovo);
+        if (a.exeEsquecer)
+            DefineExeEscolhido(L"");
+        if (a.camadaMudou)
+            DefineCamada(a.camadaValor);
         if (a.ligar)
             Liga(a.ligar);
         if (a.desligar)
@@ -2250,8 +2585,8 @@ RWTexture2D<float4> saida : register(u0);
                     }
                 }
             });
-        // captura de buffer com a geracao: o modulo do jogo grava um quadro gerado na mesma pasta (os gerados, o real, a
-        // imagem sem HUD e os quadros como foram para a tela) -- o pedido e um arquivo em %TEMP% com o pid do jogo
+        // captura de buffer: o modulo do jogo grava a cor antes e depois da edicao na mesma pasta -- o pedido e um arquivo
+        // em %TEMP% com o pid do jogo
         if (buffer && pidBuffer)
         {
             wchar_t tmp[MAX_PATH], arq[MAX_PATH + 40];
@@ -2447,6 +2782,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             app.hdrSintetico = float(_wtof(argv[++i]));
         else if (!wcscmp(argv[i], L"--troca-rede"))
             app.trocaRedeNoQuadro = _wtoi(argv[++i]);
+        else if (!wcscmp(argv[i], L"--cicla-formato"))
+            app.ciclaFormato = _wtoi(argv[++i]);
         else if (!wcscmp(argv[i], L"--alterna"))
             app.alternaAltura = _wtoi(argv[++i]);
         else if (!wcscmp(argv[i], L"--pula"))
@@ -2471,44 +2808,6 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
     for (int i = 1; i < argc; ++i)
         if (!wcscmp(argv[i], L"--sem-painel"))
             app.comPainel = false;
-    // teste do lancamento com geracao (o mesmo do botao "Abrir jogo com geracao"): abre e sai
-    //   --lanca-jogo <exe> [--lanca-args "<args>"] [--lanca-dll <DLSS5Buffer.dll>] [--lanca-geracao N]
-    {
-        std::wstring lExe, lArgs, lDll;
-        int lGer = 2;
-        for (int i = 1; i + 1 < argc; ++i)
-        {
-            if (!wcscmp(argv[i], L"--lanca-jogo"))
-                lExe = argv[i + 1];
-            if (!wcscmp(argv[i], L"--lanca-args"))
-                lArgs = argv[i + 1];
-            if (!wcscmp(argv[i], L"--lanca-dll"))
-                lDll = argv[i + 1];
-            if (!wcscmp(argv[i], L"--lanca-geracao"))
-                lGer = _wtoi(argv[i + 1]);
-        }
-        if (!lExe.empty())
-        {
-            if (lDll.empty())
-            {
-                wchar_t eu[MAX_PATH];
-                GetModuleFileNameW(nullptr, eu, MAX_PATH);
-                lDll = std::wstring(eu).substr(0, std::wstring(eu).find_last_of(L"\\/")) + L"\\captura\\DLSS5Buffer.dll";
-            }
-            DWORD pid = 0;
-            const ov::ResultadoInjecao r = ov::AbreJogo(lExe, lDll, uint32_t(lGer), pid, lArgs);
-            Log("geracao", Fmt("lancamento de teste: %s (pid %lu) %s", r.ok ? "ok" : "falhou", (unsigned long)pid, r.motivo.c_str()));
-            bool fica = false; // --fica: o overlay segue aberto e liga a captura de buffer quando a janela aparecer
-            for (int i = 1; i < argc; ++i)
-                fica |= !wcscmp(argv[i], L"--fica");
-            if (!fica)
-                return r.ok ? 0 : 1;
-            app.jogoLancado = lExe;
-            app.pidLancado = pid;
-            app.tLancado = std::chrono::steady_clock::now();
-            app.geracaoTeste = lGer; // vale depois do config (Inicia)
-        }
-    }
     if (!imagemArq.empty() || !app.pastaReproducao.empty())
         app.comPainel = false;
     // imagem e reproducao: testes deterministicos (o jogo nao espera a edicao, nenhum quadro e pulado)
@@ -2525,11 +2824,6 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         app.Inicia();
         app.abertura = nullptr;
         abertura.Fecha();
-        if (app.geracaoTeste >= 0)
-        {
-            app.cfg.fonte = 1;
-            app.cfg.geracao = app.geracaoTeste;
-        }
     }
     catch (const std::exception& e)
     {
@@ -2605,8 +2899,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     app.gpu.Espera(); // tempo de GPU (rede inclusa), nao so o de envio
                     if (app.alternaAltura)
                     {
-                        Log("imagem", Fmt("quadro %d altura %d: %.2f ms", i, app.cfg.alturaRede,
-                                          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count()));
+                        UINT64 uso = 0, orcamento = 0, naRam = 0;
+                        app.gpu.Memoria(uso, orcamento, naRam);
+                        Log("imagem", Fmt("quadro %d altura %d: %.2f ms, VRAM %llu MB", i, app.cfg.alturaRede,
+                                          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count(),
+                                          (unsigned long long)(uso >> 20)));
                         app.cfg.alturaRede = alturaBase;
                         app.sessao.alturaRede = alturaBase;
                     }
@@ -2639,8 +2936,34 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
     // --teclas-teste (testes com outro overlay aberto): Ctrl+Shift+F5..F10 no lugar de D, N, S, Q, P, G
     const UINT mods = MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT;
     const UINT teclas[6] = {'D', 'N', 'S', 'Q', 'P', 'G'};
+    UINT atalhos[6];
     for (int i = 0; i < 6; ++i)
-        RegisterHotKey(nullptr, i + 1, mods, teclasTeste ? UINT(VK_F5 + i) : teclas[i]);
+    {
+        atalhos[i] = teclasTeste ? UINT(VK_F5 + i) : teclas[i];
+        RegisterHotKey(nullptr, i + 1, mods, atalhos[i]);
+    }
+    app.painel.DefineAtalhos(atalhos); // com o painel aberto as teclas nao chegam ao RegisterHotKey
+    // excecao sem tratamento: a queda sai no registro, nao so como 0xc0000409 no Windows
+    std::set_terminate([] {
+        try
+        {
+            if (const auto e = std::current_exception())
+                std::rethrow_exception(e);
+            Log("erro", "encerrado sem excecao ativa (std::terminate)");
+        }
+        catch (const std::exception& x)
+        {
+            Log("erro", std::string("excecao sem tratamento: ") + x.what());
+        }
+        catch (...)
+        {
+            Log("erro", "excecao sem tratamento (tipo desconhecido)");
+        }
+        abort();
+    });
+    app.LeExeEscolhido();
+    app.LeCamada();
+    app.AplicaCamada(app.camadaVulkan); // tambem tira o registro que sobrou de uma queda
     if (!alvoTitulo.empty())
     {
         Busca b{alvoTitulo};
@@ -2704,9 +3027,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         // voltava por cima de qualquer janela e parecia que o Alt+Tab e o minimizar nao funcionavam)
         const bool foco = !app.Ligado() || app.quadrosTeste > 0 || ignoraFoco || app.JogoEmFoco();
         app.painel.DefineAutoOculto(app.Ligado() && !foco);
+        app.AplicaTetoDoJogo();
         {
             static auto ultimaOrdem = clk::now();
-            if (app.cap.Ativa() && foco && clk::now() - ultimaOrdem >= std::chrono::milliseconds(250))
+            if ((app.cap.Ativa() || app.captApi) && foco && clk::now() - ultimaOrdem >= std::chrono::milliseconds(250))
             {
                 ultimaOrdem = clk::now();
                 app.ov.Ordena(app.painel.Janela());
@@ -2717,9 +3041,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 ultimoPainel = clk::now();
                 try
                 {
-                    app.VigiaLancamento(); // o jogo aberto pelo overlay: liga a captura de buffer quando a janela aparece
                     if (!app.imagem && app.pastaReproducao.empty())
-                        app.VigiaGeracao(); // DLL na pasta do jogo: instala quando pedida, conecta sozinho
+                        app.ProcuraJogo(); // o modulo ja no jogo: conecta sozinho
                     app.Painel_();
                 }
                 catch (const std::exception& e)
@@ -2736,15 +3059,25 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             MsgWaitForMultipleObjects(0, nullptr, FALSE, 16, QS_ALLINPUT);
             continue;
         }
-        if (!foco)
+        // fora deste try, uma falha de GPU aqui (recriar a swapchain com o jogo caindo) derrubava o overlay sem registro
+        try
         {
-            app.Pausa();
+            if (!foco)
+            {
+                app.Pausa();
+                MsgWaitForMultipleObjects(0, nullptr, FALSE, 16, QS_ALLINPUT);
+                continue;
+            }
+            app.Retoma();
+            app.SegueJanela();
+        }
+        catch (const std::exception& e)
+        {
+            Log("erro", std::string("janela: ") + e.what());
             MsgWaitForMultipleObjects(0, nullptr, FALSE, 16, QS_ALLINPUT);
             continue;
         }
-        app.Retoma();
-        app.SegueJanela();
-        HANDLE ev = app.buffer ? app.fb.Evento() : app.cap.EventoQuadro();
+        HANDLE ev = app.buffer ? app.fb.Evento() : app.captApi ? app.fa.Evento() : app.cap.EventoQuadro();
         MsgWaitForMultipleObjects(ev ? 1 : 0, ev ? &ev : nullptr, FALSE, 16, QS_ALLINPUT);
         if (app.cfg.fpsMax > 0)
         {

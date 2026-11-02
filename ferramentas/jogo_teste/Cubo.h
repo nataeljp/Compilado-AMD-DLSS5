@@ -26,6 +26,7 @@ class CenaCubo
     bool pontilhado = false;            // os cubos que cruzam pontilhados (--pontilhado)
     bool fundoLiso = false;             // a sala sem o xadrez (--fundo-liso)
     float cobertura = 0.5f;             // fracao dos pixels do pontilhado que ficam (--cobertura; fios soltos ~0,25)
+    float grao = 0.f;                   // desvio do grao na cor, novo por pixel e por quadro (--grao), e pontos brancos raros
 
     bool Cria(ID3D12Device* d)
     {
@@ -39,7 +40,7 @@ class CenaCubo
         }
         D3D12_ROOT_PARAMETER p{};
         p.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        p.Constants.Num32BitValues = 56;
+        p.Constants.Num32BitValues = 60;
         D3D12_ROOT_SIGNATURE_DESC rd{1, &p, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE};
         if (FAILED(D3D12SerializeRootSignature(&rd, D3D_ROOT_SIGNATURE_VERSION_1, &ser, &err)) ||
             FAILED(d->CreateRootSignature(0, ser->GetBufferPointer(), ser->GetBufferSize(), IID_PPV_ARGS(&raiz))))
@@ -87,8 +88,9 @@ class CenaCubo
     }
 
     // desenha o instante t (s) nos alvos da vaga (cor e movimento em RENDER_TARGET, profundidade em DEPTH_WRITE), numa
-    // area w x h; o movimento e desde o instante tAnt
-    void Desenha(ID3D12GraphicsCommandList* c, int vaga, UINT w, UINT h, double t, double tAnt) const
+    // area w x h; o movimento e desde o instante tAnt. jx, jy: o jitter em pixels, como o FSR recebe (so a posicao na tela;
+    // o movimento fica sem ele)
+    void Desenha(ID3D12GraphicsCommandList* c, int vaga, UINT w, UINT h, double t, double tAnt, float jx = 0.f, float jy = 0.f) const
     {
         const D3D12_CPU_DESCRIPTOR_HANDLE alvos[2] = {Rtv(vaga, 0), Rtv(vaga, 1)};
         const D3D12_CPU_DESCRIPTOR_HANDLE prof = Dsv(vaga);
@@ -117,9 +119,11 @@ class CenaCubo
                 M4 mvp, mvpAnt, mundo;
                 float cor[4];
                 float pont, semente, pad[2];
+                float jitter[2], ruido, pad2;
             } k{Mul(vpAtual, m), Mul(vpAnt, mAnt), m, {cor[0], cor[1], cor[2], cor[3]}, pontilhado && o >= 12 ? cobertura : 0.f,
-                float(std::fmod(t * 1000.0, 65536.0)), {fundoLiso && o < 6 ? 1.f : 0.f, 0.f}};
-            c->SetGraphicsRoot32BitConstants(0, 56, &k, 0);
+                float(std::fmod(t * 1000.0, 65536.0)), {fundoLiso && o < 6 ? 1.f : 0.f, 0.f},
+                {2.f * jx / float(w), -2.f * jy / float(h)}, grao, 0.f};
+            c->SetGraphicsRoot32BitConstants(0, 60, &k, 0);
             c->DrawInstanced(o < 6 ? 6 : 36, 1, 0, 0);
         }
     }
@@ -270,7 +274,7 @@ class CenaCubo
 
     static constexpr char kHlsl[] = R"(
 cbuffer o : register(b0) { row_major float4x4 mvp; row_major float4x4 mvpAnt; row_major float4x4 mundo; float4 corBase;
-                           float pont; float semente; float liso; float pad; };
+                           float pont; float semente; float liso; float pad; float2 jitter; float grao; float pad2; };
 struct V { float4 pos : SV_Position; float4 atual : TEXCOORD0; float4 ant : TEXCOORD1; float3 n : NORMAL; float3 local : TEXCOORD2; float3 w : TEXCOORD3; };
 static const float3 kCubo[8] = { float3(-.5,-.5,-.5), float3(.5,-.5,-.5), float3(.5,.5,-.5), float3(-.5,.5,-.5),
                                  float3(-.5,-.5,.5), float3(.5,-.5,.5), float3(.5,.5,.5), float3(-.5,.5,.5) };
@@ -294,12 +298,19 @@ V VSCubo(uint v : SV_VertexID)
     o.atual = mul(mvp, float4(p, 1));
     o.ant = mul(mvpAnt, float4(p, 1));
     o.pos = o.atual;
+    o.pos.xy += jitter * o.atual.w;
     o.n = mul((float3x3)mundo, n);
     o.local = p;
     o.w = mul(mundo, float4(p, 1)).xyz;
     return o;
 }
 struct S { float4 cor : SV_Target0; float2 mov : SV_Target1; };
+float Sorteio(inout uint h)
+{
+    h = h * 747796405u + 2891336453u;
+    const uint r = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
+    return float(((r >> 22u) ^ r) >> 8u) / 16777216.0;
+}
 S PSCubo(V i)
 {
     if (pont > 0.0)
@@ -317,6 +328,15 @@ S PSCubo(V i)
     const float luz = 0.3 + 0.7 * saturate(dot(normalize(i.n), normalize(float3(0.4, 1.0, -0.6))));
     S s;
     s.cor = float4(corBase.rgb * xadrez * luz * 2.0, 1);
+    if (grao > 0.0)
+    {
+        // a soma de 4 sorteios e quase gaussiana (desvio 0,577); 1 pixel em 2000 vira ponto branco
+        uint h = (uint(i.pos.x) * 1973u + uint(i.pos.y) * 9277u + uint(semente) * 26699u) | 1u;
+        const float g = (Sorteio(h) + Sorteio(h) + Sorteio(h) + Sorteio(h) - 2.0) / 0.577;
+        s.cor.rgb *= max(1.0 + grao * g, 0.0);
+        if (Sorteio(h) < 0.0005)
+            s.cor.rgb += 3.0;
+    }
     s.mov = (i.ant.xy / i.ant.w - i.atual.xy / i.atual.w) * float2(0.5, -0.5);
     return s;
 }

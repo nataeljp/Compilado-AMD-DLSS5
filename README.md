@@ -45,11 +45,15 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
   (metade da memória dos pesos) cai para 25,9 dB contra a NVIDIA (o nível de "sem rede": cor esverdeada, rosto
   borrado); INT8 tem o mesmo tamanho do FP8; BF16 o dobro.
 - Desligar com Ctrl+Shift+D não solta a rede; para devolver toda a VRAM, feche o overlay (bandeja → Sair).
+- Mudar o tamanho da rede (`alturaRede` ou a resolução do jogo) recria a sessão dela, em 0,03 s: o driver HIP segura os buffers
+  de todo tamanho que já rodou. Devolve só parte: em 720p depois de 2160p o overlay fica com 2,9 GB, contra 1,2 GB sem ter
+  passado por 2160p, e não cresce a cada troca (19 trocas medidas). O resto volta ao fechar o overlay.
 - Na captura de buffer, a DLL no jogo aloca movimento e profundidade pelo maior tamanho de render que o jogo declarou
   ao FSR: a resolução dinâmica não recria mais as texturas, e as gerações velhas só são soltas depois de a GPU terminar
-  de usá-las.
+  de usá-las. Com o overlay fechado ou desligado por 5 s, a DLL fica no jogo, mas a VRAM dela volta para ele; as texturas
+  voltam quando o overlay voltar.
 
-### Modo de Rede: captura de vídeo ou de buffer
+### Modo de Rede: captura de vídeo, de buffer ou da API
 
 - **Captura de vídeo** (padrão): lê a janela como o OBS. Funciona em qualquer jogo, inclusive online; a rede vê o HUD
   e o movimento é estimado por fluxo óptico.
@@ -66,169 +70,102 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
     (colocar código no jogo pode dar banimento). Jogo com anti-cheat instalado mas aberto sem ele: conecta, com aviso —
     use só offline.
   - OptiScaler instalado na pasta do jogo assume o upscaler: tire o `dxgi.dll` dele para a captura de buffer.
-  - **Geração neural (FSR 4 / Redstone)**: com a `amd_fidelityfx_loader_dx12.dll` + `amd_fidelityfx_framegeneration_dx12.dll`
-    (provedor 4.x) na pasta do jogo e a câmera do preparo da geração FSR do jogo (a geração FSR do jogo ligada no menu
-    dele), 2x usa a geração neural da AMD. 4x intercalado: um contexto gera o meio M; outro recebe real, M, real, M...
-    (movimento pela metade, câmera no meio) e gera 0,25 e 0,75; o HUD do real entra parado depois. Cena de teste com
-    cabelo pontilhado: neural 29,7/29,4/28,9 dB contra analítica 24,9/23,9/23,9 dB; custo em 4K ~3 ms (2x) e ~8 ms
-    (4x) por real. 3x = o gerado do meio do 2x apresentado duas vezes (real > meio > meio > real); 4x = o intercalado acima. 2x no uso oficial da AMD: o quadro final em `presentColor` e a imagem sem HUD em `HUDLessColor`. Só a Redstone: sem a câmera do jogo ou sem o provedor 4.x vai só o quadro real (a geração analítica do FSR 3.1, abaixo, não é mais usada). Entre reais que não são seguidos no jogo vai só o real (nunca interpola por cima de quadros pulados), e o N desce quando o jogo entrega mais reais do que cabem na tela. A reprojeção acima do limite de movimento fica desligada por padrão (`DLSS5_GERACAO_LIMITE` = pixels em 1080p liga; 0 = só ela). Sem câmera ou sem o provedor 4.x: a analítica abaixo (`DLSS5_GERACAO_ANALITICA=1` força ela).
-  - **Geração de quadros (AMD)**: a geração do FidelityFX SDK 1.1.4 (Frame Interpolation + Optical Flow + o swapchain
-    de geração da AMD, compilados do código fonte, MIT), ligada como o provedor de referência da AMD: quadros novos de
-    verdade entre os do jogo, com o movimento, a profundidade e a câmera que o jogo manda ao FSR. A interpolação parte do
-    backbuffer final, então os quadros gerados já levam a edição da rede. A DLL tem de entrar antes do DirectX: ao
-    ligar a geração com o jogo conectado, o overlay copia a `DLSS5Buffer.dll` para a pasta do executável do jogo como
-    `version.dll` — ou `dxgi.dll` —, uma DLL que o executável importa (lida da tabela de importação dele), então o Windows
-    a carrega antes do DirectX em toda abertura; as funções da DLL do Windows de mesmo nome seguem para ela por
-    `src\jogo\ProxyDxgi.asm`. Como `version.dll` ela engancha `CreateDXGIFactory*` na dxgi do Windows (já carregada, ou
-    pelo aviso de carga do carregador). O overlay pede para reabrir o jogo **uma vez**; daí em diante o jogo já abre com
-    ela (pela Steam ou como for), o swapchain dele vira o da AMD na criação, o overlay conecta sozinho (modo buffer) e a
-    geração liga, desliga e muda só pelo painel. A DLL de outro programa (Cyber Engine Tweaks usa `version.dll`; ReShade
-    e OptiScaler, `dxgi.dll`) nunca é substituída; "Remover do jogo" manda a nossa para a Lixeira; overlay atualizado
-    atualiza a cópia do jogo ao conectar (e uma instalação antiga com o outro nome vai para a Lixeira). Os shaders da AMD e os do módulo compilam em segundo plano (no
-    primeiro quadro do FSR a compilação parava o jogo por 14–25 s). Medido no jogo de teste com a rede ligada: 27
-    quadros do jogo + 27 gerados por segundo, cada gerado exatamente entre os dois reais (24,6 dB para cada lado).
-    Desligue a geração do próprio jogo e o AFMF do driver.
-  - **3x e 4x** (a AMD só faz 2x): `externo\ffx_multiquadro.py` (aplicado pelo `externo\compila_ffx.ps1`, idempotente)
-    troca nos shaders da interpolação o meio fixo (t = 0,5) pelo instante de cada gerado (t = k/N, na constante que era
-    `_pad1`; os vetores até o quadro atual valem mv·(1−t) e até o anterior mv·t), a interpolação roda uma vez por gerado
-    (só a última guarda o quadro atual como anterior) e o swapchain apresenta até 3 gerados por quadro do jogo, em ordem,
-    com o intervalo do jogo dividido por N. Com t = 0,5 as contas são as da AMD: o 2x não muda. O módulo escreve no log o
-    ritmo real das apresentações (intervalo médio, desvio, maior e o **1% low**: o intervalo que só 1% das apresentações
-    passa, por um histograma de 0,1 ms no presenter da AMD) e o painel mostra, com a geração ligada, os quadros do jogo,
-    os da tela (reais + gerados) e o 1% low dos últimos 5 s. Medido no sample da AMD a 3x: 116 q/s na tela, 1% low ~100.
-    O topo do painel mostra os dois: `N fps / M vfps` — reais (na captura de buffer, os do jogo; na de vídeo, os que a
-    rede processou) e os que vão à tela com a geração (a da AMD na captura de buffer; os quadros gerados do Ritmo na de
-    vídeo). Sem geração, só `N fps`. Na captura de vídeo o Ritmo não sobe os reais: a rede processa 1 de cada N quadros
-    (jogo de teste a 40 q/s: Ritmo 1 33 fps; Ritmo 2 repetido 20 / 20 vfps; mesclado 20 / 40 vfps, misturas sem
-    movimento); quem multiplica o jogo é a geração da AMD na captura de buffer.
-  - **Módulo de versão anterior no jogo**: com o jogo aberto antes de atualizar o overlay, a DLL da pasta dele está em
-    uso e o módulo carregado é o antigo. O overlay fala com o protocolo anterior (`kVersaoMinima`, mesmo layout; recebe a
-    luz logarítmica no lugar da mista) e atualiza a DLL da pasta do jogo (a em uso é renomeada; a nova vale ao reabrir).
-    Antes, a conexão recusada caía na injeção, o jogo negava o acesso, a mensagem pedia "administrador" e a DLL da pasta
-    nunca era trocada — sem conexão, sem captura de buffer, sem a geração da AMD e sem o mouse do painel (que passa pelo
-    módulo).
-  - **Preparo e geração em threads diferentes**: o preparo da AMD roda na thread de render (despacho do FSR) e o fluxo
-    óptico + a interpolação no Present — no TLOU2, outra thread. Os dois usam o mesmo backend da AMD (fila de trabalhos e
-    recursos dinâmicos do contexto da interpolação, que não são seguros entre threads) e agora passam um de cada vez por
-    uma trava; com o contexto sendo refeito (tela ou render máximo novos) a geração do Present não roda, e antes de
-    destruir o contexto a geração é desligada no swapchain (a configuração espera o Present em curso). O log conta as
-    vezes em que um esperou o outro ("preparo e geração se encontraram N vezes").
-  - **Cada Present com o próprio quadro**: o preparo (profundidade e movimento dilatados) é gravado no despacho do FSR e a
-    AMD gera no Present. Um motor com a thread de render à frente grava o quadro seguinte antes do Present do atual — casar
-    pelo último preparado juntava a imagem de um quadro com o movimento do seguinte (gerado no lugar errado: fantasma e o
-    movimento indo e voltando). Os preparos ficam numa fila (3 jogos de recursos) e cada Present usa o mais novo já
-    **enviado** à GPU (gancho de `ExecuteCommandLists` desde o primeiro quadro). Medido no jogo de teste `--adiantado`
-    (grava à frente, envia em ordem): a DLL nova gera o mesmo quadro que o motor normal; a antiga, outro. O log diz
-    quantos quadros o jogo grava à frente. Com o **NVIDIA Streamline** no jogo (`sl.interposer.dll`, como no TLOU2) as
-    listas de comandos são embrulhadas: o jogo entrega a nativa ao FSR (como a NVIDIA recomenda) e envia a embrulhada,
-    e as duas nunca casavam (no TLOU2: todas as apresentações sem o preparo do próprio quadro). As duas pontas viram a
-    nativa (`QueryInterface` com o `StreamlineRetrieveBaseInterface` do Streamline). As 120 primeiras apresentações com
-    geração vão para o log, uma a uma: os despachos do FSR desde a anterior, a fila e qual quadro cada uma usou.
-  - **HUD parado nos gerados**: interpolado junto com a cena, o HUD andava com ela. A AMD resolve com a imagem sem HUD
-    (`currentBackBuffer_HUDLess`: onde o quadro final difere dela é HUD, e o gerado leva o HUD do quadro final, parado;
-    o fluxo óptico também parte dela, como no FSR 3). O jogo não a entrega: o módulo a acha pelo método do HUDfix do
-    OptiScaler (`src\jogo\SemHud.cpp`) — segue os descritores das texturas do tamanho e do formato da tela, da criação
-    (`Create*View`, `CopyDescriptors*`) ao uso (alvo de desenho + desenho; tabela de compute, pelas faixas de UAV da root
-    signature, + despacho), numera os passes do jogo depois do upscaler e copia o escolhido logo depois dele. A escolha é
-    conferida na GPU a cada apresentação, contra o quadro final, em 1 de cada 16 pixels: a certa é igual a ele bit a bit
-    fora do HUD (≥ 70% da tela, mas não 100% — essa já tem HUD) e, com a cena andando, a máscara do que difere fica
-    parada; a de antes de um pós-efeito difere na tela toda (grão, cor) ou nas bordas, que andam com a cena (nitidez).
-    Fica o primeiro passe que confere; só a conferida vai para a AMD. Medido (o HUD dos gerados contra o do quadro
-    real): sample da AMD a 4K, SDR e HDR10 em tela cheia, passe 0 de 3, 100% igual (sem a imagem: 64%, até 204/255 de
-    diferença); jogo de teste `--hud` (tonemap → HUD; com `--pos grao` ou `--pos nitidez` entre eles): o passe certo nos
-    três casos, 100% igual, instantes 0,333/0,669, nenhuma mensagem da camada de validação do D3D12. `DLSS5_SEM_HUD=0`
-    desliga (teste A/B).
-  - **Limite pela taxa do monitor**: a tela nunca recebe mais quadros por segundo que a taxa do monitor (acima dela cada
-    atualização mostra pedaços de vários quadros). Desligada, a geração liga quando o jogo entrega até 75% da taxa, com
-    o menor N que enche a tela; ligada, o N só sobe (o jogo caindo) e nunca cai sozinho — o limitador abaixo e o do
-    próprio jogo distorcem a medida, e o N ia e voltava. Com N gerados o jogo é limitado a 97% da taxa ÷ N (relógio de
-    alta resolução + espera ativa, antes da trava). Os gerados ignoram o vsync do jogo: com ele cada um esperava um
-    vblank do compositor a 60 Hz e o jogo caía pela metade. A taxa é a física do sinal (`QueryDisplayConfig` com `QDC_VIRTUAL_REFRESH_RATE_AWARE`): com a taxa dinâmica do
-    Windows 11 a área de trabalho fica "virtual" a 60 Hz e a tela segue a 120 — `EnumDisplaySettings` só via os 60 e a
-    geração saía desligada num monitor de 120 Hz com FreeSync. Lida pelo vigia, fora da thread de render.
-  - **Só no executável do jogo**: na pasta do jogo a DLL é carregada por todo programa dali (o relatório de erros
-    `crs-*.exe` do TLOU2, lançadores). O módulo só age nos executáveis listados em `DLSS5Overlay.alvo` (escrito pelo
-    overlay na instalação); nos outros ela só repassa a DLL do Windows, sem ganchos nem log.
-  - **Swapchain só do jogo**: o módulo não segura o swapchain da AMD; quando o jogo o solta (modo de tela, HDR, saída) a
-    AMD avisa antes de destruir (`ffxDlss5AoDestruirDX12`) e o contexto sai junto — preso, ele ocupava a janela (a
-    criação do novo falhava) e na saída as threads da AMD morriam com ele vivo.
-  - **Saída do processo**: carregada da pasta do jogo, a DLL entra antes do d3d12 e sai depois do driver. Os globais com
-    objetos do D3D12 (o cliente do overlay, os shaders compilados) nunca são destruídos — o destrutor deles chamava o
-    driver que já tinha saído e o `amdxc64.dll` abortava o processo (`0xc0000409`) a cada fechamento do jogo.
+  - **Rede lenta (4K)**: acima de 95 ms por quadro (2160 com 2 passes: 119 ms) o jogo não espera a rede: roda solto, e a edição
+    chega atrasada e reprojetada (medido no TLOU2: 16 quadros de idade, rastro). "Prender o jogo à rede lenta" faz ele esperar
+    (prazo de 3x a média medida, de 100 a 900 ms): sem rastro, mas cada quadro leva o tempo da rede, com input lag. Abaixo de
+    95 ms o jogo espera sempre a edição do quadro anterior. Fidelidade em tela 4K contra a saída da NVIDIA (1 passe; tempo de
+    quadro no modo imagem): rede 1080 33,4 dB (28 ms), 1440 37,0 (47), 1620 38,0 (58), 1800 39,6 (68), 2160 45,85 (83).
+  - **Dar GPU à rede**: `Limite de FPS do jogo` (captura de buffer e da API; DX11, DX12 e Vulkan) é um teto no present do jogo: o
+    tempo de GPU que ele deixa de usar fica para a rede, sem atraso a mais na entrada. Medido com o jogo de teste em 4K, sem teto:
+    rede 1440 com 1 passe a 10,4 fps; com teto 30, 17,4. No buffer com teto 30 e 1 passe: rede 2160 a 10,1 fps, 1440 a 18,0, 1080 a
+    25,2 (sem teto, 2160 não chegou a 5 fps). A rede 2160 sozinha não passa de 10–16 fps com 1 passe: 20 fps só em tamanho menor.
+    Prioridade de GPU não adianta nesta placa: `D3DKMTSetProcessSchedulingPriorityClass` (alta e tempo real, aceitas) e
+    `hipStreamCreateWithPriority` deram os mesmos 10,3 fps de rede com a GPU cheia.
+  - **Jogo no limite da VRAM**: acima do orçamento do processo, criar recurso falha (doc. do D3D12, *Residency*), e um jogo
+    pesado usa tudo o que o orçamento deixa. As texturas da captura saem sem a residência na criação e com `MakeResident`,
+    que passa acima do orçamento (o Windows tira do jogo o que ele usa menos); o log e o painel dizem quantas e, se ainda
+    falhar, o código do erro e a VRAM do momento, e o módulo tenta de novo a cada 2 s. Em buffer, o que só a captura de
+    vídeo usa sai da VRAM (swapchain e fluxo óptico).
+  - **Jogo já aberto** é o caso normal, e a leitura dos buffers é igual: o módulo engancha a DLL do FSR que o jogo já
+    carregou e lê cor, movimento e profundidade a cada despacho. Só as flags de criação do contexto do FSR ele não viu; as
+    que importam saem dos próprios recursos: movimento na resolução de tela pelo tamanho das texturas, HDR pelo formato da
+    cor, Z invertido medido no overlay, plano distante infinito pela câmera. O log diz "deduzidas".
+  - **Módulo de versão anterior no jogo** (o jogo aberto antes de atualizar o overlay): o módulo não sai de um jogo aberto
+    e os protocolos não conversam; o overlay avisa para fechar e abrir o jogo. O que versões antigas deixaram na pasta do
+    jogo (`version.dll`, `dxgi.dll` com a nossa marca, `.antiga.*`, `.alvo`) vai para a Lixeira ao ligar; DLL de outro
+    programa fica.
   - **Diagnóstico no log** (`DLSS5Buffer.log` ao lado da DLL): a cada 5 s o maior intervalo entre quadros e os engasgos
     (> 2x a média), o ritmo das apresentações e quantos quadros o jogo grava à frente; o **vigia** grava onde cada thread
     está parada se os quadros param por 4 s ou a janela trava (módulo + deslocamento; os da DLL saem pelo
     `DLSS5Buffer.map` gerado na compilação); acessos inválidos (até 5) com a pilha.
   - **Dispositivo removido**: o TLOU2 para (de propósito: escreve o código em 0x0) com `DXGI_ERROR_INVALID_CALL` quando
-    `GetDeviceRemovedReason` diz que o dispositivo caiu por uma chamada inválida. O módulo liga o DRED da Microsoft
-    antes de o jogo criar o dispositivo (o último comando de cada lista e a falha de página da GPU) e confere o
-    dispositivo depois de cada `ExecuteCommandLists`: o envio que o derrubou vai para o log (fila, listas — se é a do
-    FSR, com os passes do módulo — e quem enviou), com o DRED; as listas que o runtime recusa ao fechar também.
+    `GetDeviceRemovedReason` diz que o dispositivo caiu por uma chamada inválida. O módulo confere o dispositivo depois de
+    cada `ExecuteCommandLists`: o envio que o derrubou vai para o log (fila, listas — se é a do FSR, com os passes do
+    módulo — e quem enviou); as listas que o runtime recusa ao fechar também. O DRED da Microsoft (o último comando de
+    cada lista e a falha de página da GPU) só vale para dispositivo criado depois de o módulo entrar; com o jogo já aberto,
+    o log traz o resto sem ele.
     Reproduzido no jogo de teste `--invalida Q` (envia uma lista sem fechar): o mesmo `0x887a0001`, e o log aponta a
     lista e quem a enviou.
-  - **HUD e legendas que o jogo entrega ao FSR 3 dele**: um jogo com geração FSR 3 manda a UI à parte — numa textura
-    que o swapchain compõe, num callback que a desenha em cada quadro, ou como a imagem sem HUD. O swapchain de geração
-    do jogo fica por fora do nosso e compunha essa UI antes de passar o quadro: ela chegava na imagem e era interpolada
-    com a cena (no TLOU2, HUD e legendas tremendo nos gerados; a nossa procura da imagem sem HUD não acha passe nenhum
-    nele). Com a nossa gerando, o módulo tira a UI do swapchain do jogo e a entrega ao nosso, que a compõe parada em cada
-    quadro, real e gerado, como a geração do jogo faria — automático, o log diz qual dos três o jogo usa. Medido no
-    sample da AMD com a geração dele ligada (o mesmo arranjo do TLOU2), câmera girando, a procura desligada: o módulo
-    antigo deixava 42% dos pixels da UI diferentes nos gerados; agora 0,1% (callback), 0,1% (textura), 0,0% (imagem sem
-    HUD); em 4x 0,4–0,9% (só a UI semitransparente, onde a cena aparece por trás). Sem UI à parte vale a procura.
-    A imagem sem HUD (o modo do TLOU2) é copiada para uma textura nossa no Present do swapchain de geração do jogo, na
-    fila dele — depois do quadro inteiro e antes do seguinte; lida depois, na fila da interpolação, ela já podia ser a
-    do quadro seguinte. É a da última configuração, como o swapchain da AMD faz no Present. Sem a cópia, a procura da
-    imagem sem HUD volta a valer (antes o HUD ficava interpolado com a cena: legenda borrada e ícone da arma dobrado
-    nos gerados da gravação do TLOU2); o log diz a cada 5 s quantas foram copiadas e por que não.
-  - **O pedido do painel fica**: o último pedido de geração do painel vale até ele mandar outro. Antes, com o overlay
-    parado (gravação segurando o laço dele, rede recriada ao mudar um ajuste, desligado e religado) a geração caía para
-    a do lançamento por 1–2 s, a do jogo voltava e o HUD e o ritmo pulavam. Medido: overlay desligado 8 s no meio do
-    sample, a geração seguiu em 3x.
-  - **Gravação (Ctrl+Shift+G) com a geração**: o módulo grava junto, na pasta da gravação, um quadro gerado — os
-    gerados, o real, a imagem sem HUD e os quadros como foram para a tela (`tela_*`, com a UI composta).
-  - **N que desce por prova**: preso num N alto (no TLOU2 a rede a 4K deixou o jogo a 13 q/s, o N foi a 4 e o
-    limitador o segurou em 29 q/s depois de ele poder fazer ~50 — mais atraso de entrada à toa), um N a menos é tentado
-    quando o trabalho do jogo diz que ele enche a tela com 5% de folga; em 3 s a tela cheia confirma, senão volta e a
-    próxima prova espera o dobro (10 s a 160 s). Medido no jogo de teste `--fps 20 --fps-depois 300 50`: 4x → 3x (jogo
-    de 20 a 39 q/s); a prova de 2x não encheu e voltou em 1 s.
-  - **A geração FSR 3 do próprio jogo**: com a do jogo ligada e o painel pedindo 2x–4x, a dele é desligada e a nossa
-    liga — só quando a nossa pode gerar (o swapchain da AMD é o nosso: a DLL entrou antes do DirectX; e o contexto está
-    pronto). Injetado com o jogo já aberto a nossa não gera, e desligar a do jogo o deixava sem nenhuma; agora a do jogo
-    segue (medido: sample da AMD com a geração dele, injeção tardia, 75 s ligada). O pedido do painel só muda a decisão
-    depois de 1 s igual (no TLOU2 alternava 0x/4x várias vezes por segundo com o overlay religando).
-  - O jogo espera a edição do quadro anterior (1 quadro, como a NVIDIA roda o DLSS 5: a rede dentro do tempo do quadro)
-    e a soma pelo movimento acumulado desde o quadro que a rede viu (nenhum quadro pula sem o movimento dele ser
-    contado: era o "liga/desliga"), e só para a
-    mesma superfície (profundidade). Onde um objeto acabou de sair, a edição vem dos vizinhos do fundo no quadro atual.
-    Validado com movimento extremo (câmera até 335 px/quadro, objeto até 317 px/quadro): nenhum quadro sem edição fora
-    de corte de cena e nenhuma textura do objeto no fundo descoberto (`ferramentas\fantasma_textura.py`: 0,00; uma
-    cópia de 50% do objeto dá 0,98).
-  - Painel sobre o jogo: jogos que leem o mouse por entrada bruta (Unreal) travam o cursor do Windows; o módulo pega o
-    movimento bruto antes do jogo, manda ao painel e entrega zero ao jogo (a mira não mexe, o jogo não pausa).
-  - "Mesma superfície" é decidida pela **distância radial** da câmera (o Z do jogo convertido com o FOV que ele passa ao
-    FSR): o Z de um ponto fora do centro muda quando a câmera gira, e num giro rápido ~70% da tela parecia outra
-    superfície — a edição vinha dos vizinhos na mesma distância e o letreiro claro era pintado de ciano no carro escuro
-    (o verde/ciano e o rastro do Gears). Os vizinhos que preenchem fundo recém-descoberto precisam ter a mesma cor, e o
-    conteúdo que entra pela borda num giro fica com o quadro original até a rede responder (antes: faixas esticadas).
-    Medido numa sequência com a câmera girando em 3D até ~300 px/quadro sobre um quadro HDR do Gears
-    (`gera_sintetico_buffer.py --giro`): pixels com ciano espúrio na imagem final 3,1% → 1,5%, sem faixas nem cópias.
-  - Oclusão como no FSR (profundidade reconstruída): cada ponto deste quadro marca, no lugar onde estava no quadro
-    anterior, a distância dele; o histórico de um pixel só cai se outro ponto **deste quadro**, mais perto da câmera,
-    estava lá (fundo que acabou de aparecer). Comparar com a distância do quadro anterior derrubava o personagem
-    inteiro: com a câmera andando em volta dele (2–3 m) a distância muda ~10% por quadro, o histórico saía e a edição
-    dele virava estimativa atrasada (o rastro em personagem e objetos). Contra o quadro anterior (e no jogo, com a
-    edição de 1–3 quadros atrás) só conta o que o movimento da câmera não explica. Medido com a câmera girando e
-    andando (`--giro --anda`): confiança no objeto perto 0,46 → 0,997; a faixa recém-descoberta segue 100% detectada.
-  - No jogo, a DLL aplica a edição do quadro anterior com a mesma oclusão reconstruída (cada ponto deste quadro marca
-    a distância dele onde estava no quadro da edição); antes ela só comparava a distância gravada na edição e deixava
-    passar a edição do personagem no chão perto dele.
-  - Medido na gravação do Gears reproduzida fora do jogo (`--reproduz` de uma gravação do modo buffer usa o movimento e a
-    distância gravados: o modo buffer inteiro, determinístico) contra a edição ideal (a resposta da rede reprojetada):
-    resíduo no overlay 0,041 → 0,018 (0,040 → 0,027 perto de bordas de profundidade); na etapa do jogo, simulada com
-    os dados gravados, a edição que chegava de algo que estava na frente 0,070 → 0.
-  - Diagnóstico: `captura\DLSS5Buffer.log` registra a cada 5 s os despachos do FSR (por segundo), a resolução de render,
-    resets, trocas de saída, jitter, e do lado do overlay quantos quadros foram exportados e receberam edição, com a
-    idade média e máxima da edição em quadros.
+- **Captura da API**: a mesma DLL no jogo, mas a cópia sai da apresentação do quadro (`IDXGISwapChain::Present`, o ponto
+  comum do DirectX 11 e 12), com ou sem upscaler e em qualquer motor. A cópia é do back buffer: traz o HUD, não traz
+  profundidade nem movimento (o movimento vem do fluxo óptico) e o resultado sai na janela do overlay, como na captura de
+  vídeo. Ganha da captura de vídeo porque recebe o quadro assim que o jogo o termina, no formato dele.
+  - Lê sRGB em 8 e 10 bits, HDR10 (PQ/BT.2020) e scRGB em ponto flutuante. Em 10 bits, o HDR10 é reconhecido pelo
+    `SetColorSpace1` do jogo; se ele chamou antes do gancho, vale o estado do monitor.
+  - O back buffer pode ter outro tamanho que a janela: o compositor estica o quadro.
+  - No D3D12 a cópia vai na fila que desenhou o quadro, achada dentro do swapchain (o `GetDevice` recusa); sem achar, a
+    última fila DIRECT que enviou listas na thread da apresentação.
+  - Sem overlay por 1 s o módulo para de copiar; por 5 s, solta as texturas.
+  - **Anti-cheat**: como na captura de buffer, a conexão é recusada.
+  - **Vulkan**: marque "Vulkan" no painel e abra o jogo depois (o dispositivo não aceita as extensões de compartilhamento
+    depois de criado). O overlay registra a camada `captura\DLSS5Camada.dll` em
+    `HKCU\SOFTWARE\Khronos\Vulkan\ImplicitLayers` só enquanto está aberto, e tira o registro ao fechar. Nada vai para a
+    pasta do jogo. Enquanto registrada, a DLL carrega nos programas Vulkan que abrirem nesse tempo: com anti-cheat ativo
+    ela recusa a negociação com o carregador, e nos outros programas só copia quadros se o overlay ligar neles. Jogo
+    rodando como administrador não enxerga a camada (o carregador ignora o `HKCU`).
+
+### Formato da cor e da edição
+
+Em Avançado → Composição, junto de Linear / Logarítmica / Mista, escolha entre qualidade e VRAM. Entre os formatos que aceitam escrita
+em shader em todo hardware D3D12 ([tabela da Microsoft](https://learn.microsoft.com/en-us/windows/win32/direct3ddxgi/hardware-support-for-direct3d-12-1-formats)):
+
+| Opção | Para | Bits | O que muda |
+|---|---|---|---|
+| `R16G16B16A16_FLOAT` | HDR e SDR | 64 | o padrão: a maior qualidade |
+| `R11G11B10_FLOAT + R8_UNORM` | HDR e SDR | 40 | cor sem alfa (a folga da ponte 3 vai no `R8`); edição em `R10G10B10A2_UNORM + R8_UNORM` |
+| `R10G10B10A2_UNORM + R8_UNORM` | SDR | 40 | cor em 10 bits lineares; a mesma edição |
+| `R16G16B16A16_UNORM` | SDR | 64 | cor sem float, edição como no padrão |
+| `R8G8B8A8_UNORM` | SDR | 32 | cor em sRGB, igual à captura de 8 bits; edição em `R8G8B8A8_SNORM` |
+
+Formato SDR em quadro com realce (HDR ou captura de buffer): a cor fica em `R16G16B16A16_FLOAT`, porque cortaria acima de 1; o painel
+mostra o que está em uso. A edição tem sinal: nos formatos de 10 e 8 bits ela é comprimida com o zero exato, e pixel sem edição fica
+intacto. Trocar refaz as texturas: a GPU para, as velhas saem e só então as novas entram, nos dois processos. A entrada da rede
+(`orig`, `fed`) e a saída seguem em float16.
+
+### Denoise (fora da rede)
+
+Tira o grão da rede, sem tocar na rede nem na imagem do jogo. É a ideia do NRD da NVIDIA (RELAX), que manda separar o material
+antes de filtrar e recompor depois ("All materials must be de-modulated before denoising"): aqui a imagem do jogo é o material e
+a edição da rede é o sinal ruidoso. O filtro roda no overlay, na edição, antes de ela ser ampliada e composta: no tamanho da rede,
+onde o grão tem 1 pixel. Onde a rede não mexeu a edição é zero e nada muda, e o detalhe do jogo não passa pelo filtro. Vale para as
+duas capturas. Como a edição tem sinal, fica em `RGBA16F` (`R11G11B10_FLOAT` não guarda negativo); no tamanho da rede são perto de
+40 MB em 720p e 90 MB em 1080p.
+
+- `Reconstrução` troca só o ponto fora da faixa dos vizinhos da mesma superfície.
+- `Acumulação` junta as edições anteriores pelo movimento (o do jogo no buffer, o fluxo óptico no vídeo), com o histórico preso à
+  vizinhança atual e ao ruído medido.
+- `Filtro bordas` é um à-trous que para em borda de profundidade (só no buffer) e na borda da imagem do jogo (a guia, em log2 da
+  luminância: a mesma razão de luz conta igual no escuro e no claro). A força não depende dos quadros acumulados.
+
+Medido: com a câmera parada o grão da rede é o mesmo em todo quadro (correlação 0,9998 entre quadros seguidos). A acumulação tira o
+que varia em movimento e quase não leva detalhe; com a câmera parada ela não tem o que tirar, e quem tira o grão é o `Filtro bordas`.
+Antes ele recuava com o histórico e o grão voltava quando a câmera parava (fino de 0,087 a 0,136 em 38 quadros; 0,157 desligado).
+Numa sequência real (Superposition, giros de até 235 px por quadro, rede 720), o padrão novo contra o filtro antigo no máximo (3
+passes, tolerância 4, sem acumulação): tira 36% mais em área lisa e 7% menos em borda forte do jogo.
+
+O painel liga e desliga o conjunto (`dnAtivo`, desligado de início, sem gastar GPU nem VRAM). Padrões: recorte 2
+(`fastHistoryClampingSigmaScale` do `NRDSettings.h`), tolerância 2 (`diffusePhiLuminance`), forças em 1 e 2 passes; ainda sem
+avaliação visual em jogo. O que vale é a imagem inteira no jogo.
 
 ### Pele (controles da NVIDIA)
 
@@ -303,16 +240,17 @@ Os parâmetros do DLSS 5 seguem os nomes que a NVIDIA expõe no NGX (os mesmos d
 | `passes` | 1..3 | quantas vezes a rede inteira roda por quadro (1 = normal); vale ao religar |
 | `profundidade` | 0..4 | blocos da rede grande: 0 = 71, 1 = 68 (sem 42/43/46), 2 = 63 (sem 40–47), 3 = 55 (e sem 23–30), 4 = 47 (e sem o ViT 31–38; só com `reusoVit` desligado). Só blocos residuais saem; muda na hora; só no `config.json`. Não se aplica à rede pequena, que é outro modelo |
 | `movimento` | true/false | movimento simulado por fluxo óptico (as guias do histórico da própria rede na captura de vídeo) |
-| `geracaoQuadros` | 0/2/3/4 | captura de buffer: geração FSR 4 Redstone (0 desligada, 2 = 2x, 3 = 3x: o gerado do meio apresentado duas vezes, 4 = 4x intercalado; sem a Redstone vai só o real); a DLL vai para a pasta do jogo (version.dll ou dxgi.dll) |
-| `ritmo`, `quadroGerado` | 1..4, 0/1 | só na captura de vídeo: **quadros gerados** — a rede edita 1 de cada N quadros e os N−1 seguintes são gerados dos processados (nunca um quadro novo com edição velha): 0 repetido (na captura de buffer o processado aparece 1 quadro depois), 1 mesclado (os N quadros de cada ciclo misturam só o processado atual e o próximo, peso do próximo em passos iguais: 2x 50/50, 3x 25/50/75%, 4x 20/40/60/80%; sempre 1 quadro de atraso) |
 | `reusoVit` | true/false | reuso adaptativo do ViT do runtime lmxxf (vale ao reabrir) |
 | `temporalRede` | 0..3 | histórico da própria rede (`DLSS5_TEMPORAL_MODE` do runtime; vale ao reabrir e desliga o `reusoVit`; os passes 2–3 valem com ele — a rede nasce com 1 e o adaptador aplica os passes pela chamada direta `LmxxfNrSetPasses`, e só o último passe recebe o histórico). 1 = a entrada de histórico da rede recebe a resposta anterior trazida pelo movimento (captura de buffer: movimento e profundidade do jogo; captura de vídeo: fluxo óptico) e a cabeça de histórico do bloco 70 decide a mistura; precisa do runtime deste branch (`LmxxfNrSetHistoryGuides`) e do `post70-history-head.f16` que o `monta_runtime.ps1` extrai. 2 e 3 = suavização de baixa frequência / realce na saída do runtime |
 | `forcaHistoricoRede` | 0..2 | com `temporalRede` 1: escala do peso que a própria rede dá à resposta anterior (força × 0,74 × a decisão da cabeça de histórico, teto 0,95); 1 = o da rede; padrão 2 = a decisão dela dobrada. Medido nos quadros do TLOU2 com a câmera parada: a saída da rede oscila 9% menos (a edição, 5%), com a régua de movimento igual. É o máximo da acumulação da NVIDIA ali: sem as guardas de cor/profundidade do runtime ganha só mais 1% e começa a deixar rastro; o resto da cintilação a cabeça de histórico não segura |
 | `recorteHistoricoRede` | 0..4 | com `temporalRede` 1: a resposta anterior só entra dentro de média ± este número de desvios da saída crua deste quadro no 3×3 (YCoCg), o recorte por variância do TAA, feito no runtime antes da mistura (`LmxxfNrSetHistoryClip`). Sem ele, o que a rede pinta em volta de um objeto em movimento ficava no fundo que passa atrás dele e andava com esse fundo, uma cópia por quadro da rede (o rastro em degraus). 0 = sem recorte; padrão 1 |
 | `forca` | 0..2 | força da edição final (1 = a da rede) |
-| `bilateral` / `raioBilateral` | 0..2 / 1..8 | denoise bilateral guiado por bordas depois da composição, só no lado da rede: suaviza o ruído sem atravessar bordas (0..1 mistura, 1..2 tolerância de cor até o dobro); raio em pixels |
-| `denoiseTemporal` | 0..1 | denoise temporal: o resultado anterior reprojetado pelo movimento e preso ao mínimo/máximo 3x3 do atual (sem rastro); 1 = 90% do histórico |
-| `rcasForca` | 0..2 | RCAS do FSR 1 (AMD, MIT) depois do denoise: 1 = o máximo do algoritmo, 2 = a diferença amplificada ao dobro; 0 = desligado (o CAS e o Gaussian saíram) |
+| `limiteFpsJogo` | 0..240 | teto de FPS do jogo, no present (captura de buffer e da API): o que ele deixa de usar de GPU fica para a rede. 0 = sem teto |
+| `dnReconstrucao`, `dnAcumulacao`, `dnBordas` | 0..1 | denoise fora da rede, no sinal da edição (0 = desligado) |
+| `dnJogo` | 0/1 | processa o jogo junto da rede: o denoise filtra o quadro pronto (jogo + rede), na resolução da tela, em vez de só a edição. Mais GPU e VRAM. Para captura de vídeo e da API; na de buffer o resultado cai no quadro seguinte, e o ruído de um quadro não é o do outro (medido antes: pior que desligado) |
+| `dnCas` | 0..1 | CAS da AMD (MIT) na imagem final, depois do denoise (0 = desligado). No painel, a visão de depuração mostra a edição antes e depois do filtro, o que ele tirou (x8) e os quadros acumulados: contorno em "o que tirou" é detalhe sendo perdido |
+| `dnRecorte` | 0,5..3 | quanto o histórico pode se afastar do quadro atual, em desvios da vizinhança |
+| `dnBordasPasses`, `dnBordasSigma` | 1..3, 0,5..4 | alcance (2, 4, 8 px) e tolerância de luminância do filtro de bordas |
 | `modo`, `fpsMax`, `ocultaDeGravacoes` | | modo de exibição (0 rede, 1 original, 2 comparação, 3 só a edição, 4 movimento, 5 saída crua da última resposta), teto de FPS, esconder de prints/OBS |
 
 No painel os ajustes finos têm três casas decimais: Shift + arrastar anda 1/10 do normal, e a roda do mouse sobre o
@@ -325,7 +263,7 @@ As faixas de Tom, Estrutura e Intensidade são as da NVIDIA: medido na rede, for
 
 Na captura de vídeo o programa não injeta código no jogo: ele lê a janela pelo mesmo caminho que o OBS e a Barra de
 Jogo usam e desenha numa janela própria. Não há como garantir a política de cada jogo; quem decide é o anti-cheat de cada
-um. A captura de buffer coloca código no jogo e por isso é recusada com anti-cheat ativo; use-a só offline.
+um. As capturas de buffer e da API colocam código no jogo e por isso são recusadas com anti-cheat ativo; use-as só offline.
 
 ## Compilar
 
@@ -336,7 +274,6 @@ para gerar o pacote de pesos, o `nvngx_dlssnr.dll` 310.8 da NVIDIA (vem com jogo
 runtime\lmxxf\compilar.ps1 -Modulos   # lmxxf (commit a9b7a52) + patch -> LmxxfNrRuntime_v4.dll e os 7 modulos HIP de entrada por pixel
 runtime\adaptador\compilar.ps1        # adaptador LmxxfNrRuntime.dll (API do AMDNR por cima do lmxxf)
 build.ps1                             # bin\DLSS5Overlay.exe
-externo\compila_ffx.ps1               # bibliotecas do FidelityFX SDK 1.1.4 (geracao de quadros; o SDK extraido em externo\fidelityfx_sdk)
 build_buffer.ps1                      # bin\captura\DLSS5Buffer.dll e obj\JogoTeste.exe
 monta_runtime.ps1                     # bin\runtime a partir de dependencias\ (ou -Pesos, -DllNvidia, -DllPequena)
 empacota.ps1 -Versao X                # zip para a aba Releases
@@ -353,14 +290,17 @@ Ferramentas de medida: `ferramentas\compara_ref.py` mede o overlay contra a saí
 `gera_sintetico.py` gera uma sequência com movimento exato conhecido e `avalia_sintetico.py` mede erro e cintilação
 contra a referência sem ruído. Captura de buffer: `gera_sintetico_buffer.py` (`--pessoa`, `--laco`) e
 `obj\JogoTeste.exe` (um jogo D3D12 que chama o FSR 3.1 com a sequência; `--render 0.59` imita o UE5 com escala de
-resolução: movimento e profundidade na resolução de render, movimento em uv), com `fantasma_textura.py`.
+resolução: movimento e profundidade na resolução de render, movimento em uv), com `fantasma_textura.py`. Mais perto de um
+jogo: `--como-jogo --cubo --fsr4 --res 7680 4320 --render 0.5` (cena 3D, FSR 4 em Desempenho com jitter, 4K → 8K; o
+carregador e o upscaler da AMD ao lado do exe), `--grao`, `--tempo` e `--recorte` (grava o meio da saída para
+`avalia_denoise.py`). Com `--fps` baixo ele mede o tempo de GPU por quadro: o limite dos testes pesados.
 
 ### Estrutura
 
 | Pasta | O que tem |
 |---|---|
 | `src\` | o overlay (captura, fluxo óptico, rede, composição, painel) |
-| `src\buffer\`, `src\jogo\` | protocolo da captura de buffer e o módulo `DLSS5Buffer.dll` (gancho do FSR 3.1 no jogo) |
+| `src\buffer\`, `src\jogo\` | protocolos das capturas de buffer e da API e o módulo `DLSS5Buffer.dll` (ganchos do FSR 3.1+ e do `Present` no jogo) |
 | `runtime\lmxxf\` | o patch das mudanças no runtime do lmxxf (sobre o commit a9b7a52) e o script que clona e compila |
 | `runtime\adaptador\` | o adaptador `LmxxfNrRuntime.dll` |
 | `ferramentas\` | pesos (FP16, histórico, rede pequena), medidas contra a NVIDIA, sequências sintéticas, jogo de teste |

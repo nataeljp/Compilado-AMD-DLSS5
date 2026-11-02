@@ -11,38 +11,23 @@ struct ResultadoInjecao
     bool ok = false;
     std::string motivo;   // por que nao (ou um aviso, com ok = true)
     std::string upscaler; // o upscaler que o jogo ja carregou ("" = nenhum ainda)
+    bool vulkan = false;  // recusado porque o jogo so usa Vulkan: quem le esse jogo e a camada, nao a injecao
 };
 
-ResultadoInjecao InjetaBuffer(DWORD pid, const std::wstring& dll);
+// qualquerDx: a captura da API, que tambem le D3D11 (a de buffer exige D3D12)
+ResultadoInjecao InjetaBuffer(DWORD pid, const std::wstring& dll, bool qualquerDx = false);
 
-// Geracao de quadros da AMD: o swapchain do jogo e trocado na criacao, entao o modulo tem de estar no jogo antes do
-// D3D12. AbreJogo cria o processo SUSPENSO, publica o lancamento (Protocolo.h Lancamento: o pedido de geracao), carrega
-// a DLL e so solta o jogo quando o modulo avisa que enganchou a criacao do swapchain (evento pronto, ate 5 s).
-// EntraNoInicio: o mesmo num processo que acabou de nascer sem o overlay (a Steam reabre o jogo pelo cliente dela).
-ResultadoInjecao AbreJogo(const std::wstring& exe, const std::wstring& dll, uint32_t geracao, DWORD& pid,
-                          const std::wstring& args = L"");
-ResultadoInjecao EntraNoInicio(DWORD pid, const std::wstring& dll, uint32_t geracao);
-// pid de um processo com esse nome de executavel (sem diferenciar maiusculas), menos `exceto`; 0 = nenhum
-DWORD ProcuraProcesso(const std::wstring& nomeExe, DWORD exceto);
-
-// o modulo esta no processo (instalado na pasta do jogo como dxgi.dll, ou injetado)
+// o modulo esta no processo (injetado)
 bool ModuloPresente(DWORD pid);
 // um processo (menos `exceto`) com o modulo dentro e a memoria compartilhada criada (o FSR/XeSS ja rodou); 0 = nenhum
 DWORD ProcessoComModulo(DWORD exceto);
 // caminho completo do executavel do processo ("" sem acesso)
 std::wstring ExeDoProcesso(DWORD pid);
-// Instalacao na pasta do jogo: a DLSS5Buffer.dll vira a version.dll (ou a dxgi.dll) do jogo -- uma DLL que o executavel
-// importa, entao o Windows a carrega antes do DirectX em toda abertura, inclusive pela Steam; as funcoes da DLL do sistema
-// seguem para ela. Nunca substitui a DLL de outro programa (Cyber Engine Tweaks usa version.dll; ReShade e OptiScaler,
-// dxgi.dll). Com o jogo aberto a copia antiga e renomeada e a nova vale na proxima abertura.
-enum class Instalacao { Nenhuma, Nossa, Desatualizada, Outra };
-Instalacao EstadoInstalacao(const std::wstring& exe, const std::wstring& dll);
-// o nome com que a DLL entra neste jogo ("" = version.dll e dxgi.dll ocupadas por outros programas)
-std::wstring NomeProxy(const std::wstring& exe);
-std::string InstalaNoJogo(const std::wstring& exe, const std::wstring& dll); // "" = ok, senao o motivo
-// a DLL na pasta age so nos executaveis da lista DLSS5Overlay.alvo (os outros programas da pasta -- relatorio de erros,
-// lancador -- so passam pela dxgi do Windows): poe este executavel nela
-void GaranteAlvo(const std::wstring& exe);
-std::string RemoveDoJogo(const std::wstring& exe);
+// um processo (menos `exceto`) rodando este executavel; 0 = nenhum
+DWORD ProcessoDoExe(const std::wstring& exe, DWORD exceto);
+// A geracao de quadros instalava a DLL na pasta do jogo (version.dll ou dxgi.dll, DLSS5Overlay.alvo, copias .antiga.*):
+// tira o que for nosso (nunca a DLL de outro programa). Para a Lixeira; a DLL em uso pelo jogo aberto e renomeada para nao
+// carregar na proxima abertura e vai para a Lixeira na proxima conexao. Devolve o que fez ("" = nao havia nada)
+std::string LimpaPastaDoJogo(const std::wstring& exe);
 
 } // namespace ov

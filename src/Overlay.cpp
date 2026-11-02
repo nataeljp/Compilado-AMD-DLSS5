@@ -64,6 +64,19 @@ void Overlay::Destroi()
     hwnd = nullptr;
 }
 
+void Overlay::SoltaSwapchain()
+{
+    if (!sc)
+        return;
+    gpu->Espera();
+    for (auto& b : buffers)
+        b.Reset();
+    visual->SetContent(nullptr);
+    dcomp->Commit();
+    sc.Reset();
+    w = h = 0;
+}
+
 void Overlay::CriaSwapchain(UINT w_, UINT h_, DXGI_FORMAT f)
 {
     gpu->Espera();
@@ -103,12 +116,24 @@ void Overlay::CriaSwapchain(UINT w_, UINT h_, DXGI_FORMAT f)
     Log("overlay", Fmt("swapchain %ux%u %s", w, h, f == DXGI_FORMAT_R16G16B16A16_FLOAT ? "HDR FP16" : "SDR"));
 }
 
-void Overlay::Posiciona(const RECT& r, bool hdr)
+void Overlay::Posiciona(const RECT& r, bool hdr, UINT bw, UINT bh)
 {
     const UINT nw = UINT(r.right - r.left), nh = UINT(r.bottom - r.top);
+    const UINT sw = bw ? bw : nw, sh = bh ? bh : nh;
     const DXGI_FORMAT f = hdr ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R8G8B8A8_UNORM;
-    if (nw != w || nh != h || f != fmt || !sc)
-        CriaSwapchain(nw, nh, f);
+    if (sw != w || sh != h || f != fmt || !sc)
+        CriaSwapchain(sw, sh, f);
+    const float ex = float(nw) / float(sw), ey = float(nh) / float(sh);
+    if (ex != escX || ey != escY)
+    {
+        D2D_MATRIX_3X2_F m{};
+        m._11 = ex;
+        m._22 = ey;
+        visual->SetTransform(m);
+        dcomp->Commit();
+        escX = ex;
+        escY = ey;
+    }
     if (memcmp(&r, &ultimo, sizeof r) != 0)
     {
         SetWindowPos(hwnd, HWND_TOPMOST, r.left, r.top, int(nw), int(nh), SWP_NOACTIVATE | SWP_NOOWNERZORDER);

@@ -45,7 +45,9 @@ void Captura::Cria(Gpu& g)
     Ck(d.As(&dxgi), "IDXGIDevice");
     winrt::com_ptr<::IInspectable> insp;
     Ck(CreateDirect3D11DeviceFromDXGIDevice(dxgi.Get(), insp.put()), "CreateDirect3D11DeviceFromDXGIDevice");
-    p->dispositivo = insp.as<wdx::Direct3D11::IDirect3DDevice>();
+    p->dispositivo = insp.try_as<wdx::Direct3D11::IDirect3DDevice>(); // as<> lanca winrt::hresult_error: fora do catch de quem chama
+    if (!p->dispositivo)
+        Ck(E_NOINTERFACE, "IDirect3DDevice");
     // cerca compartilhada: o D3D11 sinaliza depois da copia, a fila D3D12 espera antes de ler
     Ck(g.dev->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&cerca12)), "CreateFence(shared)");
     HANDLE h = nullptr;
@@ -74,13 +76,13 @@ bool Captura::Inicia(HWND h, bool hdr_)
     comp11.Reset();
     comp12.Reset();
     cw = ch = 0;
-    if (!wgc::GraphicsCaptureSession::IsSupported())
-    {
-        Log("captura", "Windows Graphics Capture nao suportado neste Windows");
-        return false;
-    }
     try
     {
+        if (!wgc::GraphicsCaptureSession::IsSupported())
+        {
+            Log("captura", "Windows Graphics Capture nao suportado neste Windows");
+            return false;
+        }
         auto interop = winrt::get_activation_factory<wgc::GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
         Ck(interop->CreateForWindow(h, winrt::guid_of<ABI::Windows::Graphics::Capture::IGraphicsCaptureItem>(),
                                     winrt::put_abi(p->item)),
@@ -250,6 +252,15 @@ bool Captura::Pega(Quadro& q)
     catch (const winrt::hresult_error& e)
     {
         Log("captura", "quadro: " + winrt::to_string(e.message()));
+        return false;
+    }
+    catch (const std::exception& e)
+    {
+        // Ck: sem VRAM para a textura compartilhada ao redimensionar, por exemplo. O erro subia ate o laco e desligava a
+        // captura; o proximo quadro tenta de novo (cw/ch ou comp11 ainda pedem a recriacao)
+        static int ditos = 0;
+        if (ditos++ < 20)
+            Log("captura", std::string("quadro: ") + e.what());
         return false;
     }
 }

@@ -16,6 +16,11 @@ std::atomic<bool> g_engole{true};
 std::atomic<bool> g_teclado{false};
 std::vector<EventoTecla> g_teclas;
 ULONGLONG g_ultimoSolta = 0;
+// com o painel aberto o jogo nao ve tecla nenhuma; os atalhos do overlay vem daqui (tecla segurada nao chega ao RegisterHotKey)
+UINT g_atalhos[6] = {};
+DWORD g_idPrincipal = 0;
+bool g_ctrl = false, g_shift = false; // o GetAsyncKeyState nao ve tecla segurada aqui
+bool g_nossa[256] = {};               // apertada com o gancho ligado: a soltura tambem fica aqui
 
 bool Vivo() { return GetTickCount64() - g_batimento.load() < 1000; }
 
@@ -113,17 +118,47 @@ LRESULT CALLBACK ProcMouse(int code, WPARAM w, LPARAM l)
 LRESULT CALLBACK ProcTeclado(int code, WPARAM w, LPARAM l)
 {
     const auto* k = reinterpret_cast<const KBDLLHOOKSTRUCT*>(l);
-    if (code == HC_ACTION && g_teclado.load() && Vivo())
+    if (code != HC_ACTION || !Vivo())
+        return CallNextHookEx(nullptr, code, w, l);
+    const bool desce = w == WM_KEYDOWN || w == WM_SYSKEYDOWN, texto = g_teclado.load();
+    const UINT vk = k->vkCode & 0xff;
+    if (vk == VK_LCONTROL || vk == VK_RCONTROL)
+        g_ctrl = desce;
+    else if (vk == VK_LSHIFT || vk == VK_RSHIFT)
+        g_shift = desce;
+    // soltura de tecla apertada antes do painel (o Ctrl+Shift do atalho que o abriu): e do jogo, senao ela fica presa la
+    if (!desce && !g_nossa[vk])
+        return CallNextHookEx(nullptr, code, w, l);
+    // so o campo de texto e o Esc ficam com o painel (os parametros se mexem com o mouse): print, atalhos do Windows, do jogo e do
+    // overlay seguem. Print Screen e tecla Windows passam mesmo digitando
+    if (!g_nossa[vk] && (vk == VK_SNAPSHOT || vk == VK_LWIN || vk == VK_RWIN || (!texto && vk != VK_ESCAPE)))
+        return CallNextHookEx(nullptr, code, w, l);
+    g_nossa[vk] = desce;
+    if (desce && g_ctrl && g_shift)
+        for (int i = 0; i < 6; ++i)
+            if (g_atalhos[i] == vk)
+            {
+                PostThreadMessageW(g_idPrincipal, WM_HOTKEY, WPARAM(i + 1), 0); // o mesmo que o RegisterHotKey entregaria
+                return 1;
+            }
+    // Esc fecha o painel (com um campo de texto ativo, cancela o campo); o jogo nao recebe (abriria o menu dele)
+    if (vk == VK_ESCAPE && desce && !texto)
     {
-        // painel digitando: a tecla vai para ele (com o caractere no layout do teclado do jogo) e o jogo nao a ve
+        std::lock_guard<std::mutex> lk(g_mx);
+        g_esc = true;
+        return 1;
+    }
+    {
+        // a tecla vai para o painel (o caractere no layout do teclado do jogo, com um campo de texto ativo) e o jogo nao a ve.
+        // As solturas tambem: sem elas o painel ficava com o Enter preso, e o campo seguinte se confirmava sozinho
         EventoTecla e;
         e.vk = k->vkCode;
-        e.desce = w == WM_KEYDOWN || w == WM_SYSKEYDOWN;
-        const bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0, alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-        if (e.desce && !(ctrl && !alt))
+        e.desce = desce;
+        const bool ctrl = g_ctrl, alt = (k->flags & LLKHF_ALTDOWN) != 0;
+        if (e.desce && texto && !(ctrl && !alt))
         {
             BYTE estado[256] = {};
-            if (GetAsyncKeyState(VK_SHIFT) & 0x8000)
+            if (g_shift)
                 estado[VK_SHIFT] = 0x80;
             if (ctrl && alt) // AltGr
                 estado[VK_CONTROL] = estado[VK_MENU] = 0x80;
@@ -139,19 +174,8 @@ LRESULT CALLBACK ProcTeclado(int code, WPARAM w, LPARAM l)
         std::lock_guard<std::mutex> lk(g_mx);
         if (g_teclas.size() < 512)
             g_teclas.push_back(e);
-        return 1;
     }
-    if (code == HC_ACTION && k->vkCode == VK_ESCAPE && Vivo())
-    {
-        // Esc fecha o painel; o jogo nao recebe (abriria o menu dele)
-        if (w == WM_KEYDOWN || w == WM_SYSKEYDOWN)
-        {
-            std::lock_guard<std::mutex> lk(g_mx);
-            g_esc = true;
-        }
-        return 1;
-    }
-    return CallNextHookEx(nullptr, code, w, l);
+    return 1;
 }
 } // namespace
 
@@ -169,6 +193,10 @@ void Gancho::Liga(const RECT& area)
         g_teclas.clear();
     }
     g_teclado = false;
+    g_idPrincipal = GetCurrentThreadId();
+    g_ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    g_shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+    std::fill(std::begin(g_nossa), std::end(g_nossa), false);
     g_batimento = GetTickCount64();
     Estaciona(); // o cursor de verdade sai de perto das bordas da area em que o jogo o prende
     HANDLE pronto = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -207,13 +235,9 @@ void Gancho::Desliga()
 
 void Gancho::EngoleMouse(bool sim) { g_engole = sim; }
 
-void Gancho::CapturaTeclado(bool sim)
-{
-    if (g_teclado.exchange(sim) == sim || sim)
-        return;
-    std::lock_guard<std::mutex> lk(g_mx);
-    g_teclas.clear();
-}
+void Gancho::CapturaTeclado(bool sim) { g_teclado = sim; }
+
+void Gancho::DefineAtalhos(const UINT vk[6]) { std::copy(vk, vk + 6, g_atalhos); }
 
 std::vector<EventoTecla> Gancho::ColetaTeclas()
 {

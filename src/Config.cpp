@@ -90,14 +90,36 @@ void Config::Carrega(const std::wstring& arquivo)
     B("redeCompleta", rede.redeCompleta);
     I("alturaRede", alturaRede);
     I("fonte", fonte);
+    B("sincronizaRedeLenta", sincronizaRedeLenta);
+    I("limiteFpsJogo", limiteFpsJogo);
+    limiteFpsJogo = limiteFpsJogo < 0 ? 0 : limiteFpsJogo > 240 ? 240 : limiteFpsJogo;
+    B("dnJogo", dnJogo);
+    F("dnCas", dnCas);
+    I("dnVista", dnVista); // so para os testes: o painel nao grava
     B("redePequena", redePequena);
     F("forca", forca);
-    F("bilateral", bilateral);
-    I("raioBilateral", raioBilateral);
-    raioBilateral = raioBilateral < 1 ? 1 : raioBilateral > 8 ? 8 : raioBilateral;
-    F("denoiseTemporal", denoiseTemporal);
-    F("rcasForca", rcas);
-    F("nitidezCas", nitidez);
+    F("dnReconstrucao", dnReconstrucao);
+    F("dnAcumulacao", dnAcumulacao);
+    F("dnRecorte", dnRecorte);
+    F("dnBordas", dnBordas);
+    I("dnBordasPasses", dnBordasPasses);
+    dnBordasPasses = dnBordasPasses < 1 ? 1 : dnBordasPasses > 3 ? 3 : dnBordasPasses;
+    F("dnBordasSigma", dnBordasSigma);
+    I("formatoCor", formatoCor);
+    formatoCor = formatoCor < 0 || formatoCor > 4 ? 0 : formatoCor;
+    if (m.find("dnAtivo") != m.end())
+        B("dnAtivo", dnAtivo);
+    else
+    {
+        // arquivo de antes da chave: as forcas eram o liga/desliga. Todas em 0 viram os padroes novos, desligado
+        dnAtivo = dnReconstrucao > 0.f || dnAcumulacao > 0.f || dnBordas > 0.f;
+        if (!dnAtivo)
+        {
+            const Config p;
+            dnReconstrucao = p.dnReconstrucao, dnAcumulacao = p.dnAcumulacao, dnRecorte = p.dnRecorte, dnBordas = p.dnBordas;
+            dnBordasPasses = p.dnBordasPasses, dnBordasSigma = p.dnBordasSigma;
+        }
+    }
     I("ponte", ponte);
     F("brancoNits", brancoNits);
     F("preLuz", preLuz);
@@ -111,12 +133,7 @@ void Config::Carrega(const std::wstring& arquivo)
         F((std::string("matiz") + kNomesMatiz[i] + "Luz").c_str(), matiz.luz[i]);
     }
     I("modo", modo);
-    I("quadroGerado", gerado);
-    I("geracaoQuadros", geracao);
-    if (geracao > 4)
-        geracao = 4;
     B("movimento", movimento);
-    I("ritmo", ritmo);
     B("reusoVit", reusoVit);
     I("temporalRede", temporalRede);
     I("profundidade", profundidade);
@@ -151,13 +168,20 @@ std::string Config::Texto() const
     f << "  \"redeCompleta\": " << b(rede.redeCompleta) << ",\n";
     f << "  \"alturaRede\": " << alturaRede << ",\n";
     f << "  \"fonte\": " << fonte << ",\n";
+    f << "  \"sincronizaRedeLenta\": " << b(sincronizaRedeLenta) << ",\n";
+    f << "  \"limiteFpsJogo\": " << limiteFpsJogo << ",\n";
+    f << "  \"dnJogo\": " << b(dnJogo) << ",\n";
+    f << "  \"dnCas\": " << dnCas << ",\n";
     f << "  \"redePequena\": " << b(redePequena) << ",\n";
     f << "  \"forca\": " << forca << ",\n";
-    f << "  \"bilateral\": " << bilateral << ",\n";
-    f << "  \"raioBilateral\": " << raioBilateral << ",\n";
-    f << "  \"denoiseTemporal\": " << denoiseTemporal << ",\n";
-    f << "  \"rcasForca\": " << rcas << ",\n";
-    f << "  \"nitidezCas\": " << nitidez << ",\n";
+    f << "  \"formatoCor\": " << formatoCor << ",\n";
+    f << "  \"dnAtivo\": " << b(dnAtivo) << ",\n";
+    f << "  \"dnReconstrucao\": " << dnReconstrucao << ",\n";
+    f << "  \"dnAcumulacao\": " << dnAcumulacao << ",\n";
+    f << "  \"dnRecorte\": " << dnRecorte << ",\n";
+    f << "  \"dnBordas\": " << dnBordas << ",\n";
+    f << "  \"dnBordasPasses\": " << dnBordasPasses << ",\n";
+    f << "  \"dnBordasSigma\": " << dnBordasSigma << ",\n";
     f << "  \"ponte\": " << ponte << ",\n";
     f << "  \"brancoNits\": " << brancoNits << ",\n";
     f << "  \"preLuz\": " << preLuz << ",\n";
@@ -171,10 +195,7 @@ std::string Config::Texto() const
         f << "  \"matiz" << kNomesMatiz[i] << "Luz\": " << matiz.luz[i] << ",\n";
     }
     f << "  \"modo\": " << modo << ",\n";
-    f << "  \"quadroGerado\": " << gerado << ",\n";
-    f << "  \"geracaoQuadros\": " << geracao << ",\n";
     f << "  \"movimento\": " << b(movimento) << ",\n";
-    f << "  \"ritmo\": " << ritmo << ",\n";
     f << "  \"reusoVit\": " << b(reusoVit) << ",\n";
     f << "  \"temporalRede\": " << temporalRede << ",\n";
     f << "  \"profundidade\": " << profundidade << ",\n";

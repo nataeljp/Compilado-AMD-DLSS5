@@ -5,22 +5,26 @@
 // --laco: a sequencia e um laco (gera_sintetico_buffer.py --laco): so o primeiro quadro avisa corte de cena
 // --render R: como o Gears (UE5 + FSR): movimento e profundidade na resolucao de render (R x a da cor), o movimento em
 //   unidade de tela (uv) com a escala = tamanho de render -- o que o FSR recebe de um jogo com escala de resolucao
-// --geracao: apresenta cada quadro (a cor com a edicao do overlay) num swapchain da AMD com geracao de quadros (Geracao.h),
-//   com a profundidade e o movimento exatos da sequencia; --multi N: 2..4 (2x a 4x, padrao 2); --sem-overlay: roda sem
-//   esperar o overlay (so a geracao)
+// --sem-overlay: roda sem esperar o overlay
 // --como-jogo: faz o que um jogo faz, sem o cliente embutido -- cria o swapchain pela DXGI e chama o FSR pela DLL
-//   assinada da AMD (amd_fidelityfx_dx12.dll do FidelityFX SDK): e o teste da DLSS5Buffer.dll de verdade (aberto
-//   pelo overlay com a geracao, o swapchain vira o da AMD e o gancho do FSR alimenta a geracao)
+//   assinada da AMD (amd_fidelityfx_dx12.dll do FidelityFX SDK): e o teste da DLSS5Buffer.dll de verdade
 // --depura: a camada de validacao do D3D12 (a do Agility SDK 1.614 que vem no FidelityFX SDK, copiada para .\D3D12\ ao
 //   lado do exe); as mensagens de erro e aviso saem no stdout. --depura-gpu: tambem a validacao na GPU (lenta)
 // --adiantado (com --como-jogo): como um motor com a thread de render a frente -- o quadro seguinte (o FSR dele) e
 //   GRAVADO antes do Present do atual, mas so ENVIADO a GPU depois dele
 // --recria Q (com --como-jogo): no quadro Q solta o swapchain e cria outro na mesma janela, como um jogo que troca de
 //   modo de tela ou de HDR (o swapchain antigo preso por alguem faz a criacao falhar)
-// --fg-jogo (com --como-jogo --cubo): como um jogo com a geracao FSR propria -- um contexto de geracao na DLL da AMD e, a
-//   cada quadro, o preparo dela com a camera da cena (posicao e eixos), de onde o modulo tira a camera da geracao neural
+// Mais perto de um jogo de verdade (a medida do denoise em 8K: ferramentas\avalia_denoise.py):
+// --res W H (com --cubo): a saida do FSR (padrao 1920 1080). --render 0.5 = o modo Desempenho
+// --fsr4 (com --como-jogo): o carregador e o upscaler que um jogo com FSR 4 traz (amd_fidelityfx_loader_dx12.dll e
+//   amd_fidelityfx_upscaler_dx12.dll, ao lado do exe), com a versao 4.x pedida ao criar o contexto; e o jitter (Halton,
+//   8 x escala^2 fases, como o FSR pede) na camera e no despacho
+// --grao G (com --cubo): grao na cor antes do FSR, novo por pixel e por quadro, e pontos brancos raros
+// --tempo F (com --cubo): o relogio da cena anda 1/F s por quadro, seja qual for o --fps (o 8K a 10 q/s com o movimento
+//   por quadro de um jogo a 60)
+// --recorte Q N (com --como-jogo): do quadro Q em diante, N quadros: o meio da saida (depois do modulo), do movimento e da
+//   profundidade em <saida>\NNNN_saida.raw, _mv.raw e _prof.raw, e recorte.json com os tamanhos
 #include "../../src/buffer/ClienteBuffer.h"
-#include "../../src/buffer/Geracao.h"
 #include "Cubo.h"
 #include "../../externo/ffx/ffx_api.h"
 #include "../../externo/ffx/ffx_upscale.h"
@@ -29,34 +33,6 @@
 #include <d3d12sdklayers.h>
 #include <d3dcompiler.h>
 #pragma comment(lib, "d3dcompiler.lib")
-#include <winver.h>
-// a geracao FSR "do jogo" (--fg-jogo): o contexto e o preparo antigo com a camera ligada (ffx_framegeneration.h, MIT)
-struct FgJogoCria
-{
-    ffxCreateContextDescHeader header;
-    uint32_t flags;
-    FfxApiDimensions2D displaySize, maxRenderSize;
-    uint32_t backBufferFormat;
-};
-struct FgJogoPreparo
-{
-    ffxDispatchDescHeader header;
-    uint64_t frameID;
-    uint32_t flags;
-    void* commandList;
-    FfxApiDimensions2D renderSize;
-    FfxApiFloatCoords2D jitterOffset, motionVectorScale;
-    float frameTimeDelta;
-    bool unusedReset;
-    float cameraNear, cameraFar, cameraFovAngleVertical, viewSpaceToMetersFactor;
-    FfxApiResource depth, motionVectors;
-};
-struct FgJogoCamera
-{
-    ffxConfigureDescHeader header;
-    float cameraPosition[3], cameraUp[3], cameraRight[3], cameraForward[3];
-};
-#pragma comment(lib, "version.lib")
 #include <dxgi1_6.h>
 #include <wrl/client.h>
 #include <algorithm>
@@ -186,12 +162,12 @@ int wmain(int argc, wchar_t** argv)
     const std::wstring seq = argv[1], saida = argv[2];
     int voltas = 3, fps = 30;
     float render = 1.f;
-    bool raw = false, laco = false, geracao = false, semOverlay = false, comoJogo = false;
+    bool raw = false, laco = false, semOverlay = false, comoJogo = false;
     std::wstring modulo;
     int pos = 0; // --pos: 0 nenhum, 1 grao, 2 nitidez (com --hud)
     uint32_t multi = 2;
     UINT64 recria = 0, trava = 0;
-    // --fps-depois Q F: a partir do quadro Q o jogo passa a F quadros/s (o N da geracao tem de acompanhar o ritmo novo)
+    // --fps-depois Q F: a partir do quadro Q o jogo passa a F quadros/s
     UINT64 fpsDepoisQ = 0;
     int fpsDepois = 0;
     // --invalida Q (com --como-jogo): no quadro Q envia a lista do jogo sem fechar -- o runtime remove o dispositivo por
@@ -220,17 +196,30 @@ int wmain(int argc, wchar_t** argv)
         if (!wcscmp(argv[i], L"--pos"))
             pos = !wcscmp(argv[i + 1], L"grao") ? 1 : !wcscmp(argv[i + 1], L"nitidez") ? 2 : 0;
     }
-    bool hud = false, cubo = false, fgJogo = false;
+    bool hud = false, cubo = false;
     UINT64 verdade = 0; // --verdade Q (com --cubo --hud): grava a verdade dos instantes Q-1 + k/N (k = 0..N) e sai
     float giro = 120.f; // --giro G (com --cubo): graus por segundo da camera
     bool pontilhado = false; // --pontilhado (com --cubo): os cubos que cruzam pontilhados, como cabelo
     bool fundoLiso = false;  // --fundo-liso (com --cubo): a sala sem o xadrez
     float cobertura = 0.5f;  // --cobertura C (com --pontilhado): fracao dos pixels que ficam
+    bool fsr4 = false;
+    UINT resW = 1920, resH = 1080;
+    float grao = 0.f;
+    int tempoFps = 0;
+    UINT64 recorteQ = 0, recorteN = 0;
     for (int i = 3; i < argc; ++i)
     {
+        fsr4 |= !wcscmp(argv[i], L"--fsr4");
+        if (!wcscmp(argv[i], L"--res") && i + 2 < argc)
+            resW = UINT(_wtoi(argv[i + 1])), resH = UINT(_wtoi(argv[i + 2]));
+        if (!wcscmp(argv[i], L"--grao") && i + 1 < argc)
+            grao = float(_wtof(argv[i + 1]));
+        if (!wcscmp(argv[i], L"--tempo") && i + 1 < argc)
+            tempoFps = _wtoi(argv[i + 1]);
+        if (!wcscmp(argv[i], L"--recorte") && i + 2 < argc)
+            recorteQ = UINT64(_wtoi64(argv[i + 1])), recorteN = UINT64(_wtoi64(argv[i + 2]));
         hud |= !wcscmp(argv[i], L"--hud");
         cubo |= !wcscmp(argv[i], L"--cubo");
-        fgJogo |= !wcscmp(argv[i], L"--fg-jogo");
         pontilhado |= !wcscmp(argv[i], L"--pontilhado");
         fundoLiso |= !wcscmp(argv[i], L"--fundo-liso");
         if (!wcscmp(argv[i], L"--cobertura") && i + 1 < argc)
@@ -244,15 +233,13 @@ int wmain(int argc, wchar_t** argv)
     {
         raw |= !wcscmp(argv[i], L"--raw");
         laco |= !wcscmp(argv[i], L"--laco");
-        geracao |= !wcscmp(argv[i], L"--geracao");
         semOverlay |= !wcscmp(argv[i], L"--sem-overlay");
         comoJogo |= !wcscmp(argv[i], L"--como-jogo");
     }
     semOverlay |= comoJogo; // o cliente e o da DLL injetada
-    GetFileVersionInfoSizeW(L"kernel32.dll", nullptr); // importa a version.dll, como o TLOU2 (a DLL instalada com esse nome)
     bool depura = false, depuraGpu = false, adiantado = false;
     // --apresenta-em-thread (com --como-jogo): o Present numa thread propria, como o TLOU2 -- o quadro seguinte (com o
-    // despacho do FSR e o preparo da geracao) e gravado enquanto o anterior esta no Present (que gera os quadros)
+    // despacho do FSR) e gravado enquanto o anterior esta no Present
     bool apresentaEmThread = false;
     for (int i = 3; i < argc; ++i)
     {
@@ -265,18 +252,20 @@ int wmain(int argc, wchar_t** argv)
     if (depura)
     {
         ComPtr<ID3D12Debug1> dbg;
-        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dbg))))
+        const HRESULT hd = D3D12GetDebugInterface(IID_PPV_ARGS(&dbg));
+        if (SUCCEEDED(hd))
         {
             dbg->EnableDebugLayer();
             dbg->SetEnableGPUBasedValidation(depuraGpu);
             printf("depuracao do D3D12 ligada%s\n", depuraGpu ? " (com validacao na GPU)" : "");
         }
-        else
-            printf("depuracao do D3D12 indisponivel (falta .\\D3D12\\d3d12SDKLayers.dll)\n");
+        else // 0x887a002d: sem as camadas (Ferramentas de Graficos do Windows, recurso opcional)
+            printf("depuracao do D3D12 indisponivel (0x%08lx)\n", (unsigned long)hd);
     }
     CreateDirectoryW(saida.c_str(), nullptr);
-    // tamanho e quadros: meta.jsonl (a cena 3D, --cubo: 1920x1080, 240 quadros por volta, a animacao segue entre voltas)
-    char linha[4096] = "{\"rede_w\": 1920, \"rede_h\": 1080, \"quadros\": 240, \"perto\": 0.1, \"fovY\": 1.0472}";
+    // tamanho e quadros: meta.jsonl (a cena 3D, --cubo: --res, 240 quadros por volta, a animacao segue entre voltas)
+    char linha[4096];
+    snprintf(linha, sizeof linha, "{\"rede_w\": %u, \"rede_h\": %u, \"quadros\": 240, \"perto\": 0.1, \"fovY\": 1.0472}", resW, resH);
     if (!cubo)
     {
         FILE* f = nullptr;
@@ -303,7 +292,7 @@ int wmain(int argc, wchar_t** argv)
     wc.lpszClassName = L"JogoTesteBuffer";
     RegisterClassW(&wc);
     HWND jan = CreateWindowW(wc.lpszClassName, L"jogo teste buffer", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 40, 40,
-                             geracao ? 960 : 640, geracao ? 540 : 360, nullptr, nullptr, wc.hInstance, nullptr);
+                             640, 360, nullptr, nullptr, wc.hInstance, nullptr);
     if (raw)
     {
         RAWINPUTDEVICE d{0x01, 0x02, RIDEV_NOLEGACY, jan};
@@ -369,7 +358,9 @@ int wmain(int argc, wchar_t** argv)
         t.bpp = bpp;
     };
     Tex cor, mov, prof, saidaFsr, saidaFsr2;
-    cria(cor, DXGI_FORMAT_R16G16B16A16_FLOAT, 8, true, W, H, cubo ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET : D3D12_RESOURCE_FLAG_NONE);
+    // a cena como jogo so desenha no tamanho de render; a saida e a do FSR
+    cria(cor, DXGI_FORMAT_R16G16B16A16_FLOAT, 8, true, comoJogo && cubo ? RW : W, comoJogo && cubo ? RH : H,
+         cubo ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET : D3D12_RESOURCE_FLAG_NONE);
     if (comoJogo)
     {
         cria(saidaFsr, DXGI_FORMAT_R16G16B16A16_FLOAT, 8, true, W, H);
@@ -389,6 +380,7 @@ int wmain(int argc, wchar_t** argv)
         cena.pontilhado = pontilhado;
         cena.fundoLiso = fundoLiso;
         cena.cobertura = cobertura;
+        cena.grao = grao;
         cena.Alvos(0, cor.r.Get(), mov.r.Get(), prof.r.Get());
         printf("cena 3D: sala fechada, camera girando %.0f graus/s, cubos girando e cruzando (profundidade e movimento de "
                "verdade)\n", giro);
@@ -407,34 +399,30 @@ int wmain(int argc, wchar_t** argv)
         Ck(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, e, nullptr, IID_PPV_ARGS(&b)), "buffer");
     };
     ComPtr<ID3D12Resource> up, le;
-    buf(D3D12_HEAP_TYPE_UPLOAD, tc + tm + tp, D3D12_RESOURCE_STATE_GENERIC_READ, up);
-    buf(D3D12_HEAP_TYPE_READBACK, tc, D3D12_RESOURCE_STATE_COPY_DEST, le);
-
-    // geracao de quadros: o swapchain da AMD no lugar do do jogo, criado como o jogo criaria o dele
-    dlss5ov::Geracao ger;
-    ComPtr<IDXGISwapChain3> sc;
-    if (geracao)
+    if (!cubo) // a cena 3D nao le arquivo, e como jogo a saida nao volta inteira: em 8K seriam centenas de MB parados na RAM
+        buf(D3D12_HEAP_TYPE_UPLOAD, tc + tm + tp, D3D12_RESOURCE_STATE_GENERIC_READ, up);
+    if (!comoJogo)
+        buf(D3D12_HEAP_TYPE_READBACK, tc, D3D12_RESOURCE_STATE_COPY_DEST, le);
+    // --recorte: o meio da saida, e o mesmo trecho do movimento; a profundidade so copia inteira (D3D12) e e cortada aqui
+    const UINT recW = std::min(W, 1920u), recH = std::min(H, 1080u), recMW = UINT(recW * RW / W), recMH = UINT(recH * RH / H);
+    const UINT recPitch = (recW * 8 + 255) & ~255u, recMPitch = (recMW * 8 + 255) & ~255u, recPPitch = prof.fp.Footprint.RowPitch;
+    ComPtr<ID3D12Resource> leRecCor, leRecMov, leRecProf;
+    if (recorteN)
     {
-        ComPtr<IDXGIFactory2> fab;
-        Ck(CreateDXGIFactory2(0, IID_PPV_ARGS(&fab)), "CreateDXGIFactory2");
-        DXGI_SWAP_CHAIN_DESC1 sd{};
-        sd.Width = W;
-        sd.Height = H;
-        sd.Format = DXGI_FORMAT_R16G16B16A16_FLOAT; // a cor linear (scRGB) copiada direto
-        sd.SampleDesc.Count = 1;
-        sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-        sd.BufferCount = 3;
-        sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-        ComPtr<IDXGISwapChain1> sc1;
-        if (FAILED(ger.CriaSwapchain(fab.Get(), fila.Get(), jan, &sd, nullptr, &sc1)))
+        buf(D3D12_HEAP_TYPE_READBACK, UINT64(recPitch) * recH, D3D12_RESOURCE_STATE_COPY_DEST, leRecCor);
+        buf(D3D12_HEAP_TYPE_READBACK, UINT64(recMPitch) * recMH, D3D12_RESOURCE_STATE_COPY_DEST, leRecMov);
+        buf(D3D12_HEAP_TYPE_READBACK, tp, D3D12_RESOURCE_STATE_COPY_DEST, leRecProf);
+        FILE* f = nullptr;
+        _wfopen_s(&f, (saida + L"\\recorte.json").c_str(), L"w");
+        if (f)
         {
-            fprintf(stderr, "geracao: %s\n", ger.UltimoErro());
-            return 5;
+            fprintf(f, "{\"w\": %u, \"h\": %u, \"mw\": %u, \"mh\": %u, \"W\": %u, \"H\": %u, \"RW\": %u, \"RH\": %u, \"q\": %llu, \"n\": %llu}\n",
+                    recW, recH, recMW, recMH, W, H, RW, RH, (unsigned long long)recorteQ, (unsigned long long)recorteN);
+            fclose(f);
         }
-        sc1.As(&sc);
-        sc->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709);
-        printf("geracao de quadros: swapchain da AMD criado (%ux%u scRGB)\n", W, H);
     }
+
+    ComPtr<IDXGISwapChain3> sc;
 
     // como um jogo: o swapchain pela DXGI (a DLSS5Buffer.dll aberta com a geracao troca pelo da AMD) e o FSR pela DLL
     // da AMD (a DLSS5Buffer.dll engancha ffxCreateContext/ffxDispatch dela)
@@ -447,7 +435,7 @@ int wmain(int argc, wchar_t** argv)
     UINT hudInc = 0, hudIncRtv = 0;
     PfnFfxCreateContext fsrCria = nullptr;
     PfnFfxDispatch fsrDespacha = nullptr;
-    ffxContext fsr = nullptr, fgDoJogo = nullptr;
+    ffxContext fsr = nullptr;
     if (comoJogo)
     {
         wchar_t eu[MAX_PATH];
@@ -455,13 +443,13 @@ int wmain(int argc, wchar_t** argv)
         std::wstring raiz(eu);
         raiz = raiz.substr(0, raiz.find_last_of(L"\\/")); // a pasta do exe (obj)
         // ao lado do exe; senao a do SDK no repositorio (obj\..\externo)
-        HMODULE ffx = LoadLibraryW((raiz + L"\\amd_fidelityfx_dx12.dll").c_str());
+        HMODULE ffx = LoadLibraryW((raiz + (fsr4 ? L"\\amd_fidelityfx_loader_dx12.dll" : L"\\amd_fidelityfx_dx12.dll")).c_str());
         raiz = raiz.substr(0, raiz.find_last_of(L"\\/"));
-        if (!ffx)
+        if (!ffx && !fsr4)
             ffx = LoadLibraryW((raiz + L"\\externo\\fidelityfx_sdk\\PrebuiltSignedDLL\\amd_fidelityfx_dx12.dll").c_str());
         if (!ffx)
         {
-            fprintf(stderr, "como jogo: amd_fidelityfx_dx12.dll nao carregou\n");
+            fprintf(stderr, "como jogo: a DLL do FSR nao carregou (%s)\n", fsr4 ? "amd_fidelityfx_loader_dx12.dll" : "amd_fidelityfx_dx12.dll");
             return 6;
         }
         fsrCria = reinterpret_cast<PfnFfxCreateContext>(GetProcAddress(ffx, "ffxCreateContext"));
@@ -469,6 +457,41 @@ int wmain(int argc, wchar_t** argv)
         ffxCreateBackendDX12Desc be{};
         be.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12;
         be.device = dev.Get();
+        ffxOverrideVersion versao{};
+        if (fsr4)
+        {
+            // como o jogo escolhe no menu: as versoes que a DLL oferece, pelo nome
+            auto consulta = reinterpret_cast<PfnFfxQuery>(GetProcAddress(ffx, "ffxQuery"));
+            uint64_t nv = 0;
+            ffxQueryDescGetVersions qv{};
+            qv.header.type = FFX_API_QUERY_DESC_TYPE_GET_VERSIONS;
+            qv.createDescType = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
+            qv.device = dev.Get();
+            qv.outputCount = &nv;
+            if (!consulta || consulta(nullptr, &qv.header) != FFX_API_RETURN_OK || !nv)
+            {
+                fprintf(stderr, "como jogo: a DLL do FSR nao lista versoes\n");
+                return 7;
+            }
+            std::vector<uint64_t> ids(nv);
+            std::vector<const char*> nomes(nv);
+            qv.versionIds = ids.data();
+            qv.versionNames = nomes.data();
+            consulta(nullptr, &qv.header);
+            for (uint64_t k = 0; k < nv && !versao.versionId; ++k)
+                if (nomes[k] && nomes[k][0] == '4')
+                {
+                    versao.versionId = ids[k];
+                    printf("FSR %s\n", nomes[k]);
+                }
+            if (!versao.versionId)
+            {
+                fprintf(stderr, "como jogo: a DLL do FSR nao tem a versao 4 nesta placa\n");
+                return 7;
+            }
+            versao.header.type = FFX_API_DESC_TYPE_OVERRIDE_VERSION;
+            be.header.pNext = &versao.header;
+        }
         ffxCreateContextDescUpscale cd{};
         cd.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
         cd.header.pNext = &be.header;
@@ -496,20 +519,6 @@ int wmain(int argc, wchar_t** argv)
         sc1.As(&sc);
         sc->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709);
         printf("como jogo: FSR pela amd_fidelityfx_dx12.dll e swapchain pela DXGI (%ux%u)\n", W, H);
-        if (fgJogo && cubo)
-        {
-            // a geracao do "jogo": o contexto existe para o preparo com a camera passar pela DLL (o modulo, com a geracao
-            // dele pedida, desliga a do jogo)
-            FgJogoCria fc{};
-            fc.header.type = 0x00020001u; // FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION
-            fc.header.pNext = &be.header;
-            fc.flags = (1u << 3) | (1u << 4) | (1u << 5); // profundidade invertida e infinita, HDR
-            fc.displaySize = {W, H};
-            fc.maxRenderSize = {RW, RH};
-            fc.backBufferFormat = ffxApiGetSurfaceFormatDX12(DXGI_FORMAT_R16G16B16A16_FLOAT);
-            const ffxReturnCode_t rf = fsrCria(&fgDoJogo, &fc.header, nullptr);
-            printf("como jogo: geracao FSR do jogo (para o preparo com a camera): %s\n", rf == FFX_API_RETURN_OK ? "ok" : "falhou");
-        }
         if (hud)
         {
             auto compila = [&](const char* e, const char* alvo) {
@@ -807,10 +816,25 @@ int wmain(int argc, wchar_t** argv)
     };
     auto proximo = std::chrono::steady_clock::now();
     const auto inicio = proximo;
+    // --tempo: o relogio da cena; --fsr4: o jitter do quadro (FFX: Halton 2 e 3, centrado)
+    const double fpsCena = tempoFps > 0 ? tempoFps : fps;
+    const UINT fasesJitter = fsr4 ? UINT(std::ceil(8.0 * double(W) * W / (double(RW) * RW))) : 0;
+    auto halton = [](UINT i, UINT base) {
+        float f = 1.f, r = 0.f;
+        for (; i; i /= base)
+            f /= float(base), r += f * float(i % base);
+        return r;
+    };
+    float jx = 0.f, jy = 0.f;
     for (int v = 0; v < voltas; ++v)
         for (UINT i = 0; i < N; ++i)
         {
             bomba();
+            if (fasesJitter)
+            {
+                const UINT fase = UINT((UINT64(v) * N + i) % fasesJitter) + 1;
+                jx = halton(fase, 2) - 0.5f, jy = halton(fase, 3) - 0.5f;
+            }
             if (cubo)
             {
                 // a cena 3D no instante deste quadro (o tempo e o numero do quadro), com o movimento desde o anterior
@@ -820,7 +844,7 @@ int wmain(int argc, wchar_t** argv)
                 barreira(cor.r.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_RENDER_TARGET);
                 barreira(mov.r.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_RENDER_TARGET);
                 barreira(prof.r.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-                cena.Desenha(cl.Get(), 0, RW, RH, double(qc) / fps, (double(qc) - 1.0) / fps);
+                cena.Desenha(cl.Get(), 0, RW, RH, double(qc) / fpsCena, (double(qc) - 1.0) / fpsCena, jx, jy);
                 barreira(cor.r.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
                 barreira(mov.r.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
                 barreira(prof.r.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -897,7 +921,8 @@ int wmain(int argc, wchar_t** argv)
                 u.motionVectorScale = {cubo || render < 1.f ? float(RW) : 1.f, cubo || render < 1.f ? float(RH) : 1.f};
                 u.renderSize = {RW, RH};
                 u.upscaleSize = {W, H};
-                u.frameTimeDelta = 1000.f / float(std::max(fps, 1));
+                u.jitterOffset = {jx, jy};
+                u.frameTimeDelta = 1000.f / float(fpsCena);
                 u.preExposure = 1.f;
                 u.reset = cubo ? q == 0 : i == 0 && (!laco || v == 0); // a cena 3D segue entre as voltas
                 u.cameraNear = perto > 0.f ? perto : 0.1f;
@@ -906,25 +931,6 @@ int wmain(int argc, wchar_t** argv)
                 u.viewSpaceToMetersFactor = 1.f;
                 if (fsrDespacha(&fsr, &u.header) != FFX_API_RETURN_OK && v == 0 && i == 0)
                     fprintf(stderr, "como jogo: ffxDispatch falhou\n");
-                if (fgDoJogo)
-                {
-                    // o preparo da geracao do "jogo" com a camera deste quadro (o que o modulo captura)
-                    FgJogoPreparo pp{};
-                    pp.header.type = 0x00020004u; // FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE
-                    pp.frameID = q + 1;
-                    pp.commandList = cl.Get();
-                    pp.renderSize = {RW, RH};
-                    pp.motionVectorScale = u.motionVectorScale;
-                    pp.frameTimeDelta = u.frameTimeDelta;
-                    pp.cameraNear = u.cameraNear, pp.cameraFar = u.cameraFar;
-                    pp.cameraFovAngleVertical = u.cameraFovAngleVertical, pp.viewSpaceToMetersFactor = 1.f;
-                    pp.depth = u.depth, pp.motionVectors = u.motionVectors;
-                    FgJogoCamera cm{};
-                    cm.header.type = 0x0002000au; // FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE_CAMERAINFO
-                    cena.CameraMundo(double(q) / fps, cm.cameraPosition, cm.cameraUp, cm.cameraRight, cm.cameraForward);
-                    pp.header.pNext = &cm.header;
-                    fsrDespacha(&fgDoJogo, &pp.header); // so o preparo: a geracao do jogo nunca e configurada
-                }
                 barreira(saidaAgora.r.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
                 if (adiantado)
                 {
@@ -1005,6 +1011,24 @@ int wmain(int argc, wchar_t** argv)
                 }
                 else
                     barreira(saidaTela.r.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                const bool recorteAqui = recorteN && q >= recorteQ && q < recorteQ + recorteN;
+                if (recorteAqui)
+                {
+                    auto copia = [&](ID3D12Resource* dst, ID3D12Resource* src, DXGI_FORMAT f, UINT x0, UINT y0, UINT rw, UINT rh, UINT pitch, bool caixa) {
+                        D3D12_TEXTURE_COPY_LOCATION d{dst, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+                        d.PlacedFootprint.Footprint = {f, rw, rh, 1, pitch};
+                        D3D12_TEXTURE_COPY_LOCATION s{src, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+                        const D3D12_BOX b{x0, y0, 0, x0 + rw, y0 + rh, 1};
+                        cl->CopyTextureRegion(&d, 0, 0, 0, &s, caixa ? &b : nullptr);
+                    };
+                    copia(leRecCor.Get(), final_, DXGI_FORMAT_R16G16B16A16_FLOAT, (W - recW) / 2, (H - recH) / 2, recW, recH, recPitch, true);
+                    barreira(mov.r.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                    barreira(prof.r.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                    copia(leRecMov.Get(), mov.r.Get(), DXGI_FORMAT_R32G32_FLOAT, (RW - recMW) / 2, (RH - recMH) / 2, recMW, recMH, recMPitch, true);
+                    copia(leRecProf.Get(), prof.r.Get(), DXGI_FORMAT_R32_TYPELESS, 0, 0, RW, RH, recPPitch, false);
+                    barreira(mov.r.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                    barreira(prof.r.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                }
                 esperaApresentacao(); // o backbuffer seguinte so existe depois do Present do anterior
                 ComPtr<ID3D12Resource> bb;
                 sc->GetBuffer(sc->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&bb));
@@ -1022,6 +1046,7 @@ int wmain(int argc, wchar_t** argv)
                 if (!aqui)
                     Ck(fechou, "close");
                 ID3D12CommandList* lj[] = {cl.Get()};
+                const auto enviouEm = std::chrono::steady_clock::now();
                 fila->ExecuteCommandLists(1, lj);
                 if (aqui)
                 {
@@ -1046,6 +1071,38 @@ int wmain(int argc, wchar_t** argv)
                 }
                 cerca->SetEventOnCompletion(valor, ev);
                 WaitForSingleObject(ev, INFINITE);
+                // o tempo da GPU neste quadro (o contador de utilizacao do Windows fica em 0 nesta placa): o limite dos testes
+                // pesados vem daqui (o PC desliga com a GPU a 100% sustentado)
+                static double msGpu = 0.0;
+                msGpu += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - enviouEm).count();
+                if ((q + 1) % 20 == 0)
+                {
+                    printf("gpu %.1f ms por quadro\n", msGpu / 20.0);
+                    fflush(stdout);
+                    msGpu = 0.0;
+                }
+                if (recorteAqui)
+                {
+                    auto grava = [&](ID3D12Resource* b, const wchar_t* sufixo, UINT x0, UINT y0, UINT rw, UINT rh, UINT pitch, UINT bpp) {
+                        wchar_t nome[64];
+                        swprintf(nome, 64, L"\\%04llu_%s.raw", (unsigned long long)q, sufixo);
+                        FILE* a = nullptr;
+                        unsigned char* m = nullptr;
+                        _wfopen_s(&a, (saida + nome).c_str(), L"wb");
+                        if (a && SUCCEEDED(b->Map(0, nullptr, (void**)&m)))
+                        {
+                            for (UINT y = 0; y < rh; ++y)
+                                fwrite(m + size_t(y0 + y) * pitch + size_t(x0) * bpp, 1, size_t(rw) * bpp, a);
+                            D3D12_RANGE nada{0, 0};
+                            b->Unmap(0, &nada);
+                        }
+                        if (a)
+                            fclose(a);
+                    };
+                    grava(leRecCor.Get(), L"saida", 0, 0, recW, recH, recPitch, 8);
+                    grava(leRecMov.Get(), L"mv", 0, 0, recMW, recMH, recMPitch, 8);
+                    grava(leRecProf.Get(), L"prof", (RW - recMW) / 2, (RH - recMH) / 2, recMW, recMH, recPPitch, 4);
+                }
                 if (trava && UINT64(v) * N + i + 1 == trava)
                     Sleep(8000);
                 if (recria && UINT64(v) * N + i + 1 == recria)
@@ -1106,29 +1163,12 @@ int wmain(int argc, wchar_t** argv)
             }
             if (sc)
             {
-                // o quadro vai para o backbuffer do swapchain da AMD; a profundidade e o movimento, para a geracao
+                // o quadro vai para o backbuffer
                 ComPtr<ID3D12Resource> bb;
                 sc->GetBuffer(sc->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&bb));
                 barreira(bb.Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST);
                 cl->CopyResource(bb.Get(), cor.r.Get());
                 barreira(bb.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
-                dlss5ov::QuadroGeracao g;
-                g.prof = prof.r.Get();
-                g.profEstado = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-                g.mov = mov.r.Get();
-                g.movEstado = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-                g.renderW = RW, g.renderH = RH;
-                g.movEscX = render < 1.f ? float(RW) : 1.f;
-                g.movEscY = render < 1.f ? float(RH) : 1.f;
-                g.perto = perto > 0.f ? perto : 0.1f;
-                g.longe = 0.f;
-                g.fovY = fovY;
-                g.msQuadro = 1000.f / float(std::max(fps, 1));
-                g.invertida = g.infinita = true;
-                g.hdr = true;
-                g.reset = e.reset;
-                if (!ger.Quadro(cl.Get(), g, multi) && v == 0 && i == 0)
-                    fprintf(stderr, "geracao: %s\n", ger.UltimoErro());
             }
             barreira(cor.r.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
             barreira(mov.r.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
@@ -1183,18 +1223,6 @@ int wmain(int argc, wchar_t** argv)
            double(N) * voltas / std::max(seg, 1e-3), fps, (unsigned long long)d.exportados,
            d.aplicados ? double(d.idadeSoma) / double(d.aplicados) : 0.0, (unsigned long long)d.esperas,
            d.esperas ? d.esperaMs / double(d.esperas) : 0.0, d.esperaMsMax, (unsigned long long)d.estouros);
-    if (sc && !comoJogo)
-    {
-        DXGI_FRAME_STATISTICS st{};
-        const HRESULT hs = sc->GetFrameStatistics(&st);
-        printf("geracao: %llu quadros gerados pela AMD em %.1f s (%.1f/s); apresentados %.1f/s (jogo %.1f/s + gerados)%s\n",
-               (unsigned long long)ger.Gerados(), seg, ger.Gerados() / std::max(seg, 1e-3),
-               (double(N) * voltas + double(ger.Gerados())) / std::max(seg, 1e-3), double(N) * voltas / std::max(seg, 1e-3),
-               SUCCEEDED(hs) ? "" : " [sem estatisticas do swapchain]");
-        if (SUCCEEDED(hs))
-            printf("geracao: estatisticas do swapchain: PresentCount %u, PresentRefreshCount %u\n", st.PresentCount,
-                   st.PresentRefreshCount);
-    }
     if (mapa)
         fclose(mapa);
     if (raw)

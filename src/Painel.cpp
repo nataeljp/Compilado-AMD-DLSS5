@@ -3,11 +3,17 @@
 #include "../externo/imgui/imgui_impl_dx12.h"
 #include "../externo/imgui/imgui_impl_win32.h"
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <commdlg.h>
 #include <dwmapi.h>
+#include <mutex>
 #include <psapi.h>
 #include <shellapi.h>
+#include <thread>
 #include <windowsx.h>
+
+#pragma comment(lib, "comdlg32.lib")
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -16,6 +22,31 @@ namespace ov {
 namespace {
 UINT g_pendW = 0, g_pendH = 0;
 bool g_fechar = false;
+// a janela de arquivos numa thread: o laco do overlay (e o batimento com o jogo) segue enquanto ela esta aberta
+std::mutex g_mxExe;
+std::wstring g_exeDialogo;
+std::atomic<bool> g_dialogoAberto{false};
+void AbreDialogoExe()
+{
+    if (g_dialogoAberto.exchange(true))
+        return;
+    std::thread([] {
+        wchar_t b[MAX_PATH] = {};
+        OPENFILENAMEW o{};
+        o.lStructSize = sizeof o;
+        o.lpstrFilter = L"Programas (*.exe)\0*.exe\0";
+        o.lpstrFile = b;
+        o.nMaxFile = MAX_PATH;
+        o.lpstrTitle = L"Escolha o executavel do jogo";
+        o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_HIDEREADONLY | OFN_EXPLORER;
+        if (GetOpenFileNameW(&o))
+        {
+            std::lock_guard<std::mutex> lk(g_mxExe);
+            g_exeDialogo = b;
+        }
+        g_dialogoAberto = false;
+    }).detach();
+}
 // bandeja do sistema: o que o usuario pediu pelo icone (lido no laco principal, mesmo com o painel escondido)
 constexpr UINT kMsgBandeja = WM_APP + 7;
 enum { kBandejaNada, kBandejaAlterna, kBandejaDesliga, kBandejaSair };
@@ -475,8 +506,11 @@ bool Segmentos(const char* id, const char* const* nomes, int n, int* sel, float 
         dl->AddRectFilled(p, q, alfa(on ? kVerdeEscuro : (hov ? kBotaoHover : kBotao)), 6 * g_e);
         if (on)
             dl->AddRect(p, q, alfa(kVerde), 6 * g_e, 0, 1.6f * g_e);
-        const ImVec2 ts = g_texto->CalcTextSizeA(g_tTexto, FLT_MAX, 0, nomes[i]);
-        dl->AddText(g_texto, g_tTexto, ImVec2(p.x + (bw - ts.x) * 0.5f, p.y + (bh - ts.y) * 0.5f),
+        // nome maior que o botao: letra menor, nunca por cima do vizinho
+        ImVec2 ts = g_texto->CalcTextSizeA(g_tTexto, FLT_MAX, 0, nomes[i]);
+        const float cabe = bw - 8 * g_e, tam = ts.x > cabe ? g_tTexto * cabe / ts.x : g_tTexto;
+        ts = g_texto->CalcTextSizeA(tam, FLT_MAX, 0, nomes[i]);
+        dl->AddText(g_texto, tam, ImVec2(p.x + (bw - ts.x) * 0.5f, p.y + (bh - ts.y) * 0.5f),
                     alfa(on ? kVerde : kTexto2), nomes[i]);
         ImGui::PopID();
     }
@@ -727,6 +761,9 @@ void Painel::Aplica()
     {
         RECT r{};
         GetWindowRect(hwnd, &r);
+        // tecla que ficou apertada quando o painel fechou da ultima vez (a soltura foi para o jogo)
+        if (ImGui::GetCurrentContext())
+            ImGui::GetIO().ClearInputKeys();
         gancho.Liga(r);
     }
     else if (!querGancho && gancho.Ligado())
@@ -876,6 +913,9 @@ void Painel::Redimensiona(UINT nw, UINT nh)
 
 void Painel::AtualizaJanelas()
 {
+    // a escolha segue a mesma janela, ou a de mesmo nome (o jogo reaberto tem outra), nao a mesma posicao na lista
+    const HWND hAntes = escolhida >= 0 && escolhida < int(janelas.size()) ? janelas[escolhida].h : nullptr;
+    const std::string nomeAntes = hAntes ? janelas[escolhida].nome : std::string();
     janelas.clear();
     EnumWindows(
         [](HWND h, LPARAM l) -> BOOL {
@@ -895,7 +935,19 @@ void Painel::AtualizaJanelas()
         reinterpret_cast<LPARAM>(&janelas));
     janelas.erase(std::remove_if(janelas.begin(), janelas.end(), [this](const JanelaLista& j) { return j.h == hwnd; }),
                   janelas.end());
-    escolhida = janelas.empty() ? -1 : std::clamp(escolhida, 0, int(janelas.size()) - 1);
+    // (a posicao vale enquanto a escolhida nao existia; depois, so a propria janela ou uma de mesmo nome)
+    if (!hAntes)
+    {
+        escolhida = janelas.empty() ? -1 : std::clamp(escolhida, 0, int(janelas.size()) - 1);
+        return;
+    }
+    escolhida = -1; // a escolhida fechou e nao voltou: outra janela qualquer da lista nao entra no lugar dela
+    for (int i = 0; i < int(janelas.size()) && janelas[i].h != hAntes; ++i)
+        if (janelas[i].nome == nomeAntes)
+            escolhida = i;
+    for (int i = 0; i < int(janelas.size()); ++i)
+        if (janelas[i].h == hAntes)
+            escolhida = i;
 }
 
 // perfil do jogo (como o ReShade), logo abaixo da escolha da janela: o seletor traz os ajustes de qualquer perfil (de
@@ -1212,7 +1264,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             // o jogo continua em foco e o mouse esta no painel: aviso numa linha propria (ao lado das abas ele cobria
             // o titulo em paineis estreitos)
             const ImVec2 q = ImGui::GetCursorScreenPos();
-            dl->AddText(g_texto, g_tSecao, q, kVerde, "jogo em foco  ·  Esc devolve o mouse");
+            dl->AddText(g_texto, g_tSecao, q, kVerde, "mouse no painel  ·  Esc devolve o mouse ao jogo");
             ImGui::Dummy(ImVec2(0, g_tSecao + 4 * g_e));
         }
         if (e.alvo.empty())
@@ -1223,10 +1275,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             dl->AddCircleFilled(ImVec2(q.x + 5 * g_e, q.y + g_tTexto * 0.55f), 4.5f * g_e, e.redeOk ? kVerde : IM_COL32(230, 80, 80, 255));
             ImGui::SetCursorScreenPos(ImVec2(q.x + 16 * g_e, q.y));
             const std::string nomeJogo = e.exe.empty() ? Utf8(e.alvo) : e.exe;
-            if (e.vfps > 0)
-                ImGui::Text("%s   %.0f fps / %.0f vfps", nomeJogo.c_str(), e.fps, e.vfps);
-            else
-                ImGui::Text("%s   %.0f fps", nomeJogo.c_str(), e.fps);
+            ImGui::Text("%s   %.0f fps", nomeJogo.c_str(), e.fps);
             ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kTexto2), "rede %ux%u  ·  overlay %.1f ms  ·  resposta em %.0f%%",
                                e.redeW, e.redeH, e.msMedio, 100.0 * e.fracaoRede);
         }
@@ -1269,14 +1318,35 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             if (ImGui::IsItemClicked())
                 AtualizaJanelas();
             const float b3 = (lc - 16 * g_e) / 3;
-            if (Botao("Ligar", b3, true) && escolhida >= 0)
-                a.ligar = janelas[escolhida].h;
+            if (Botao("Ligar", b3, true))
+            {
+                AtualizaJanelas(); // a lista e de quando foi aberta: a janela de um jogo que fechou nao tem processo (erro 87)
+                if (escolhida >= 0)
+                    a.ligar = janelas[escolhida].h;
+            }
             ImGui::SameLine(0, 8 * g_e);
             if (Botao("Desligar", b3))
                 a.desligar = true;
             ImGui::SameLine(0, 8 * g_e);
             if (Botao("Atualizar", b3))
                 AtualizaJanelas();
+            const float b2e = (lc - 8 * g_e) / 2;
+            if (Botao("Procurar exe", b2e))
+            {
+                if (gancho.Ligado())
+                    Esconde(false); // o mouse fica com o painel: a janela de arquivos nao receberia clique
+                AbreDialogoExe();
+            }
+            Dica("Escolha o executavel do jogo: o overlay liga sozinho quando ele abrir, sem precisar do jogo em foco.");
+            ImGui::SameLine(0, 8 * g_e);
+            if (Botao("Esquecer exe", b2e))
+                a.exeEsquecer = true;
+            {
+                std::lock_guard<std::mutex> lk(g_mxExe);
+                a.exeNovo.swap(g_exeDialogo);
+            }
+            if (!e.exeEscolhido.empty())
+                ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kVerde), "Exe: %s (liga quando abrir)", e.exeEscolhido.c_str());
             ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kTexto2), "Jogo em janela ou tela cheia sem borda.");
             SecaoPerfil(e, a, lc);
         }
@@ -1295,7 +1365,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                 cfg.temporal.guarda = 16.f;
                 cfg.temporal.exposicao = 1.f;
                 cfg.forca = 1.f;
-                cfg.bilateral = cfg.denoiseTemporal = cfg.rcas = cfg.nitidez = 0.f; // a saida da NVIDIA nao tem filtro extra
+                cfg.dnAtivo = false; // a saida da NVIDIA nao tem filtro extra
                 cfg.ponte = -1;
                 cfg.preLuz = cfg.preSombra = cfg.preCor = 0.f;
                 cfg.alturaRede = 2160; // a rede na resolucao da janela (abaixo da nativa e a maior perda: 1080 num 4K = 32,7 dB)
@@ -1343,18 +1413,6 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         Deslizador("Intensidade", &cfg.ngx.intensidade, 0.f, 2.f, "%.3f",
                    "DLSSNR.Intensity: quanto da resposta da rede entra; acima de 1 reforca a luz (0 a 2).", 1.f);
         Deslizador("Força da edição", &cfg.forca, 0.f, 2.f, "%.3f", "Quanto da mudanca da rede entra no quadro (1 = a da rede).", 1.f);
-        Deslizador("Bilateral", &cfg.bilateral, 0.f, 2.f, "%.3f",
-                   "Denoise bilateral guiado por bordas, so no lado da rede: suaviza o ruido sem atravessar as bordas. 0 a 1 "
-                   "mistura, 1 a 2 tolera mais diferenca de cor; 0 = desligado.", 0.f);
-        DeslizadorInt("Raio bilateral", &cfg.raioBilateral, 1, 8, "%d px", "Raio do bilateral em pixels (1 a 8).", 2.f);
-        Deslizador("Temporal", &cfg.denoiseTemporal, 0.f, 1.f, "%.3f",
-                   "Denoise temporal: o resultado anterior reprojetado pelo movimento e preso a vizinhanca do atual (sem "
-                   "rastro); 1 = 90% do historico; 0 = desligado.", 0.f);
-        Deslizador("RCAS", &cfg.rcas, 0.f, 2.f, "%.2f",
-                   "RCAS do FSR 1 depois do denoise, so no lado da rede: 1 = o maximo do algoritmo, 2 = o dobro; 0 = desligado.",
-                   0.f);
-
-
         {
             const char* modelos[] = {"Model A", "Model B", "Model C"};
             if (Segmentos("modelo", modelos, 3, &cfg.ngx.modelo))
@@ -1374,41 +1432,82 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             ImGui::EndDisabled();
         }
 
+        // ---- denoise: passes do overlay depois da rede, sem tocar nela ----
+        // (na captura de buffer rodam dentro do jogo, no proprio quadro; na de video, no overlay)
+        Secao("DENOISE (FORA DA REDE)");
+        Marca("Denoise ligado", &cfg.dnAtivo,
+              "Tira o grao da rede, na ideia do NRD da NVIDIA: filtra so a edicao da rede, no tamanho dela; a imagem do jogo nao passa "
+              "pelo filtro. Desligado nao gasta GPU nem VRAM; os ajustes ficam.", false);
+        ImGui::BeginDisabled(!cfg.dnAtivo);
+        Marca("Processar o jogo junto da rede", &cfg.dnJogo,
+              "Filtra o quadro pronto (jogo + rede) em vez de so a edicao da rede: tira tambem o ruido do proprio jogo, e pode suavizar o detalhe dele. Roda na resolucao da tela: mais GPU e VRAM. Para captura de video e da API; na de buffer o resultado cai no quadro seguinte, e ja mediu pior que desligado.");
+        Deslizador("Reconstrução", &cfg.dnReconstrucao, 0.f, 1.f, "%.3f",
+                   "Troca so o ponto da edicao da rede fora da faixa dos vizinhos do mesmo objeto pela estimativa dela; borda, "
+                   "linha e textura ficam intactas. 0 = desligada.", 1.f);
+        Deslizador("Acumulação", &cfg.dnAcumulacao, 0.f, 1.f, "%.3f",
+                   "Acumulacao temporal: junta as edicoes anteriores da rede, reposicionadas pelo movimento (o do jogo na captura de "
+                   "buffer; o fluxo optico na de video, que aloca mais VRAM). 1 = ate 95% de historico. 0 = desligada.", 1.f);
+        Deslizador("Recorte hist.", &cfg.dnRecorte, 0.5f, 3.f, "%.2f",
+                   "Quanto o historico pode se afastar do quadro atual, em desvios da vizinhanca: menor = menos rastro, maior = "
+                   "menos ruido.", 2.f);
+        Deslizador("Filtro bordas", &cfg.dnBordas, 0.f, 1.f, "%.3f",
+                   "Suaviza a edicao da rede sem atravessar as bordas da imagem do jogo e de profundidade (captura de buffer): "
+                   "o detalhe do jogo fica, o grao da rede sai. E o que tira o grao com a camera parada. 0 = desligado.", 1.f);
+        DeslizadorInt("Passes bordas", &cfg.dnBordasPasses, 1, 3, "%d",
+                      "Cada passe dobra o alcance do filtro: 2, 4 e 8 pixels da rede.", 2.f);
+        Deslizador("Tolerância", &cfg.dnBordasSigma, 0.5f, 4.f, "%.2f",
+                   "Diferenca de brilho na imagem do jogo que o filtro ainda atravessa: maior = suaviza mais, menor = preserva mais.", 2.f);
+        Deslizador("CAS", &cfg.dnCas, 0.f, 1.f, "%.3f",
+                   "Nitidez adaptativa da AMD na imagem final, depois do denoise: devolve o detalhe que o filtro levou e recua onde o contraste ja e alto. 0 = desligado.", 0.f);
+        {
+            const char* vistas[] = {"Imagem final", "Edição antes do denoise", "Edição depois do denoise", "O que o denoise tirou (x8)", "Quadros acumulados"};
+            ImGui::TextUnformatted("Visão de depuração");
+            ImGui::SetNextItemWidth(lc);
+            ImGui::Combo("##dnVista", &cfg.dnVista, vistas, 5);
+            Dica("Para ajustar: cinza = nao mexe. Em \"O que o denoise tirou\" deve aparecer grao, nao contorno de objeto: contorno e detalhe sendo perdido. Em \"Quadros acumulados\", escuro = pouco historico.");
+        }
+        ImGui::EndDisabled();
+
         Secao("MODO DE REDE");
         {
-            const char* fontes[] = {"Captura de vídeo", "Captura de buffer"};
-            int f = cfg.fonte == 1 ? 1 : 0;
-            if (Segmentos("fonte", fontes, 2, &f, 32 * g_e))
+            const char* fontes[] = {"Captura de vídeo", "Captura de buffer", "Captura da API"};
+            int f = cfg.fonte == 1 || cfg.fonte == 2 ? cfg.fonte : 0;
+            if (Segmentos("fonte", fontes, 3, &f, 32 * g_e))
                 cfg.fonte = f;
-            Dica("Video: como o OBS, qualquer jogo. Buffer: DLL no jogo (DX12 + FSR/XeSS); anti-cheat recusa.");
+            Dica("Video: como o OBS, qualquer jogo. Buffer: DLL no jogo (DX12 + FSR/XeSS), sem HUD. API: le o quadro apresentado (DX11, DX12 e Vulkan, com ou sem upscaler), com HUD. Buffer e API: anti-cheat recusa.");
+            if (cfg.fonte == 2)
+            {
+                bool camada = e.camadaVulkan;
+                if (Marca("Vulkan (abra o jogo depois de marcar)", &camada,
+                          "Registra uma camada do Vulkan so enquanto o overlay esta aberto: nada vai para a pasta do jogo. Com anti-cheat ativo ela nao carrega."))
+                {
+                    a.camadaMudou = true;
+                    a.camadaValor = camada;
+                }
+            }
             if (cfg.fonte == 1)
+                Marca("Prender o jogo à rede lenta", &cfg.sincronizaRedeLenta,
+                      "Rede acima de 95 ms por quadro (4K): desligado, o jogo roda solto e a edicao chega atrasada (rastro); ligado, sem rastro, mas cada quadro leva o tempo da rede (input lag).");
+            if (cfg.fonte == 1 || cfg.fonte == 2)
+                DeslizadorInt("Limite de FPS do jogo", &cfg.limiteFpsJogo, 0, 240, "%d",
+                              "Da GPU para a rede: o tempo que o jogo deixa de usar fica para ela (a prioridade de GPU nao muda nada nesta placa, medido). "
+                              "Exemplo em 4K: 30 aqui com a rede em 1440p e 1 passe. Sem atraso a mais na entrada. 0 = sem teto.", 0.f);
+            if (cfg.fonte == 1 || cfg.fonte == 2)
             {
                 const std::string& s = e.estadoBuffer;
                 const ImVec4 cor = s.rfind("conectado", 0) == 0     ? ImGui::ColorConvertU32ToFloat4(kVerde)
                                    : s.rfind("nao conectou", 0) == 0 ? ImVec4(1, 0.45f, 0.4f, 1)
                                                                      : ImVec4(1, 0.78f, 0.3f, 1);
                 ImGui::PushTextWrapPos(0.f);
-                ImGui::TextColored(cor, "%s", s.empty() ? "Ctrl+Shift+D com o jogo em foco (FSR ou XeSS ligado no jogo)" : s.c_str());
+                ImGui::TextColored(cor, "%s", !s.empty()        ? s.c_str()
+                                              : cfg.fonte == 2 ? "Ctrl+Shift+D com o jogo em foco"
+                                                               : "Ctrl+Shift+D com o jogo em foco (FSR ou XeSS ligado no jogo)");
                 ImGui::PopTextWrapPos();
 
-                // geracao de quadros da AMD: a DLL na pasta do jogo troca o swapchain na criacao
-                ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kTexto2), "Geração de quadros (AMD)");
-                // so a geracao neural da AMD (FSR 4 Redstone): 2x o meio entre os reais; 3x o mesmo gerado
-                // apresentado duas vezes; 4x o intercalado de dois contextos (0,25 / 0,5 / 0,75)
-                const char* geracoes[] = {"Desligada", "2x", "3x", "4x"};
-                int ig = cfg.geracao >= 2 ? std::min(cfg.geracao, 4) - 1 : 0;
-                if (Segmentos("geracao", geracoes, 4, &ig, 30 * g_e))
-                    cfg.geracao = ig ? ig + 1 : 0;
-                Dica("Geracao FSR 4 Redstone no jogo (2x; 3x com o gerado repetido; 4x intercalado), muda a qualquer "
-                     "momento. Precisa da geracao FSR do jogo ligada no menu dele (a camera vem dela). Na 1a vez pede reabrir o "
-                     "jogo. Desligue o AFMF do driver.");
-                if (e.instaladoNoJogo && Botao("Remover do jogo"))
-                    a.removerDoJogo = true;
-                if (!e.estadoGeracao.empty())
+                if (!e.avisoPastaJogo.empty())
                 {
                     ImGui::PushTextWrapPos(0.f);
-                    ImGui::TextColored(e.geracaoPronta ? ImGui::ColorConvertU32ToFloat4(kVerde) : ImVec4(1, 0.78f, 0.3f, 1),
-                                       "%s", e.estadoGeracao.c_str());
+                    ImGui::TextColored(ImVec4(1, 0.78f, 0.3f, 1), "%s", e.avisoPastaJogo.c_str());
                     ImGui::PopTextWrapPos();
                 }
             }
@@ -1438,6 +1537,25 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                 Segmentos("luz", luzes, 3, &cfg.temporal.luz, 30 * g_e);
                 Dica("Como a luz da rede chega a tela e ao jogo. Mista (padrao): na tela como a logaritmica; no jogo "
                      "clarear soma (a logaritmica vira grao na borda do cabelo).");
+                static const char* const kFormatos[5] = {"R16G16B16A16_FLOAT  ·  HDR e SDR  ·  64 bits",
+                                                         "R11G11B10_FLOAT + R8_UNORM  ·  HDR e SDR  ·  40 bits",
+                                                         "R10G10B10A2_UNORM + R8_UNORM  ·  SDR  ·  40 bits",
+                                                         "R16G16B16A16_UNORM  ·  SDR  ·  64 bits",
+                                                         "R8G8B8A8_UNORM  ·  SDR  ·  32 bits"};
+                cfg.formatoCor = std::clamp(cfg.formatoCor, 0, 4);
+                ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+                if (ImGui::BeginCombo("##formato", kFormatos[cfg.formatoCor]))
+                {
+                    for (int i = 0; i < 5; ++i)
+                        if (ImGui::Selectable(kFormatos[i], i == cfg.formatoCor))
+                            cfg.formatoCor = i;
+                    ImGui::EndCombo();
+                }
+                Dica("Formato da cor e da edicao da rede: qualidade contra VRAM. A troca refaz as texturas e solta as velhas. Com menos "
+                     "bits pode aparecer faixa em ceu e gradiente: se aparecer, volte para o de cima. Formato SDR em HDR: a cor fica em "
+                     "R16G16B16A16_FLOAT, porque cortaria o realce.");
+                if (!e.formatoAgora.empty())
+                    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kTexto2), "%s", e.formatoAgora.c_str());
             }
             const char* comps[] = {"Crua (resposta - proxy)", "Referencia NVIDIA/RenoDX"};
             ImGui::SetNextItemWidth(lc);
@@ -1525,17 +1643,6 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
                                        e.pequenaSessao ? "pequena" : "grande", e.alturaSessao, e.passesSessao,
                                        e.completaSessao ? "" : ", sem os blocos 42/43/46");
                     ImGui::PopTextWrapPos();
-                }
-                // so na captura de video: na de buffer a geracao de verdade e a da AMD (MODO DE REDE)
-                if (cfg.fonte != 1)
-                {
-                DeslizadorInt("Quadros gerados", &cfg.ritmo, 1, 4, "x%.0f",
-                              "Como o AMD Fluid Motion Frames (ate 4x): a rede edita 1 de cada N; 1 = todos os quadros.", 1.f);
-                ImGui::BeginDisabled(cfg.ritmo < 2);
-                const char* gerados[] = {"Quadro repetido", "Quadro mesclado"};
-                Segmentos("gerado", gerados, 2, &cfg.gerado, 30 * g_e);
-                Dica("Repetido: repete o processado. Mesclado: mistura o atual e o proximo, sempre 1 quadro de atraso.");
-                ImGui::EndDisabled();
                 }
             }
 
