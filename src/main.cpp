@@ -14,6 +14,7 @@
 #include "Captura.h"
 #include "Config.h"
 #include "FonteApi.h"
+#include "RayRegen.h"
 #include "FonteBuffer.h"
 #include "Fluxo.h"
 #include "Injecao.h"
@@ -107,7 +108,7 @@ struct App
     std::chrono::steady_clock::time_point marcaFps = std::chrono::steady_clock::now();
     UINT64 quadrosMarca = 0;
     Config cfg;
-    Passe pInteiro, pReduz, pCompoe, pExporta, pGuias, pDnNor, pDnRec, pDnAcu, pDnBor;
+    Passe pInteiro, pReduz, pCompoe, pExporta, pGuias;
     // ---- captura de buffer (Modo de Rede): a DLSS5Buffer.dll no jogo aberto entrega cor sem HUD, movimento e
     // profundidade do upscaler dele; a edicao volta para o jogo, que a soma no quadro seguinte ----
     FonteBuffer fb;
@@ -131,14 +132,10 @@ struct App
     bool Ligado() const { return cap.Ativa() || buffer || captApi; }
     HWND Alvo() const { return buffer || captApi ? alvoBuffer : cap.Alvo(); }
     Tex inteiro, orig, fed, saida, fedAnt, saidaAnt; // orig: quadro no tamanho da rede; fed: o proxy dele
-    Tex dnTmp[2]; // os passos do denoise antes do ultimo (alternados)
-    Tex dnNormais; // normais derivadas da profundidade (reproducao de uma gravacao do modo buffer)
-    Tex hist[2];  // o denoise temporal: o resultado anterior e o deste quadro (alternados)
-    Tex histN[2]; // os quadros acumulados de cada pixel, ao lado de cada historico (R8: R11G11B10 nao tem alfa)
-    int histI = 0;
-    bool histValida = false;
     // ---- denoise: CAS na imagem final e visao de depuracao, para ajustar o filtro vendo o que ele faz ----
     Passe pCas, pDnVista;
+    RayRegen rayRegen;
+    float fovYJogo = 0; // o que o jogo passa ao FSR (captura de buffer)
     Tex saidaCas;
     Tex* dnBruta = nullptr; // a edicao deste quadro antes do denoise
     void CasNaSaida(ID3D12GraphicsCommandList* c)
@@ -159,26 +156,24 @@ struct App
         saida.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
         c->CopyResource(saida.r.Get(), saidaCas.r.Get());
     }
-    void VistaDenoise(ID3D12GraphicsCommandList* c, Tex* depois)
+    // a visao de depuracao do SDK no lugar da imagem
+    void VistaDenoise(ID3D12GraphicsCommandList* c)
     {
         const D3D12_RESOURCE_STATES SRV =
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-        Tex* conta = cfg.dnVista == 4 && histN[histI].r ? &histN[histI] : depois;
-        // numa textura ao lado: processando o jogo junto, o "antes" e a propria saida
+        Tex& d = rayRegen.depura;
+        if (!d.r || d.w != saida.w || d.h != saida.h)
+            return;
         if (saidaCas.w != saida.w || saidaCas.h != saida.h || saidaCas.fmt != saida.fmt)
             saidaCas.Cria(gpu.dev.Get(), saida.w, saida.h, saida.fmt, L"CAS do denoise");
-        dnBruta->Para(c, SRV);
-        depois->Para(c, SRV);
-        conta->Para(c, SRV);
+        d.Para(c, SRV);
         saidaCas.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         struct
         {
-            UINT w, h, vista, hdr;
+            UINT w, h, hdr;
             float escala;
-            UINT temConta, p1, p2;
-        } k{saida.w, saida.h, UINT(std::clamp(cfg.dnVista, 1, 4)), hdr ? 1u : 0u, escalaUsada, conta != depois ? 1u : 0u, 0, 0};
-        pDnVista.Roda(c, desc, gpu.dev.Get(), {{dnBruta->r.Get(), dnBruta->fmt}, {depois->r.Get(), depois->fmt}, {conta->r.Get(), conta->fmt}},
-                      {{saidaCas.r.Get(), saidaCas.fmt}}, &k, (saida.w + 7) / 8, (saida.h + 7) / 8);
+        } k{saida.w, saida.h, hdr ? 1u : 0u, escalaUsada};
+        pDnVista.Roda(c, desc, gpu.dev.Get(), {{d.r.Get(), d.fmt}}, {{saidaCas.r.Get(), saidaCas.fmt}}, &k, (saida.w + 7) / 8, (saida.h + 7) / 8);
         saidaCas.Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
         saida.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
         c->CopyResource(saida.r.Get(), saidaCas.r.Get());
@@ -211,8 +206,7 @@ struct App
     bool PrecisaMovimento() const
     {
         return HistoricoRede() || cfg.modo == 4 || gravando > 0 || gravaEm > 0 || !dumpPasta.empty() ||
-               cfg.profundidadeAuto || (cfg.dnAtivo && cfg.dnAcumulacao > 0.f) ||
-               (cfg.dnAtivo && (buffer || !pastaReproducao.empty()) && (cfg.dnReconstrucao > 0.f || cfg.dnBordas > 0.f)); // a profundidade gravada guia os dois
+               cfg.profundidadeAuto || cfg.dnAtivo;
     }
     std::wstring PastaRede() const { return pastaRuntime.empty() ? pasta + L"\\runtime" : pastaRuntime; }
     // A rede da sessao: tamanho, rede grande ou pequena, passes e rede completa valem do Liga ate o proximo Liga; mudar
@@ -303,10 +297,7 @@ struct App
         pExporta.Cria(gpu.dev.Get(), (std::string(hlsl::Comum) + hlsl::Exporta).c_str(), "CSExporta", 3, 2, 12,
                       "edicao para o jogo");
         pGuias.Cria(gpu.dev.Get(), hlsl::Guias, "CSGuias", 2, 2, 4, "guias do historico da rede");
-        pDnNor.Cria(gpu.dev.Get(), hlsl::Denoise, "CSNormais", dlss5ov::kDnSrvs, 1, dlss5ov::kDnConstantes, "denoise: normais");
-        pDnRec.Cria(gpu.dev.Get(), hlsl::Denoise, "CSReconstrucao", dlss5ov::kDnSrvs, 1, dlss5ov::kDnConstantes, "denoise: reconstrucao");
-        pDnAcu.Cria(gpu.dev.Get(), hlsl::Denoise, "CSAcumulacao", dlss5ov::kDnSrvs, 3, dlss5ov::kDnConstantes, "denoise: acumulacao");
-        pDnBor.Cria(gpu.dev.Get(), hlsl::Denoise, "CSBordas", dlss5ov::kDnSrvs, 1, dlss5ov::kDnConstantes, "denoise: filtro de bordas");
+        rayRegen.Cria(gpu.dev.Get());
         // AMD FidelityFX CAS (MIT): nitidez que recua onde o contraste ja e alto. Em HDR, no espaco comprimido: a conta supoe 0..1
         pCas.Cria(gpu.dev.Get(), R"(
 cbuffer C : register(b0) { uint w; uint h; uint hdr; float nitidez; };
@@ -339,40 +330,18 @@ float3 L(int2 p)
 )",
                   "CSCas", 1, 1, 4, "CAS do denoise");
         pDnVista.Cria(gpu.dev.Get(), R"(
-cbuffer C : register(b0) { uint w; uint h; uint vista; uint hdr; float escala; uint temConta; uint p1; uint p2; };
-Texture2D<float4> bruta : register(t0);
-Texture2D<float4> depois : register(t1);
-Texture2D<float> conta : register(t2);
+cbuffer C : register(b0) { uint w; uint h; uint hdr; float escala; };
+Texture2D<float4> depura : register(t0);
 RWTexture2D<float4> saida : register(u0);
-SamplerState s : register(s0);
-// cinza = nao mexeu; mais claro ou mais escuro = o que a edicao faz nesse ponto
 [numthreads(8, 8, 1)] void CSVista(uint2 p : SV_DispatchThreadID)
 {
     if (p.x >= w || p.y >= h) return;
-    const float2 uv = (float2(p) + 0.5) / float2(w, h);
-    float3 v;
-    // a edicao passa de 1 nos realces: comprimida, para nao estourar a imagem inteira
-    if (vista == 1)
-    {
-        const float3 e = bruta.SampleLevel(s, uv, 0).rgb;
-        v = 0.5 + 0.5 * e / (1.0 + abs(e));
-    }
-    else if (vista == 2)
-    {
-        const float3 e = depois.SampleLevel(s, uv, 0).rgb;
-        v = 0.5 + 0.5 * e / (1.0 + abs(e));
-    }
-    else if (vista == 3)
-        v = 0.5 + 8.0 * (bruta.SampleLevel(s, uv, 0).rgb - depois.SampleLevel(s, uv, 0).rgb);
-    else
-        v = temConta ? conta.SampleLevel(s, uv, 0).xxx : float3(0.0, 0.0, 0.0);
-    v = saturate(v);
-    if (hdr)
-        v = pow(v, 2.2) * escala;
-    saida[p] = float4(v, 1.0);
+    const float4 v = depura.Load(int3(p, 0));
+    const float3 c = v.a > 0.0 ? saturate(v.rgb) : float3(0.0, 0.0, 0.0);
+    saida[p] = float4(hdr ? pow(c, 2.2) * escala : c, 1.0);
 }
 )",
-                      "CSVista", 3, 1, 8, "visao de depuracao do denoise");
+                      "CSVista", 1, 1, 4, "visao de depuracao do denoise");
         fluxo.Cria(gpu.dev.Get());
         temporal.Cria(gpu.dev.Get());
         EsperaPasses();
@@ -786,9 +755,14 @@ SamplerState s : register(s0);
             return;
         exePerfis = exeAlvo;
         perfilJogo = NomePerfilDoJogo(exeAlvo);
-        if (CarregaDe(perfilJogo))
+        // a captura escolhida no painel vale: a do perfil trocava "buffer" por "API" ao ligar, sem avisar
+        const int fonteEscolhida = cfg.fonte;
+        const bool temPerfil = CarregaDe(perfilJogo);
+        if (!temPerfil)
+            CarregaDe(L"");
+        cfg.fonte = fonteEscolhida;
+        if (temPerfil)
             return;
-        CarregaDe(L"");
         Log("perfil", Utf8(exeAlvo) + " ainda sem perfil: padrao do programa, salvo em " + Utf8(PerfilArq(perfilJogo)));
     }
 
@@ -1044,7 +1018,7 @@ SamplerState s : register(s0);
         alvoBuffer = h;
         hdr = true; // a cor do jogo antes do tonemap e linear
         escalaSdr = 1.f;
-        estadoBuffer = r.upscaler.empty() ? "esperando o jogo usar FSR ou XeSS (escolha no menu grafico do jogo)"
+        estadoBuffer = r.upscaler.empty() ? "esperando o jogo usar FSR 3.1 ou mais novo (escolha no menu grafico do jogo)"
                                           : "esperando o primeiro quadro do " + r.upscaler;
         if (!r.motivo.empty())
             estadoBuffer += " | " + r.motivo;
@@ -1226,8 +1200,6 @@ SamplerState s : register(s0);
         fed.Cria(gpu.dev.Get(), dw, dh, DXGI_FORMAT_R16G16B16A16_FLOAT, L"proxy (alimentado)", true, true);
         saida.Cria(gpu.dev.Get(), fw, fh, fmtSaida, L"saida");
         // recriadas no tamanho novo quando o denoise estiver ligado (a GPU ja esta parada aqui)
-        dnTmp[0].Solta(), dnTmp[1].Solta(), hist[0].Solta(), hist[1].Solta(), histN[0].Solta(), histN[1].Solta(), dnNormais.Solta();
-        histValida = false;
         if (!dumpPasta.empty())
             saidaAnt.Cria(gpu.dev.Get(), fw, fh, fmtSaida, L"saida anterior", false);
         // o movimento e alocado no quadro que precisar dele (PrecisaMovimento), ja no tamanho novo
@@ -1300,120 +1272,34 @@ SamplerState s : register(s0);
     // reconstrucao -> acumulacao -> filtro de bordas. Devolve a edicao filtrada, em SRV
     uint64_t quadroDnEdicao = 0;
     // jogo: o sinal e o quadro pronto (jogo + rede), na resolucao da tela, no lugar da edicao no tamanho da rede
-    Tex* DenoiseEdicao(ID3D12GraphicsCommandList* c, Tex* ed, bool temMov, bool jogo = false)
+    Tex* DenoiseEdicao(ID3D12GraphicsCommandList* c, Tex* ed, bool temMov)
     {
-        const D3D12_RESOURCE_STATES SRV = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-        const bool dnRec = cfg.dnReconstrucao > 0.f, dnAcu = cfg.dnAcumulacao > 0.f && temMov, dnBor = cfg.dnBordas > 0.f;
-        // um quadro sem resposta da rede no meio: o movimento deste quadro nao chega a edicao anterior
-        if (!dnAcu || quadroDnEdicao + 1 != quadros)
-            histValida = false;
         quadroDnEdicao = quadros;
-        const int passesBordas = dnBor ? std::clamp(cfg.dnBordasPasses, 1, 3) : 0;
-        if (!dnRec && !dnAcu && !passesBordas)
+        if (!temMov)
             return ed;
-        const UINT w = ed->w, h = ed->h;
-        dlss5ov::ConstantesDenoise kn{};
-        kn.w = w, kn.h = h, kn.hdr = jogo ? (hdr ? 1u : 0u) : 2u, kn.escala = jogo ? escalaUsada : 1.f, kn.divisao = -1.f, kn.sigma = 1.f, kn.passo = 1;
-        // o grao da rede tem 1 pixel dela: na tela, tantos pixels quanto a rede foi ampliada
-        kn.grao = jogo ? UINT(std::clamp(int(float(h) / float(std::max(fed.h, 1u)) + 0.5f), 1, 4)) : 1u;
-        kn.aspecto = float(w) / float(h);
-        kn.temGuia = jogo ? 0 : 1, kn.tolGuia = 0.1f; // em log2 da luminancia do jogo
-        orig.Para(c, SRV);
-        Tex* profDn = temMov ? fluxo.DistanciaAtual() : nullptr; // so na captura de buffer e na reproducao dela
-        if (profDn)
-            kn.profW = profDn->w, kn.profH = profDn->h, kn.temGeo = 1, profDn->Para(c, SRV);
-        if (temMov)
+        // no painel: 0 imagem, 1 visao geral, 2 em diante os paineis do manual sem o 7 ("Unused")
+        const int vistaSdk = cfg.dnVista >= 9 ? cfg.dnVista + 1 : cfg.dnVista;
+        Tex* filtrada = rayRegen.Filtra(c, desc, gpu, pasta, *ed, orig, LuzNaTela(cfg.temporal.luz), cfg.dnRegenForca, cfg.dnRegenModo, cfg.dnRegenParam, vistaSdk, saida.w ? saida.w : ed->w, saida.h ? saida.h : ed->h, hdr ? escalaUsada : 1.f);
+        return filtrada ? filtrada : ed;
+    }
+    // o que falta, dito no painel: sem isto o denoise parece funcionar com a profundidade fixa
+    std::string EstadoDenoise()
+    {
+        if (!cfg.dnAtivo)
+            return "";
+        std::string s;
+        if (captApi && !fa.Prof() && cfg.dnRegenProf)
         {
-            kn.movW = fluxo.Movimento().w, kn.movH = fluxo.Movimento().h;
-            kn.movMulX = float(w) / float(kn.movW), kn.movMulY = float(h) / float(kn.movH);
-            fluxo.Movimento().Para(c, SRV);
-            fluxo.Confianca().Para(c, SRV);
+            if (fa.Api() == dlss5ov::kApiVulkan)
+                s = ", sem profundidade (Vulkan)";
+            else if (fa.ProfRecusada() == dlss5ov::kProfSemVram)
+                s = ", sem profundidade: nao coube na VRAM";
+            else if (fa.ProfRecusada())
+                s = Fmt(", sem profundidade: o buffer do jogo esta no formato %u, que nao da para copiar", fa.ProfRecusada());
+            else
+                s = ", sem profundidade: nenhum buffer achado nesta tela";
         }
-        using Par = std::pair<ID3D12Resource*, DXGI_FORMAT>;
-        const Par pGuia{orig.r.Get(), orig.fmt};
-        const UINT gx = (w + 7) / 8, gy = (h + 7) / 8;
-        Tex* fonte = ed;
-        Tex* histDn = nullptr; // os quadros acumulados de cada pixel, para o filtro de bordas
-        auto etapa = [&](Passe& p, Tex* histAnt, Tex* novo) {
-            Tex* d = fonte == &dnTmp[0] ? &dnTmp[1] : &dnTmp[0];
-            const DXGI_FORMAT fmtD = jogo ? ed->fmt : DXGI_FORMAT_R16G16B16A16_FLOAT;
-            if (d->w != w || d->h != h || d->fmt != fmtD)
-                d->Cria(gpu.dev.Get(), w, h, fmtD, L"denoise");
-            fonte->Para(c, SRV);
-            Tex* contaAnt = histAnt ? &histN[histAnt - hist] : nullptr;
-            if (histAnt)
-                histAnt->Para(c, SRV), contaAnt->Para(c, SRV);
-            d->Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            const Par mudo{fonte->r.Get(), fonte->fmt}; // o que a etapa nao le: o SRV so precisa existir
-            std::vector<Par> u{{d->r.Get(), d->fmt}};
-            if (novo)
-            {
-                Tex* contaNova = &histN[novo - hist];
-                novo->Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-                contaNova->Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-                u.push_back({novo->r.Get(), novo->fmt});
-                u.push_back({contaNova->r.Get(), contaNova->fmt});
-            }
-            p.Roda(c, desc, gpu.dev.Get(),
-                   {mudo, profDn ? Par{profDn->r.Get(), profDn->fmt} : mudo, histAnt ? Par{histAnt->r.Get(), histAnt->fmt} : mudo,
-                    temMov ? Par{fluxo.Movimento().r.Get(), fluxo.Movimento().fmt} : mudo,
-                    temMov ? Par{fluxo.Confianca().r.Get(), fluxo.Confianca().fmt} : mudo,
-                    kn.temGeo ? Par{dnNormais.r.Get(), dnNormais.fmt} : mudo,
-                    contaAnt ? Par{contaAnt->r.Get(), contaAnt->fmt} : mudo, pGuia},
-                   u, &kn, gx, gy);
-            fonte = d;
-        };
-        if (profDn && (dnRec || dnBor))
-        {
-            // as normais da profundidade do jogo (na captura de video nao ha profundidade: a guia e a imagem)
-            if (dnNormais.w != profDn->w || dnNormais.h != profDn->h)
-                dnNormais.Cria(gpu.dev.Get(), profDn->w, profDn->h, DXGI_FORMAT_R16G16B16A16_FLOAT, L"denoise: normais");
-            dnNormais.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            const Par mudo{ed->r.Get(), ed->fmt};
-            pDnNor.Roda(c, desc, gpu.dev.Get(), {mudo, Par{profDn->r.Get(), profDn->fmt}, mudo, mudo, mudo, mudo, mudo, pGuia},
-                        {{dnNormais.r.Get(), dnNormais.fmt}}, &kn, (profDn->w + 7) / 8, (profDn->h + 7) / 8);
-            dnNormais.Para(c, SRV);
-        }
-        else
-            kn.temGeo = 0;
-        if (dnRec)
-        {
-            kn.forca = std::clamp(cfg.dnReconstrucao, 0.f, 1.f);
-            etapa(pDnRec, nullptr, nullptr);
-        }
-        if (dnAcu)
-        {
-            for (auto& hx : hist)
-                if (hx.w != w || hx.h != h)
-                    hx.Cria(gpu.dev.Get(), w, h, DXGI_FORMAT_R16G16B16A16_FLOAT, L"denoise: historico"), histValida = false;
-            for (auto& hx : histN)
-                if (hx.w != w || hx.h != h)
-                    hx.Cria(gpu.dev.Get(), w, h, DXGI_FORMAT_R8_UNORM, L"denoise: quadros acumulados");
-            kn.forca = std::clamp(cfg.dnAcumulacao, 0.f, 1.f);
-            kn.sigma = std::clamp(cfg.dnRecorte, 0.5f, 3.f);
-            kn.histValida = histValida ? 1u : 0u;
-            etapa(pDnAcu, &hist[histI], &hist[histI ^ 1]);
-            histI ^= 1;
-            histValida = true;
-            histDn = &hist[histI];
-            kn.histValida = 0;
-        }
-        if (dnBor)
-        {
-            kn.forca = std::clamp(cfg.dnBordas, 0.f, 1.f);
-            kn.sigma = std::clamp(cfg.dnBordasSigma, 0.5f, 4.f);
-            kn.tolGuia = 0.05f * kn.sigma;
-            // sobre a edicao da rede o filtro nao recua com o historico (o grao dela nao muda de um quadro para o outro)
-            Tex* histBor = jogo ? histDn : nullptr;
-            kn.temHist = histBor ? 1u : 0u;
-            for (int i = 0; i < passesBordas; ++i)
-            {
-                kn.passo = 1u << i;
-                etapa(pDnBor, histBor, nullptr);
-            }
-        }
-        fonte->Para(c, SRV);
-        return fonte;
+        return rayRegen.Estado().empty() ? s : s + ", " + rayRegen.Estado();
     }
     void RecriaSessaoRede()
     {
@@ -1783,7 +1669,7 @@ SamplerState s : register(s0);
             if (!fb.Pega(qb))
             {
                 if (fb.Aberta() && !fb.JogoVivo())
-                    estadoBuffer = "o jogo parou de mandar quadros (FSR/XeSS desligado ou jogo pausado)";
+                    estadoBuffer = "o jogo parou de mandar quadros (FSR desligado ou jogo pausado)";
                 else if (const std::string e = fb.Erro(); !e.empty())
                     estadoBuffer = "nao conectou: texturas da captura nao criadas " + e;
                 return false;
@@ -1794,7 +1680,7 @@ SamplerState s : register(s0);
             q.w = qb.cor->w;
             q.h = qb.cor->h;
             q.cercaValor = 0;
-            estadoBuffer = Fmt("conectado: %ux%u, cor sem HUD, profundidade e movimento do jogo", q.w, q.h);
+            estadoBuffer = Fmt("conectado: %ux%u, cor sem HUD, profundidade e movimento do jogo", q.w, q.h) + EstadoDenoise();
             if (qb.reset && temporal.Valido())
             {
                 temporal.Reinicia(); // o jogo avisou corte de cena
@@ -1838,6 +1724,7 @@ SamplerState s : register(s0);
                 }
             }
             fa.Batimento();
+            fa.QuerProf(cfg.dnAtivo && cfg.dnRegenProf);
             // saiu antes de usar o quadro passado (Ritmo, janela minimizada): o slot volta ao jogo
             if (quadroApi)
             {
@@ -1865,7 +1752,7 @@ SamplerState s : register(s0);
             q.h = t->h;
             q.cercaValor = 0; // so pega o que a GPU do jogo ja terminou
             estadoBuffer = (fa.Api() == dlss5ov::kApiVulkan ? std::string("conectado: Vulkan") : Fmt("conectado: DirectX %u", fa.Api())) +
-                           Fmt(", %ux%u, com HUD, movimento por fluxo optico", q.w, q.h);
+                           Fmt(", %ux%u, com HUD, movimento por fluxo optico%s", q.w, q.h, fa.Prof() ? (fa.ProfExata() ? ", profundidade do FSR" : ", profundidade do jogo") : "") + EstadoDenoise();
         }
         else if (!cap.Pega(q))
             return false;
@@ -1954,7 +1841,7 @@ SamplerState s : register(s0);
             if (fedAnt.w != fed.w || fedAnt.h != fed.h)
                 fedAnt.Cria(gpu.dev.Get(), fed.w, fed.h, DXGI_FORMAT_R16G16B16A16_FLOAT, L"alimentado anterior", false);
         }
-        bool temMov = false;
+        bool temMov = false, movDenoise = false;
         if (comMov && buffer)
         {
             // captura de buffer: o movimento e a profundidade do proprio jogo (exatos), no lugar do fluxo optico
@@ -1963,10 +1850,12 @@ SamplerState s : register(s0);
             cam.corH = float(q.h);
             cam.perto = qb.perto;
             cam.longe = qb.longe;
-            cam.fovY = qb.fovY;
+            cam.fovY = fovYJogo = qb.fovY;
             cam.invertida = invertidaUsada;
             cam.infinita = qb.profInfinita;
             cam.reset = qb.reset;
+            cam.jitterX = qb.jitterX;
+            cam.jitterY = qb.jitterY;
             fluxo.DoJogo(c, desc, gpu.dev.Get(), *qb.mov, *qb.prof, cam);
             temMov = true;
         }
@@ -1982,7 +1871,13 @@ SamplerState s : register(s0);
             temMov = true;
         }
         else if (comMov)
-            temMov = cfg.movimento && fluxo.Calcula(c, desc, gpu.dev.Get(), fed.r.Get(), fed.fmt);
+        {
+            // o denoiser precisa do movimento mesmo com o "movimento simulado" desligado para a rede
+            const bool calculou = (cfg.movimento || cfg.dnAtivo) && fluxo.Calcula(c, desc, gpu.dev.Get(), fed.r.Get(), fed.fmt);
+            temMov = calculou && cfg.movimento;
+            movDenoise = calculou;
+        }
+        movDenoise = movDenoise || temMov;
         if (temMov)
             fluxo.Estatisticas(c, desc, gpu.dev.Get(), fed, fedAnt);
         // A rede ve este quadro e responde nele mesmo, como a NVIDIA roda o DLSS 5: a rede dentro do quadro, a edicao do
@@ -1997,6 +1892,41 @@ SamplerState s : register(s0);
         {
             AjustaProfundidade(temMov);
             CopiaParaRede(c, temMov);
+            if (movDenoise && cfg.dnAtivo && (cfg.modo == 0 || cfg.modo == 2 || cfg.modo == 5))
+            {
+                EntradaRayRegen e;
+                e.mov = &fluxo.Movimento();
+                e.salto = quadroDnEdicao + 1 != quadros || (buffer && qb.reset); // quadro sem resposta da rede, ou corte de cena
+                if (buffer)
+                {
+                    // o original do jogo, nao o da rede (pixel mais proximo, para o historico dela)
+                    e.tanY = dlss5ov::TanMeioFov(fovYJogo);
+                    e.perto = qb.perto;
+                    e.longe = qb.longe;
+                    e.infinita = qb.profInfinita;
+                    e.invertidaConhecida = true;
+                    e.invertida = invertidaUsada;
+                    if (cfg.dnRegenProf)
+                    {
+                        e.dist = qb.prof;
+                        e.distCrua = true;
+                        e.mov = qb.mov;
+                        e.jitterX = qb.jitterX;
+                        e.jitterY = qb.jitterY;
+                        e.escMovX = float(orig.w) / float(q.w);
+                        e.escMovY = float(orig.h) / float(q.h);
+                    }
+                }
+                else if (cfg.dnRegenProf)
+                {
+                    e.dist = captApi ? fa.Prof() : fluxo.DistanciaAtual();
+                    e.distCrua = captApi;
+                }
+                rayRegen.Prepara(c, desc, gpu, orig, e);
+                float cobertura;
+                if (rayRegen.PegaCobertura(cobertura) && captApi)
+                    fa.AvaliaProf(cobertura);
+            }
         }
         Ck(c->Close(), "close0");
         ID3D12CommandList* l0[] = {c};
@@ -2055,8 +1985,8 @@ SamplerState s : register(s0);
             // de volta ao estado em que a fila da rede pega
             rede.Entrada().Para(c, D3D12_RESOURCE_STATE_COMMON);
             rede.Resposta().Para(c, D3D12_RESOURCE_STATE_COMMON);
-            if (cfg.dnAtivo && !cfg.dnJogo && (cfg.modo == 0 || cfg.modo == 2 || cfg.modo == 5))
-                edicao = ultimaEdicao = DenoiseEdicao(c, edicao, temMov);
+            if (cfg.dnAtivo && (cfg.modo == 0 || cfg.modo == 2 || cfg.modo == 5))
+                edicao = ultimaEdicao = DenoiseEdicao(c, edicao, movDenoise);
         }
         // gradacao do Model B/C (constantes do kernel da NVIDIA), escalada pelo tom local
         const float tg = std::clamp(cfg.ngx.tomLocal, 0.f, 2.f);
@@ -2110,25 +2040,10 @@ SamplerState s : register(s0);
                      {{saida.r.Get(), saida.fmt}}, &kc, (saida.w + 7) / 8, (saida.h + 7) / 8);
         if (cfg.dnAtivo && edicao && dnBruta)
         {
-            Tex* depois = edicao;
-            if (cfg.dnJogo)
-            {
-                dnBruta = &saida;
-                depois = DenoiseEdicao(c, &saida, temMov, true);
-            }
             if (cfg.dnVista > 0)
-                VistaDenoise(c, depois);
-            else
-            {
-                if (depois != edicao && depois != &saida)
-                {
-                    depois->Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
-                    saida.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
-                    c->CopyResource(saida.r.Get(), depois->r.Get());
-                }
-                if (cfg.dnCas > 0.f)
-                    CasNaSaida(c);
-            }
+                VistaDenoise(c);
+            else if (cfg.dnCas > 0.f)
+                CasNaSaida(c);
         }
         // captura de buffer: a edicao (C(saida) - C(cor do jogo)) vai para o slot que o jogo soma no quadro seguinte
         Tex* edJogo = buffer ? fb.EdicaoLivre() : nullptr;
@@ -3098,6 +3013,17 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     if (!app.dumpPasta.empty())
                     {
                         app.GravaTex(app.fed, app.dumpPasta + L"\\fed_atual.f16", 8);
+                        if (app.rayRegen.saida.r)
+                        {
+                            app.GravaTex(app.rayRegen.sinal, app.dumpPasta + L"\\rr_sinal.f16", 8);
+                            app.GravaTex(app.rayRegen.saida, app.dumpPasta + L"\\rr_saida.f16", 8);
+                            app.GravaTex(app.rayRegen.movZ, app.dumpPasta + L"\\rr_mov.f16", 8);
+                            if (app.rayRegen.depura.r)
+                                app.GravaTex(app.rayRegen.depura, app.dumpPasta + L"\\rr_depura.f16", 8);
+                            app.GravaTex(app.rayRegen.albedo, app.dumpPasta + L"\\rr_albedo.rgba", 4);
+                            app.GravaTex(app.rayRegen.prof, app.dumpPasta + L"\\rr_prof.r32", 4);
+                            app.GravaTex(app.rayRegen.normais, app.dumpPasta + L"\\rr_normais.rgb10", 4);
+                        }
                         app.GravaTex(app.fedAnt, app.dumpPasta + L"\\fed_anterior.f16", 8);
                         app.GravaTex(app.saida, app.dumpPasta + L"\\saida_atual.rgba", app.hdr ? 8 : 4);
                         app.GravaTex(app.saidaAnt, app.dumpPasta + L"\\saida_anterior.rgba", app.hdr ? 8 : 4);

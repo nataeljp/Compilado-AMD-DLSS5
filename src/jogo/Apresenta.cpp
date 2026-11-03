@@ -2,9 +2,11 @@
 // textura compartilhada. So engancha quando o overlay pede: na captura de buffer nada disto roda, a nao ser com o teto de FPS.
 #include "../buffer/LimiteFps.h"
 #include "../buffer/ProtocoloApi.h"
+#include "../buffer/Vram.h"
 #include <windows.h>
 #include <d3d11_4.h>
 #include <d3d12.h>
+#include <d3dcommon.h>
 #include <detours.h>
 #include <dxgi1_4.h>
 #include <wrl/client.h>
@@ -27,6 +29,7 @@ uint32_t g_geracao = 0;
 uint64_t g_n = 0;
 std::vector<HANDLE> g_handles;
 ULONGLONG g_vivoEm = 0, g_tentaEm = 0, g_alvoVistoEm = 0;
+uint64_t g_presents = 0; // a cada Present, copiando ou nao
 
 void Erro(const char* oque, HRESULT hr)
 {
@@ -64,6 +67,8 @@ void Publica(UINT w, UINT h, DXGI_FORMAT f, uint32_t api)
     g_n = 0;
     g_cab->w = w, g_cab->h = h, g_cab->fmt = f, g_cab->api = api;
     g_cab->quadro[0] = g_cab->quadro[1] = 0;
+    for (uint32_t i = 0; i < dlss5ov::kSlotsProf; ++i)
+        g_cab->quadroProf[i] = 0;
     g_cab->consumido = 0;
     g_cab->erro[0] = 0;
     MemoryBarrier();
@@ -112,8 +117,18 @@ void Solta12()
 // jogo no limite da VRAM: "the creation APIs will return failure" acima do orcamento; sem residencia a criacao passa
 HRESULT CriaTex12(const D3D12_RESOURCE_DESC& rd, ComPtr<ID3D12Resource>& t)
 {
+    D3D12_HEAP_PROPERTIES ram = dlss5ov::HeapDaRam();
+    HRESULT hr = dlss5ov::QuerRam() ? g_12.dev->CreateCommittedResource(&ram, D3D12_HEAP_FLAG_SHARED, &rd, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&t)) : E_FAIL;
+    static HRESULT ditoRam = S_FALSE;
+    if (dlss5ov::QuerRam() && hr != ditoRam)
+    {
+        ditoRam = hr;
+        LogModulo("captura da API: texturas %s (0x%08lx)", SUCCEEDED(hr) ? "na RAM" : "na VRAM", (unsigned long)hr);
+    }
+    if (SUCCEEDED(hr))
+        return hr;
     D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
-    HRESULT hr = g_12.dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_SHARED, &rd, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&t));
+    hr = g_12.dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_SHARED, &rd, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&t));
     if (hr != E_OUTOFMEMORY)
         return hr;
     hr = g_12.dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_SHARED | D3D12_HEAP_FLAG_CREATE_NOT_RESIDENT, &rd, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&t));
@@ -153,6 +168,11 @@ bool Prepara12(ID3D12CommandQueue* q, UINT w, UINT h, DXGI_FORMAT f)
     }
     if (g_12.tex[0] && g_12.w == w && g_12.h == h && g_12.fmt == f)
         return true;
+    {
+        char vram[64];
+        dlss5ov::TextoVramJogo(g_12.dev.Get(), vram, sizeof vram);
+        LogModulo("captura da API: criando as texturas; %s", vram);
+    }
     Solta12();
     ++g_geracao;
     D3D12_RESOURCE_DESC rd{};
@@ -171,6 +191,7 @@ bool Prepara12(ID3D12CommandQueue* q, UINT w, UINT h, DXGI_FORMAT f)
         HRESULT hr = CriaTex12(rd, g_12.tex[s]);
         if (FAILED(hr))
             return Erro("textura", hr), Solta12(), false;
+        g_12.tex[s]->SetName(L"DLSS5Overlay"); // numa falha de pagina da GPU o DRED diz se a memoria e nossa
         dlss5ov::NomeRecursoApi(nome, 128, pid, g_geracao, L"cor", s);
         hr = g_12.dev->CreateSharedHandle(g_12.tex[s].Get(), nullptr, GENERIC_ALL, nome, &c);
         if (FAILED(hr))
@@ -189,6 +210,29 @@ bool Prepara12(ID3D12CommandQueue* q, UINT w, UINT h, DXGI_FORMAT f)
     return true;
 }
 
+// a cor e a profundidade do mesmo quadro saem juntas, ou nao saem: profundidade de outro quadro derruba o historico do denoiser
+uint64_t g_profUltimaCopia = 0, g_semProf = 0;
+void DescartaProfDoQuadro()
+{
+    const uint64_t n = g_n + 1;
+    for (uint32_t p = 0; p < dlss5ov::kSlotsProf; ++p)
+        if (g_cab->quadroProf[p] == n)
+            g_cab->quadroProf[p] = 0;
+}
+bool ProfProntaOuDesiste()
+{
+    const uint64_t n = g_n + 1;
+    if (!g_cab->querProf || !g_profUltimaCopia || g_presents - g_profUltimaCopia > 60)
+        return true; // este jogo ou esta tela nao tem profundidade: a cor nao espera por ela
+    for (uint32_t p = 0; p < dlss5ov::kSlotsProf; ++p)
+        if (g_cab->quadroProf[p] == n)
+        {
+            g_semProf = 0;
+            return true;
+        }
+    return ++g_semProf > 3; // o overlay segura a ultima profundidade se passar disso
+}
+
 void Copia12(IDXGISwapChain* sc, ID3D12CommandQueue* q)
 {
     ComPtr<IDXGISwapChain3> sc3;
@@ -200,7 +244,12 @@ void Copia12(IDXGISwapChain* sc, ID3D12CommandQueue* q)
         return;
     const UINT s = UINT((g_n + 1) % dlss5ov::kSlotsApi), i = g_12.idx;
     if (g_cab->consumido < g_cab->quadro[s] || g_12.local->GetCompletedValue() < g_12.valor[i])
-        return; // o overlay ainda le o slot, ou a GPU ainda usa a lista: este quadro nao vai
+    {
+        DescartaProfDoQuadro(); // o overlay ainda le o slot, ou a GPU ainda usa a lista: este quadro nao vai, nem a profundidade dele
+        return;
+    }
+    if (!ProfProntaOuDesiste())
+        return;
     if (FAILED(g_12.al[i]->Reset()) || FAILED(g_12.cl->Reset(g_12.al[i].Get(), nullptr)))
         return;
     D3D12_RESOURCE_BARRIER b{};
@@ -221,6 +270,346 @@ void Copia12(IDXGISwapChain* sc, ID3D12CommandQueue* q)
     g_cab->quadro[s] = n;
 }
 
+// ---- a profundidade do jogo no D3D12 ----
+// Copiada na propria lista do jogo, no momento em que ele sai de DEPTH_WRITE: e o unico instante em que o estado do recurso e sabido com
+// certeza (e funciona com o modulo injetado depois: nao precisa ter visto o CreateDepthStencilView). A lista e GRAVADA antes de se saber de
+// que quadro ela e (um motor com thread de render grava o proximo quadro antes do Present deste): o slot so ganha o numero do quadro quando
+// a lista e ENVIADA, e um slot enviado nunca e reescrito. Cada saida de escrita do buffer escolhido vai para um slot novo; vale a ultima
+// enviada antes do Present, a mais completa.
+using PfnBarreira = void(STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*, UINT, const D3D12_RESOURCE_BARRIER*);
+PfnBarreira oBarreira = nullptr;
+std::mutex g_mxProf;
+ComPtr<ID3D12Resource> g_prof12[dlss5ov::kSlotsProf];
+std::vector<HANDLE> g_handlesProf;
+uint32_t g_profGeracao = 0;
+// Qual buffer e a cena? Tamanho e ordem nao dizem: no Cyberpunk ha um de 3840x2160 depois do FSR, e na boate o primeiro do quadro, do tamanho certo, so tinha
+// tres objetos. Se o jogo usa FSR, e o que ele entrega ao FSR. Senao, o primeiro de um quadro inteiro, e o overlay olha o conteudo (FonteApi::AvaliaProf): vazio, pede
+// outro, e este nao volta ate acabarem os candidatos. So comparacao, sem referencia. Sumiu por 120 quadros: outro pode entrar.
+// Do mesmo tamanho so entra o que aparece num quadro em que nenhum dos escolhidos apareceu: motor que alterna buffers (nao o de outra passagem, que vem junto do principal)
+constexpr int kMaxAlvosProf = 8;
+const void* g_alvosProf[kMaxAlvosProf] = {};
+int g_nAlvosProf = 0;
+const void* g_candidatoProf = nullptr;
+// alternar e repetir: o Cyberpunk mostrou um buffer do mesmo tamanho uma unica vez, e entrava como se o jogo alternasse
+const void* g_candidatoAnt = nullptr;
+uint64_t g_candidatoEm = 0;
+int g_candidatoVezes = 0;
+bool g_alvoNoQuadro = false;
+uint64_t g_alvoArea = 0, g_alvoVisto = 0;
+const void* g_ruinsProf[16] = {};
+int g_nRuinsProf = 0;
+uint64_t g_trocaEm = 0;
+std::atomic<const void*> g_profFsr{nullptr};
+std::atomic<uint64_t> g_profFsrEm{0};
+std::atomic<uint64_t> g_despachosFsr{0};
+uint64_t g_profFsrVisto = 0;
+uint64_t g_querDesde = 0; // o Present em que a profundidade foi pedida: a escolha so comeca num quadro inteiro (pedida no meio dele, o primeiro visto seria o da etapa final)
+// texturas trocadas: o jogo ainda pode ter listas gravadas ou na GPU com a copia para elas
+struct ProfVelha
+{
+    ComPtr<ID3D12Resource> r;
+    uint64_t ate;
+};
+std::vector<ProfVelha> g_profVelhas;
+struct ProfPendente
+{
+    ID3D12CommandList* lista;
+    UINT slot;
+    uint64_t present;
+};
+std::vector<ProfPendente> g_profPendentes;
+uint64_t g_profTentaEm = 0; // as texturas nao couberam: nao tenta de novo a cada barreira, com o jogo ja sem memoria
+void ProfSemVram()
+{
+    g_profTentaEm = g_presents + 300;
+    if (g_cab->profRecusa != dlss5ov::kProfSemVram)
+        LogModulo("captura da API: sem VRAM para as texturas da profundidade");
+    g_cab->profRecusa = dlss5ov::kProfSemVram;
+}
+std::atomic<int> g_nProfPendentes{0};
+
+void RecusaProf(DXGI_FORMAT f)
+{
+    // um buffer de outra passagem, com o principal em uso, nao interessa
+    if (g_nAlvosProf && g_presents - g_alvoVisto <= 120)
+        return;
+    g_cab->profRecusa = uint32_t(f);
+    static int dito = -1;
+    if (dito != int(f))
+    {
+        dito = int(f);
+        LogModulo("captura da API: buffer de profundidade da tela no formato %d: nao da para copiar (so D32)", int(f));
+    }
+}
+
+bool FsrVivo()
+{
+    static const bool semDica = GetEnvironmentVariableW(L"DLSS5_SEM_DICA", nullptr, 0) != 0; // teste: como um jogo sem FSR
+    return !semDica && g_profFsr.load() && g_presents - g_profFsrEm.load() <= 30;
+}
+
+bool EscolheAlvoProf(const void* r, uint64_t area, UINT w, UINT h)
+{
+    if (FsrVivo())
+    {
+        if (r == g_profFsr.load())
+        {
+            if (g_nAlvosProf != 1 || g_alvosProf[0] != r)
+                LogModulo("captura da API: buffer de profundidade: o que o jogo entrega ao FSR, %ux%u", w, h);
+            g_alvosProf[0] = r;
+            g_nAlvosProf = 1;
+            g_alvoArea = area;
+            g_cab->profExata = 1;
+            g_profFsrVisto = g_presents;
+            g_alvoNoQuadro = true;
+            g_alvoVisto = g_presents;
+            return true;
+        }
+        // ha motor que entrega ao FSR uma copia, que nunca passa por aqui: entao segue a escolha pelo conteudo
+        if (g_profFsrVisto && g_presents - g_profFsrVisto <= 60)
+            return false;
+    }
+    g_cab->profExata = 0;
+    for (int i = 0; i < g_nRuinsProf; ++i)
+        if (g_ruinsProf[i] == r)
+            return false;
+    bool conhecido = false;
+    for (int i = 0; i < g_nAlvosProf && !conhecido; ++i)
+        conhecido = g_alvosProf[i] == r;
+    if (!conhecido)
+    {
+        if (!g_querDesde || g_presents <= g_querDesde)
+            return false;
+        const bool sumiu = g_presents - g_alvoVisto > 120;
+        if (g_nAlvosProf && !sumiu)
+        {
+            if (area == g_alvoArea)
+                g_candidatoProf = r;
+            return false;
+        }
+        g_alvosProf[0] = r;
+        g_nAlvosProf = 1;
+        g_alvoArea = area;
+        LogModulo("captura da API: buffer de profundidade escolhido: %ux%u", w, h);
+    }
+    g_alvoNoQuadro = true;
+    g_alvoVisto = g_presents;
+    return true;
+}
+
+// no Present: o candidato de um quadro sem nenhum dos escolhidos entra (o motor alterna buffers)
+void FechaQuadroAlvoProf()
+{
+    if (!g_alvoNoQuadro && g_candidatoProf && g_nAlvosProf && g_nAlvosProf < kMaxAlvosProf)
+    {
+        g_candidatoVezes = g_candidatoProf == g_candidatoAnt && g_presents - g_candidatoEm <= 8 ? g_candidatoVezes + 1 : 1;
+        g_candidatoAnt = g_candidatoProf;
+        g_candidatoEm = g_presents;
+        if (g_candidatoVezes >= 8)
+        {
+            g_alvosProf[g_nAlvosProf++] = g_candidatoProf;
+            g_candidatoAnt = nullptr;
+            LogModulo("captura da API: o jogo alterna buffers de profundidade: %d", g_nAlvosProf);
+        }
+    }
+    g_alvoNoQuadro = false;
+    g_candidatoProf = nullptr;
+    if (g_cab->profTroca != g_cab->profTrocaFeita)
+    {
+        for (int i = 0; i < g_nAlvosProf && g_nRuinsProf < 16; ++i)
+            g_ruinsProf[g_nRuinsProf++] = g_alvosProf[i];
+        g_nAlvosProf = 0;
+        g_alvoArea = 0;
+        g_trocaEm = g_presents;
+        g_cab->profTrocaFeita = g_cab->profTroca;
+        LogModulo("captura da API: o overlay viu o buffer vazio: testando outro (%d ja testados)", g_nRuinsProf);
+    }
+    // nenhum outro apareceu: acabaram os candidatos, comeca de novo
+    if (!g_nAlvosProf && g_nRuinsProf && g_presents - g_trocaEm > 8)
+    {
+        g_nRuinsProf = 0;
+        g_trocaEm = g_presents;
+        g_cab->profCiclos = g_cab->profCiclos + 1;
+    }
+    if (!g_cab->querProf)
+        g_querDesde = 0;
+    else if (!g_querDesde)
+        g_querDesde = g_presents;
+    for (size_t i = 0; i < g_profVelhas.size();)
+        if (g_presents >= g_profVelhas[i].ate)
+            g_profVelhas.erase(g_profVelhas.begin() + i);
+        else
+            ++i;
+}
+
+void SoltaProf12()
+{
+    std::lock_guard<std::mutex> lk(g_mxProf);
+    g_cab->profGeracao = 0;
+    g_profPendentes.clear();
+    g_nProfPendentes.store(0);
+    for (HANDLE x : g_handlesProf)
+        CloseHandle(x);
+    g_handlesProf.clear();
+    for (auto& p : g_prof12)
+        p.Reset();
+    g_profVelhas.clear();
+    g_nRuinsProf = 0;
+    g_cab->profExata = 0;
+    g_cab->profW = g_cab->profH = 0;
+    g_nAlvosProf = 0;
+    g_alvoArea = 0;
+    g_profUltimaCopia = 0;
+}
+
+bool CriaProf12(UINT w, UINT h)
+{
+    D3D12_RESOURCE_DESC rd{};
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    rd.Width = w;
+    rd.Height = h;
+    rd.DepthOrArraySize = rd.MipLevels = 1;
+    rd.Format = DXGI_FORMAT_R32_FLOAT;
+    rd.SampleDesc.Count = 1;
+    rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
+    g_cab->profGeracao = 0;
+    g_profPendentes.clear();
+    g_nProfPendentes.store(0);
+    for (HANDLE x : g_handlesProf)
+        CloseHandle(x);
+    g_handlesProf.clear();
+    // nao solta agora: uma lista do jogo ja gravada pode estar copiando para elas (solta-las aqui derrubava a GPU)
+    for (auto& p : g_prof12)
+        if (p)
+            g_profVelhas.push_back({std::move(p), g_presents + 16});
+    ++g_profGeracao;
+    wchar_t nome[128];
+    for (uint32_t s = 0; s < dlss5ov::kSlotsProf; ++s)
+    {
+        HANDLE c = nullptr;
+        if (FAILED(CriaTex12(rd, g_prof12[s])))
+            return false;
+        dlss5ov::NomeRecursoApi(nome, 128, GetCurrentProcessId(), g_profGeracao, L"prof", s);
+        g_prof12[s]->SetName(L"DLSS5Overlay");
+        if (FAILED(g_12.dev->CreateSharedHandle(g_prof12[s].Get(), nullptr, GENERIC_ALL, nome, &c)))
+            return false;
+        g_handlesProf.push_back(c);
+        g_cab->quadroProf[s] = 0;
+    }
+    g_cab->profW = w, g_cab->profH = h;
+    g_cab->profSlots = dlss5ov::kSlotsProf;
+    MemoryBarrier();
+    g_cab->profGeracao = g_profGeracao;
+    LogModulo("captura da API: profundidade do jogo %ux%u", w, h);
+    return true;
+}
+
+void CopiaProf12(ID3D12GraphicsCommandList* l, const D3D12_RESOURCE_TRANSITION_BARRIER& b)
+{
+    if (!(b.StateBefore & D3D12_RESOURCE_STATE_DEPTH_WRITE) || !b.pResource || (b.Subresource != 0 && b.Subresource != D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES))
+        return;
+    if (GetTickCount64() - g_cab->batimentoOverlay >= 1000 || !g_12.w || l->GetType() != D3D12_COMMAND_LIST_TYPE_DIRECT)
+        return;
+    const D3D12_RESOURCE_DESC d = b.pResource->GetDesc();
+    if (d.SampleDesc.Count != 1 || !(d.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL))
+        return;
+    // abaixo de metade da tela so o do FSR: o modo Ultra Desempenho renderiza a um terco
+    if ((d.Width * 2 < g_12.w || d.Height * 2 < g_12.h) && b.pResource != g_profFsr.load())
+        return;
+    const double razao = double(d.Width) * g_12.h / (double(d.Height) * g_12.w);
+    if (razao < 0.95 || razao > 1.05)
+        return;
+    if (d.Format != DXGI_FORMAT_R32_TYPELESS && d.Format != DXGI_FORMAT_D32_FLOAT && d.Format != DXGI_FORMAT_R32G8X24_TYPELESS && d.Format != DXGI_FORMAT_D32_FLOAT_S8X24_UINT)
+    {
+        RecusaProf(d.Format);
+        return;
+    }
+    std::lock_guard<std::mutex> lk(g_mxProf);
+    if (!EscolheAlvoProf(b.pResource, uint64_t(d.Width) * d.Height, UINT(d.Width), d.Height))
+        return;
+    if (!g_prof12[0] || g_cab->profW != UINT(d.Width) || g_cab->profH != d.Height)
+    {
+        if (g_presents < g_profTentaEm)
+            return;
+        if (!CriaProf12(UINT(d.Width), d.Height))
+        {
+            g_cab->profW = g_cab->profH = 0;
+            ProfSemVram();
+            return;
+        }
+    }
+    g_cab->profRecusa = 0;
+    // a mesma lista segue no slot dela (nada foi enviado); outra lista, um slot livre: nem publicado sem ler, nem de outra lista por enviar
+    ID3D12CommandList* lista = l;
+    int s = -1;
+    for (const ProfPendente& p : g_profPendentes)
+        if (p.lista == lista)
+            s = int(p.slot);
+    if (s < 0)
+    {
+        for (UINT p = 0; p < dlss5ov::kSlotsProf && s < 0; ++p)
+        {
+            bool ocupado = g_cab->quadroProf[p] > g_cab->consumido;
+            for (const ProfPendente& e : g_profPendentes)
+                ocupado |= e.slot == p;
+            if (!ocupado)
+                s = int(p);
+        }
+        if (s < 0)
+            return;
+        g_profPendentes.push_back({lista, UINT(s), g_presents});
+        g_nProfPendentes.store(int(g_profPendentes.size()));
+    }
+    D3D12_RESOURCE_BARRIER x{};
+    x.Transition = {b.pResource, b.Subresource, D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_COPY_SOURCE};
+    oBarreira(l, 1, &x);
+    D3D12_TEXTURE_COPY_LOCATION de{g_prof12[s].Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX}, para = de;
+    de.pResource = b.pResource;
+    l->CopyTextureRegion(&para, 0, 0, 0, &de, nullptr);
+    std::swap(x.Transition.StateBefore, x.Transition.StateAfter);
+    oBarreira(l, 1, &x);
+}
+
+void STDMETHODCALLTYPE GBarreira(ID3D12GraphicsCommandList* l, UINT n, const D3D12_RESOURCE_BARRIER* b)
+{
+    if (g_cab && g_cab->querProf)
+        for (UINT i = 0; i < n; ++i)
+            if (b[i].Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION)
+                CopiaProf12(l, b[i].Transition);
+    oBarreira(l, n, b);
+}
+
+// a lista saiu para a fila: o que ela copiou e do proximo Present
+void NotaEnvioProf(UINT n, ID3D12CommandList* const* l)
+{
+    if (!g_nProfPendentes.load())
+        return;
+    std::lock_guard<std::mutex> lk(g_mxProf);
+    const uint64_t q = g_n + 1;
+    for (size_t e = 0; e < g_profPendentes.size();)
+    {
+        bool foi = false;
+        for (UINT i = 0; i < n && !foi; ++i)
+            foi = l[i] == g_profPendentes[e].lista;
+        // gravada e nunca enviada (o jogo desistiu da lista): nao segura o slot
+        if (!foi && g_presents - g_profPendentes[e].present <= 8)
+        {
+            ++e;
+            continue;
+        }
+        if (foi)
+        {
+            for (uint32_t p = 0; p < dlss5ov::kSlotsProf; ++p)
+                if (g_cab->quadroProf[p] == q)
+                    g_cab->quadroProf[p] = 0; // a saida anterior deste quadro: vale esta, mais completa
+            g_cab->quadroProf[g_profPendentes[e].slot] = q;
+            g_profUltimaCopia = g_presents;
+        }
+        g_profPendentes.erase(g_profPendentes.begin() + e);
+    }
+    g_nProfPendentes.store(int(g_profPendentes.size()));
+}
+
 // ---- D3D11 ----
 struct Estado11
 {
@@ -228,7 +617,7 @@ struct Estado11
     ComPtr<ID3D11DeviceContext4> ctx;
     ID3D11Device* origem = nullptr; // so comparacao
     ComPtr<ID3D11Fence> cerca;
-    ComPtr<ID3D11Texture2D> tex[dlss5ov::kSlotsApi];
+    ComPtr<ID3D11Texture2D> tex[dlss5ov::kSlotsApi], prof[dlss5ov::kSlotsApi]; // copiadas juntas no Present: o mesmo slot da cor
     UINT w = 0, h = 0;
     DXGI_FORMAT fmt = DXGI_FORMAT_UNKNOWN;
 } g_11;
@@ -303,6 +692,121 @@ bool Prepara11(ID3D11Device* d, UINT w, UINT h, DXGI_FORMAT f)
     return true;
 }
 
+// o primeiro buffer de profundidade ligado no contexto imediato num quadro inteiro, com a proporcao da tela: lido no Present
+using PfnAlvos = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, UINT, ID3D11RenderTargetView* const*, ID3D11DepthStencilView*);
+PfnAlvos oAlvos = nullptr;
+std::mutex g_mxDsv11;
+ComPtr<ID3D11Resource> g_dsv11;
+ID3D11DepthStencilView* g_dsvVisto = nullptr;
+void STDMETHODCALLTYPE GAlvos(ID3D11DeviceContext* c, UINT n, ID3D11RenderTargetView* const* v, ID3D11DepthStencilView* dsv)
+{
+    if (dsv && dsv != g_dsvVisto && g_cab && g_cab->querProf)
+    {
+        g_dsvVisto = dsv;
+        ComPtr<ID3D11Resource> r;
+        dsv->GetResource(&r);
+        ComPtr<ID3D11Texture2D> t;
+        D3D11_TEXTURE2D_DESC d{};
+        if (r && SUCCEEDED(r.As(&t)))
+        {
+            t->GetDesc(&d);
+            const double razao = g_11.h ? double(d.Width) * g_11.h / (double(d.Height) * g_11.w) : 0.0;
+            if (d.SampleDesc.Count == 1 && d.Width * 2 >= g_11.w && d.Height * 2 >= g_11.h && razao > 0.95 && razao < 1.05)
+            {
+                if (d.Format != DXGI_FORMAT_R32_TYPELESS && d.Format != DXGI_FORMAT_D32_FLOAT)
+                    RecusaProf(d.Format);
+                else
+                {
+                    std::lock_guard<std::mutex> lk(g_mxDsv11);
+                    // aqui so ha um buffer por Present, e o principal pode seguir ligado sem aparecer de novo: nao ha como ver a alternancia
+                    if (EscolheAlvoProf(r.Get(), uint64_t(d.Width) * d.Height, d.Width, d.Height))
+                        g_dsv11 = r;
+                    g_candidatoProf = nullptr;
+                }
+            }
+        }
+    }
+    oAlvos(c, n, v, dsv);
+}
+
+void SoltaProf11()
+{
+    g_cab->profGeracao = 0;
+    if (g_11.ctx)
+        g_11.ctx->Flush();
+    for (HANDLE x : g_handlesProf)
+        CloseHandle(x);
+    g_handlesProf.clear();
+    for (auto& p : g_11.prof)
+        p.Reset();
+    g_cab->profW = g_cab->profH = 0;
+    std::lock_guard<std::mutex> lk(g_mxDsv11);
+    g_dsv11.Reset();
+    g_dsvVisto = nullptr;
+    g_nAlvosProf = 0;
+    g_alvoArea = 0;
+    g_profUltimaCopia = 0;
+}
+
+void CopiaProf11(UINT s, uint64_t n)
+{
+    ComPtr<ID3D11Resource> r;
+    {
+        std::lock_guard<std::mutex> lk(g_mxDsv11);
+        r = g_dsv11;
+    }
+    ComPtr<ID3D11Texture2D> t;
+    if (!g_cab->querProf || !r || FAILED(r.As(&t)))
+        return;
+    D3D11_TEXTURE2D_DESC d{};
+    t->GetDesc(&d);
+    if (!g_11.prof[0] || g_cab->profW != d.Width || g_cab->profH != d.Height)
+    {
+        if (g_presents < g_profTentaEm)
+            return;
+        g_cab->profW = g_cab->profH = 0;
+        g_cab->profGeracao = 0;
+        D3D11_TEXTURE2D_DESC td{};
+        td.Width = d.Width;
+        td.Height = d.Height;
+        td.MipLevels = td.ArraySize = 1;
+        td.Format = DXGI_FORMAT_R32_FLOAT;
+        td.SampleDesc.Count = 1;
+        td.Usage = D3D11_USAGE_DEFAULT;
+        td.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+        td.MiscFlags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
+        for (HANDLE x : g_handlesProf)
+            CloseHandle(x);
+        g_handlesProf.clear();
+        ++g_profGeracao;
+        wchar_t nome[128];
+        for (uint32_t i = 0; i < dlss5ov::kSlotsApi; ++i)
+        {
+            ComPtr<IDXGIResource1> dr;
+            HANDLE c = nullptr;
+            dlss5ov::NomeRecursoApi(nome, 128, GetCurrentProcessId(), g_profGeracao, L"prof", i);
+            if (FAILED(g_11.dev->CreateTexture2D(&td, nullptr, &g_11.prof[i])) || FAILED(g_11.prof[i].As(&dr)) ||
+                FAILED(dr->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nome, &c)))
+            {
+                ProfSemVram();
+                return;
+            }
+            g_handlesProf.push_back(c);
+        }
+        g_cab->profW = d.Width, g_cab->profH = d.Height;
+        g_cab->profSlots = dlss5ov::kSlotsApi;
+        g_cab->profRecusa = 0;
+        for (uint32_t i = 0; i < dlss5ov::kSlotsProf; ++i)
+            g_cab->quadroProf[i] = 0;
+        MemoryBarrier();
+        g_cab->profGeracao = g_profGeracao;
+        LogModulo("captura da API: profundidade do jogo %ux%u", d.Width, d.Height);
+    }
+    g_11.ctx->CopyResource(g_11.prof[s].Get(), r.Get());
+    g_cab->quadroProf[s] = n;
+    g_profUltimaCopia = g_presents;
+}
+
 void Copia11(IDXGISwapChain* sc, ID3D11Device* d)
 {
     ComPtr<ID3D11Texture2D> bb;
@@ -321,6 +825,7 @@ void Copia11(IDXGISwapChain* sc, ID3D11Device* d)
     else
         g_11.ctx->CopyResource(g_11.tex[s].Get(), bb.Get());
     const uint64_t n = ++g_n;
+    CopiaProf11(s, n);
     g_11.ctx->Signal(g_11.cerca.Get(), n);
     g_11.ctx->Flush();
     g_cab->quadro[s] = n;
@@ -341,7 +846,8 @@ using PfnExecuta = void(STDMETHODCALLTYPE*)(ID3D12CommandQueue*, UINT, ID3D12Com
 PfnExecuta oExecuta = nullptr;
 void STDMETHODCALLTYPE GExecuta(ID3D12CommandQueue* q, UINT n, ID3D12CommandList* const* l)
 {
-    if (q != t_ultimaFila && q->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_DIRECT)
+    NotaEnvioProf(n, l);
+    if (!g_filaDoSwap && q != t_ultimaFila && q->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_DIRECT)
     {
         {
             std::lock_guard<std::mutex> lk(g_mxFilas);
@@ -390,24 +896,66 @@ ID3D12CommandQueue* FilaDoPresent(IDXGISwapChain* sc)
 {
     static IDXGISwapChain* visto = nullptr;
     static ID3D12CommandQueue* dele = nullptr;
-    static bool dito = false;
     if (sc != visto || !dele)
     {
         visto = sc;
         dele = FilaDentroDoSwap(sc);
     }
+    // O back buffer so pode ser usado na fila em que o swapchain foi criado. Com o swapchain de geracao da AMD (FrameInterpolationSwapchainDX12.cpp) o real nasce na presentQueue, e essa e a fila
+    // dele com a geracao ligada ou desligada; com ela desligada, porem, o Present vem da thread do jogo, cuja ultima fila e a do jogo: a "ultima lista enviada" seria a fila errada. Injetado
+    // no meio, o gancho pode nao ter visto essa fila enviar ainda: espera ela aparecer, e so desiste (jogo em que a procura nao acha) depois de 60 quadros
+    if (!dele && g_presents < 60)
+        return nullptr;
     ID3D12CommandQueue* q = dele ? dele : t_ultimaFila ? t_ultimaFila : g_ultimaFila.load();
-    if (q && !dito)
+    static ID3D12CommandQueue* dita = nullptr;
+    if (q && q != dita)
     {
-        dito = true;
-        LogModulo("captura da API: fila do D3D12 %s", dele ? "achada no swapchain" : "pela ultima lista enviada");
+        dita = q;
+        wchar_t nome[64] = {};
+        UINT tam = sizeof nome - sizeof(wchar_t);
+        q->GetPrivateData(WKPDID_D3DDebugObjectNameW, &tam, nome);
+        LogModulo("captura da API: fila do D3D12 \"%ls\" (%s)", nome, q == dele ? "achada no swapchain" : "pela ultima lista enviada");
     }
     return q;
 }
 
 // ---- o Present ----
+// geracao de quadros do jogo = mais Presents que despachos do FSR
+std::atomic<bool> g_fgAtiva{false};
+void MedeGeracao()
+{
+    static uint64_t presents = 0, marcaP = 0, marcaD = 0;
+    if (++presents - marcaP < 30)
+        return;
+    const uint64_t d = g_despachosFsr.load(), nd = d - marcaD, np = presents - marcaP;
+    const bool fg = nd >= 5 && double(np) / double(nd) > 1.5;
+    marcaP = presents;
+    marcaD = d;
+    if (fg != g_fgAtiva.load())
+        LogModulo("geracao de quadros do jogo %s (%llu Presents, %llu despachos do FSR)", fg ? "ligada" : "desligada", (unsigned long long)np, (unsigned long long)nd);
+    g_fgAtiva.store(fg);
+}
+
 thread_local int t_dentro = 0; // Present1 pode passar pelo Present
 dlss5ov::LimiteFps g_limite;
+
+// com nome: numa falha de pagina da GPU o DRED diz se e o back buffer real (o jogo nao ve este swapchain com a geracao de quadros)
+void NomeiaBackBuffers(IDXGISwapChain* sc)
+{
+    static IDXGISwapChain* visto = nullptr;
+    if (sc == visto)
+        return;
+    visto = sc;
+    DXGI_SWAP_CHAIN_DESC sd{};
+    if (FAILED(sc->GetDesc(&sd)))
+        return;
+    for (UINT i = 0; i < sd.BufferCount; ++i)
+    {
+        ComPtr<ID3D12Resource> b;
+        if (SUCCEEDED(sc->GetBuffer(i, IID_PPV_ARGS(&b))))
+            b->SetName(L"DLSS5: back buffer real");
+    }
+}
 
 void NoPresent(IDXGISwapChain* sc, UINT flags)
 {
@@ -416,13 +964,22 @@ void NoPresent(IDXGISwapChain* sc, UINT flags)
     std::unique_lock<std::mutex> lk(g_mx, std::try_to_lock);
     if (!lk.owns_lock())
         return;
+    NomeiaBackBuffers(sc);
+    MedeGeracao();
     const ULONGLONG agora = GetTickCount64();
     g_cab->batimentoJogo = agora;
     if (agora - g_cab->batimentoOverlay >= 1000)
     {
         // o overlay fechou: a VRAM volta para o jogo
-        if (agora - g_vivoEm > 5000 && g_cab->geracao)
-            g_cab->api == 12 ? Solta12() : Solta11();
+        if (agora - g_vivoEm > 5000)
+        {
+            if (g_cab->geracao)
+                g_cab->api == 12 ? Solta12() : Solta11();
+            if (g_prof12[0])
+                SoltaProf12();
+            if (g_11.prof[0])
+                SoltaProf11();
+        }
         return;
     }
     if (agora - g_vivoEm >= 1000)
@@ -440,6 +997,30 @@ void NoPresent(IDXGISwapChain* sc, UINT flags)
     else if (agora - g_alvoVistoEm < 1000 || sd.BufferDesc.Width < 320 || sd.BufferDesc.Height < 200)
         return;
     g_cab->janelaSwap = uint64_t(reinterpret_cast<uintptr_t>(raiz));
+    // so o Present da janela copiada fecha o quadro: o de uma segunda janela o fechava no meio
+    ++g_presents;
+    {
+        static ULONGLONG vramEm = 0;
+        if (g_12.dev && agora - vramEm >= 2000)
+        {
+            vramEm = agora;
+            char vram[64];
+            dlss5ov::TextoVramJogo(g_12.dev.Get(), vram, sizeof vram);
+            LogModulo("%s; geracao de quadros %s", vram, g_fgAtiva.load() ? "ligada" : "desligada");
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lkp(g_mxProf);
+        FechaQuadroAlvoProf();
+    }
+    // sem pedir profundidade por um tempo (nenhuma lista do jogo ainda a usa): a VRAM volta
+    if (!g_cab->querProf && g_presents - g_profUltimaCopia > 16)
+    {
+        if (g_prof12[0])
+            SoltaProf12();
+        if (g_11.prof[0])
+            SoltaProf11();
+    }
     ComPtr<ID3D12Device> d12;
     ComPtr<ID3D11Device> d11;
     if (SUCCEEDED(sc->GetDevice(IID_PPV_ARGS(&d12))))
@@ -477,7 +1058,8 @@ template <int I> HRESULT STDMETHODCALLTYPE GPresent(IDXGISwapChain* sc, UINT syn
     ++t_dentro;
     const HRESULT hr = oPresent[I](sc, sync, flags);
     --t_dentro;
-    if (!t_dentro && !(flags & DXGI_PRESENT_TEST))
+    // com a geracao do jogo, esta e a thread de ritmo dela: dormir aqui atrapalha a geracao; o teto vai no despacho do FSR, nos quadros renderizados
+    if (!t_dentro && !(flags & DXGI_PRESENT_TEST) && !g_fgAtiva.load())
         g_limite.Espera(g_cab);
     return hr;
 }
@@ -487,7 +1069,8 @@ template <int I> HRESULT STDMETHODCALLTYPE GPresent1(IDXGISwapChain1* sc, UINT s
     ++t_dentro;
     const HRESULT hr = oPresent1[I](sc, sync, flags, p);
     --t_dentro;
-    if (!t_dentro && !(flags & DXGI_PRESENT_TEST))
+    // com a geracao do jogo, esta e a thread de ritmo dela: dormir aqui atrapalha a geracao; o teto vai no despacho do FSR, nos quadros renderizados
+    if (!t_dentro && !(flags & DXGI_PRESENT_TEST) && !g_fgAtiva.load())
         g_limite.Espera(g_cab);
     return hr;
 }
@@ -564,6 +1147,17 @@ bool Engancha11(IDXGIFactory2* f, HWND j)
     ComPtr<IDXGISwapChain1> sc = SwapchainAuxiliar(d.Get(), f, j);
     if (!sc)
         return false;
+    ComPtr<ID3D11DeviceContext> ctx;
+    d->GetImmediateContext(&ctx);
+    if (ctx)
+    {
+        void** vt = *reinterpret_cast<void***>(ctx.Get());
+        oAlvos = reinterpret_cast<PfnAlvos>(vt[33]); // OMSetRenderTargets
+        DetourTransactionBegin();
+        DetourUpdateThread(GetCurrentThread());
+        DetourAttach(reinterpret_cast<PVOID*>(&oAlvos), reinterpret_cast<PVOID>(&GAlvos));
+        DetourTransactionCommit();
+    }
     Engancha(0, sc.Get());
     return true;
 }
@@ -579,7 +1173,7 @@ bool Engancha12(IDXGIFactory2* f, HWND j)
     if (!sc)
         return false;
     g_filaDoSwap = SUCCEEDED(sc->GetDevice(IID_PPV_ARGS(&daDxgi))) && daDxgi.Get() == q.Get();
-    if (!g_filaDoSwap)
+    // sempre: e no envio que a profundidade ganha o numero do quadro
     {
         void** vt = *reinterpret_cast<void***>(q.Get());
         oExecuta = reinterpret_cast<PfnExecuta>(vt[10]);
@@ -590,6 +1184,21 @@ bool Engancha12(IDXGIFactory2* f, HWND j)
     }
     if (g_filaDoSwap)
         LogModulo("captura da API: fila do D3D12 pelo GetDevice do swapchain");
+    {
+        ComPtr<ID3D12CommandAllocator> al;
+        ComPtr<ID3D12GraphicsCommandList> cl;
+        if (SUCCEEDED(d->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&al))) &&
+            SUCCEEDED(d->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, al.Get(), nullptr, IID_PPV_ARGS(&cl))))
+        {
+            cl->Close();
+            void** vt = *reinterpret_cast<void***>(cl.Get());
+            oBarreira = reinterpret_cast<PfnBarreira>(vt[26]); // ResourceBarrier
+            DetourTransactionBegin();
+            DetourUpdateThread(GetCurrentThread());
+            DetourAttach(reinterpret_cast<PVOID*>(&oBarreira), reinterpret_cast<PVOID>(&GBarreira));
+            DetourTransactionCommit();
+        }
+    }
     Engancha(1, sc.Get());
     return true;
 }
@@ -623,6 +1232,27 @@ DWORD WINAPI Trabalho(void*)
 } // namespace
 
 // a memoria compartilhada sai antes da DLL terminar de carregar: o overlay abre logo depois da injecao
+// o overlay da captura da API esta ligado
+bool OverlayDaApiVivo()
+{
+    return g_cab && GetTickCount64() - g_cab->batimentoOverlay < 5000;
+}
+
+// do despacho do FSR: com a geracao do jogo, o teto de FPS fica aqui
+void LimiteNoDespacho()
+{
+    if (g_cab && g_fgAtiva.load())
+        g_limite.Espera(g_cab);
+}
+
+// do despacho do FSR (Modulo.cpp): a profundidade que o jogo entrega a ele
+void NotaProfFsr(ID3D12Resource* r)
+{
+    g_profFsr.store(r);
+    g_profFsrEm.store(g_presents);
+    g_despachosFsr.fetch_add(1);
+}
+
 void IniciaCapturaApi()
 {
     wchar_t nome[96];

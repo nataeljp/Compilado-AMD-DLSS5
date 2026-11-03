@@ -39,6 +39,10 @@ void FonteApi::SoltaTexturas()
     cerca.Reset();
     for (auto& t : cor)
         t.r.Reset();
+    for (auto& t : prof)
+        t.r.Reset();
+    profGeracao = 0;
+    profPega = nullptr;
 }
 
 void FonteApi::Fecha()
@@ -133,8 +137,71 @@ bool FonteApi::Pega(Tex*& t, uint64_t& n)
     n = ultimoPego = maior;
     geracaoPega = geracao;
     t = &cor[s];
+    profPega = nullptr;
+    const uint32_t gp = cab->profGeracao;
+    if (gp && gp != profGeracao)
+    {
+        bool ok = true;
+        wchar_t nome[128];
+        if (profGeracao)
+            gpu->Espera(); // as listas ainda podem ler as velhas
+        for (auto& x : prof)
+            x.r.Reset();
+        for (uint32_t i = 0; ok && i < cab->profSlots && i < dlss5ov::kSlotsProf; ++i)
+        {
+            dlss5ov::NomeRecursoApi(nome, 128, pid, gp, L"prof", i);
+            HANDLE h = nullptr;
+            ok = SUCCEEDED(gpu->dev->OpenSharedHandleByName(nome, GENERIC_ALL, &h));
+            if (ok)
+            {
+                ok = SUCCEEDED(gpu->dev->OpenSharedHandle(h, IID_PPV_ARGS(&prof[i].r)));
+                CloseHandle(h);
+            }
+            prof[i].w = cab->profW, prof[i].h = cab->profH, prof[i].fmt = DXGI_FORMAT_R32_FLOAT;
+        }
+        if (ok)
+            profGeracao = gp, Log("api", Fmt("profundidade do jogo: %ux%u", cab->profW, cab->profH));
+    }
+    // a profundidade deste quadro, em qualquer slot; a GPU do jogo terminou a copia antes da cerca dele
+    for (uint32_t p = 0; gp && gp == profGeracao && p < dlss5ov::kSlotsProf && !profPega; ++p)
+        if (cab->quadroProf[p] == maior && prof[p].r)
+        {
+            prof[p].estado = D3D12_RESOURCE_STATE_COMMON;
+            profPega = &prof[p];
+        }
     cerca->SetEventOnCompletion(maior + 1, pronto);
     return true;
+}
+
+void FonteApi::AvaliaProf(float cobertura)
+{
+    if (!cab || cab->profExata || cab->profTroca != cab->profTrocaFeita)
+    {
+        profVazia = 0;
+        return;
+    }
+    // deu a volta em todos sem achar a cena (menu, ceu): trocar de buffer custa; espera antes de tentar de novo
+    if (cab->profCiclos != profCiclosVistos)
+    {
+        profCiclosVistos = cab->profCiclos;
+        profEspera = 300;
+    }
+    if (profEspera > 0)
+    {
+        --profEspera;
+        profVazia = 0;
+        return;
+    }
+    if (cobertura >= 0.5f)
+    {
+        profVazia = 0;
+        return;
+    }
+    if (++profVazia < 20)
+        return;
+    profVazia = 0;
+    Log("api", Fmt("buffer de profundidade quase vazio (%.0f%% da tela): pedindo outro ao modulo", cobertura * 100.f));
+    cab->profTroca = cab->profTroca + 1;
 }
 
 void FonteApi::Consumido(uint64_t n)

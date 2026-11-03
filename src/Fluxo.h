@@ -34,6 +34,7 @@ class Fluxo
         float perto = 0, longe = 0; // 0 = desconhecida
         float fovY = 0;             // radianos (o que o jogo passa ao FSR); 0 = desconhecido: compara o Z da camera
         bool invertida = true, infinita = true, reset = false;
+        float jitterX = 0, jitterY = 0; // pixels de render: a profundidade e o movimento vem deslocados, a cor do FSR nao
     };
     void DoJogo(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device* d, Tex& movJogo, Tex& profJogo,
                 const Camera& cam);

@@ -386,9 +386,11 @@ cbuffer K : register(b0)
     uint profW; uint profH; uint temAnt; uint invertida;
     float corW; float corH; float perto; float longe;
     uint infinita; float tanY; float aspecto; uint pad2;
+    float jitU; float jitV; uint pad3; uint pad4;
 };
 Texture2D<float2> movJogo : register(t0); // pixels da cor, do atual ao anterior
 Texture2D<float> profJogo : register(t1);
+SamplerState amostra : register(s0);
 RWTexture2D<float2> mov : register(u0);   // pixels da rede
 RWTexture2D<float> zAtual : register(u1);
 RWByteAddressBuffer contagem : register(u2); // [0] pixels com profundidade < 0,5, [4] pixels (amostra 1 em 16x16)
@@ -426,8 +428,10 @@ float Radial(float z, float2 uv)
 {
     if (p.x >= w || p.y >= h) return;
     const float2 uv = (p + 0.5) / float2(w, h);
+    // a cor do FSR nao tem o jitter do quadro; a profundidade e o movimento tem
+    const float2 uvJ = uv + float2(jitU, jitV);
     const int2 lim = int2(profW, profH) - 1;
-    const int2 pp = clamp(int2(uv * float2(profW, profH)), 0, lim);
+    const int2 pp = clamp(int2(uvJ * float2(profW, profH)), 0, lim);
     float zMin = CEU * 2.0;
     int2 perto3 = pp;
     [unroll] for (int dy = -1; dy <= 1; ++dy)
@@ -443,11 +447,35 @@ float Radial(float z, float2 uv)
         contagem.InterlockedAdd(0, dc < 0.5 ? 1u : 0u);
         contagem.InterlockedAdd(4, 1u);
     }
-    const float zc = Radial(Dist(dc), uv);
+    // interpolada na profundidade que o jogo escreveu (linear na tela para um plano): o pixel mais proximo, com ela menor que a rede, faz degraus
+    const float zLin = Dist(profJogo.SampleLevel(amostra, uvJ, 0));
+    // na silhueta, interpolar inventa uma superficie entre o objeto e o fundo: ali, o pixel mais proximo
+    const float zc = Radial(zMin < 0.95 * zLin ? Dist(dc) : zLin, uv);
     const float2 uvM = (perto3 + 0.5) / float2(profW, profH);
     const int2 pm = clamp(int2(uvM * float2(movW, movH)), 0, int2(movW, movH) - 1);
-    float2 m = movJogo.Load(int3(pm, 0)) * float2(float(w) / corW, float(h) / corH);
-    m = all(isfinite(m)) ? m : 0;
+    float2 m;
+    if (zMin >= 0.95 * zLin)
+    {
+        // superficie sem nada mais perto em volta: o movimento interpolado entre pixels dela
+        const float2 t = uvJ * float2(movW, movH) - 0.5;
+        const int2 b0 = int2(floor(t));
+        const float2 f = t - float2(b0);
+        float2 soma = 0.0;
+        float pesos = 0.0;
+        [unroll] for (int j = 0; j < 2; ++j)
+            [unroll] for (int i = 0; i < 2; ++i)
+            {
+                const int2 q = clamp(b0 + int2(i, j), 0, int2(movW, movH) - 1);
+                const float zv = Dist(profJogo.SampleLevel(amostra, (float2(q) + 0.5) / float2(movW, movH), 0));
+                const float peso = (i ? f.x : 1.0 - f.x) * (j ? f.y : 1.0 - f.y) * (abs(zv - zLin) <= 0.05 * zLin ? 1.0 : 1e-3) + 1e-6;
+                soma += movJogo.Load(int3(q, 0)) * peso;
+                pesos += peso;
+            }
+        m = soma / pesos * float2(float(w) / corW, float(h) / corH);
+    }
+    else
+        m = movJogo.Load(int3(pm, 0)) * float2(float(w) / corW, float(h) / corH); // a borda: o do objeto da frente, como o FSR
+    m = all(isfinite(m)) && all(abs(m) < 2.0 * float(max(w, h))) ? m : 0; // o Cyberpunk mandou +-65504 num quadro
     mov[p] = m;
     zAtual[p] = zc;
     // os 4 pixels do quadro anterior em volta de onde este ponto estava (distancia positiva: a ordem de asuint e a do float)

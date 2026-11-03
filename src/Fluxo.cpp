@@ -40,7 +40,7 @@ void Fluxo::Cria(ID3D12Device* d)
     pEstat.Cria(d, hlsl::Estatisticas, "CSEstatisticas", 4, 1, 8, "fluxo estatisticas");
     pGradiente.Cria(d, hlsl::Gradiente, "CSGradiente", 1, 1, 8, "fluxo gradiente");
     pRefina.Cria(d, hlsl::Refina, "CSRefina", 4, 1, 8, "fluxo refina");
-    pDoJogo.Cria(d, hlsl::DoJogo, "CSDoJogo", 2, 4, 16, "movimento do jogo");
+    pDoJogo.Cria(d, hlsl::DoJogo, "CSDoJogo", 2, 4, 20, "movimento do jogo");
     pLimpaRecon.Cria(d, hlsl::LimpaRecon, "CSLimpaRecon", 0, 1, 2, "profundidade reconstruida (zera)");
     pConfJogo.Cria(d, hlsl::ConfJogo, "CSConfJogo", 4, 1, 4, "confianca do jogo");
     auto buf = [&](D3D12_HEAP_TYPE t, D3D12_RESOURCE_STATES e, D3D12_RESOURCE_FLAGS f, ComPtr<ID3D12Resource>& r) {
@@ -345,9 +345,11 @@ void Fluxo::DoJogo(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device
         UINT infinita;
         float tanY, aspecto;
         UINT pad2;
+        float jitU, jitV;
+        UINT pad3, pad4;
     } k{w, h, movJogo.w, movJogo.h, profJogo.w, profJogo.h, zValido ? 1u : 0u, cam.invertida ? 1u : 0u,
         cam.corW, cam.corH, cam.perto, cam.longe, cam.infinita ? 1u : 0u, dlss5ov::TanMeioFov(cam.fovY),
-        cam.corH > 0.f ? cam.corW / cam.corH : 0.f, 0};
+        cam.corH > 0.f ? cam.corW / cam.corH : 0.f, 0, cam.jitterX / float(profJogo.w), cam.jitterY / float(profJogo.h), 0, 0};
     // profundidade reconstruida: zera, cada ponto deste quadro espalha a distancia (DoJogo) e a confianca compara
     const UINT kr[2] = {w, h};
     recon.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);

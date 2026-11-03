@@ -27,6 +27,14 @@ class FonteApi
     bool Pega(Tex*& t, uint64_t& n);
     // a GPU do overlay terminou de ler o quadro n: o jogo pode reescrever o slot
     void Consumido(uint64_t n);
+    // a profundidade do jogo do quadro entregue por Pega, como o jogo a escreveu (R32F), se houver
+    Tex* Prof() { return profPega; }
+    void QuerProf(bool v) { if (cab) cab->querProf = v ? 1u : 0u; }
+    // DXGI_FORMAT do buffer de profundidade da tela que o modulo nao consegue copiar; 0 = nenhum
+    UINT ProfRecusada() const { return cab ? cab->profRecusa : 0; }
+    bool ProfExata() const { return cab && cab->profExata; }
+    // a fracao da tela com alguma coisa na profundidade entregue: quase nada por muitos quadros, pede outro buffer ao modulo
+    void AvaliaProf(float cobertura);
 
   private:
     bool AbreGeracao();
@@ -37,8 +45,12 @@ class FonteApi
     dlss5ov::CabApi* cab = nullptr;
     uint32_t geracao = 0, geracaoPega = 0;
     ComPtr<ID3D12Fence> cerca;
-    Tex cor[dlss5ov::kSlotsApi];
+    Tex cor[dlss5ov::kSlotsApi], prof[dlss5ov::kSlotsProf];
+    Tex* profPega = nullptr;
+    uint32_t profGeracao = 0;
     uint64_t ultimoPego = 0;
+    int profVazia = 0, profEspera = 0;
+    uint32_t profCiclosVistos = 0;
 };
 
 // O teto de FPS do jogo (buffer/LimiteFps.h): esta memoria existe em todo jogo com o modulo ou a camada dentro, tambem na captura de buffer

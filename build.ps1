@@ -24,4 +24,5 @@ if ($LASTEXITCODE -ne 0) { "rc falhou"; exit 1 }
 $cl = "cl $flags /Fo`"$raiz\obj\\`" /Fe`"$Saida`" $fontes $objsImgui `"$raiz\obj\DLSS5Overlay.res`" /link /SUBSYSTEM:WINDOWS $libs"
 cmd /c "`"$vs`" >nul 2>nul & $cl" 2>&1 | Tee-Object -FilePath "$raiz\obj\build.log" | Where-Object { $_ -match 'error|warning C4[0-9]{3}' } | Select-Object -First 60
 if ($LASTEXITCODE -ne 0) { "build falhou ($LASTEXITCODE)"; exit 1 }
+Copy-Item "$raiz\externo\fidelityfx_sdk_240\signedbin\amd_fidelityfx_loader_dx12.dll", "$raiz\externo\fidelityfx_sdk_240\signedbin\amd_fidelityfx_denoiser_dx12.dll" (Split-Path $Saida) -Force
 "ok: $Saida"

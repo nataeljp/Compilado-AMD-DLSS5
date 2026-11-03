@@ -1,4 +1,5 @@
 #include "ClienteBuffer.h"
+#include "Vram.h"
 #include "DenoiseHlsl.h"
 #include <d3dcompiler.h>
 #include <dxgi1_4.h>
@@ -722,7 +723,12 @@ bool ClienteBuffer::CriaTex(Com<ID3D12Resource>& t, UINT w, UINT h, DXGI_FORMAT 
     rd.Format = f;
     rd.SampleDesc.Count = 1;
     rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
-    HRESULT hr = CriaResidente(rd, D3D12_HEAP_FLAG_SHARED, D3D12_RESOURCE_STATE_COMMON, t);
+    // DLSS5_TEX_RAM=1: na RAM (Vram.h); o driver recusando, na VRAM
+    D3D12_HEAP_PROPERTIES ram = HeapDaRam();
+    t.Reset();
+    HRESULT hr = QuerRam() ? dev->CreateCommittedResource(&ram, D3D12_HEAP_FLAG_SHARED, &rd, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&t)) : E_FAIL;
+    if (FAILED(hr))
+        hr = CriaResidente(rd, D3D12_HEAP_FLAG_SHARED, D3D12_RESOURCE_STATE_COMMON, t);
     if (FAILED(hr))
     {
         NotaFalha("textura", qual, hr);

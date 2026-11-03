@@ -93,33 +93,28 @@ void Config::Carrega(const std::wstring& arquivo)
     B("sincronizaRedeLenta", sincronizaRedeLenta);
     I("limiteFpsJogo", limiteFpsJogo);
     limiteFpsJogo = limiteFpsJogo < 0 ? 0 : limiteFpsJogo > 240 ? 240 : limiteFpsJogo;
-    B("dnJogo", dnJogo);
     F("dnCas", dnCas);
     I("dnVista", dnVista); // so para os testes: o painel nao grava
     B("redePequena", redePequena);
     F("forca", forca);
-    F("dnReconstrucao", dnReconstrucao);
-    F("dnAcumulacao", dnAcumulacao);
-    F("dnRecorte", dnRecorte);
-    F("dnBordas", dnBordas);
-    I("dnBordasPasses", dnBordasPasses);
-    dnBordasPasses = dnBordasPasses < 1 ? 1 : dnBordasPasses > 3 ? 3 : dnBordasPasses;
-    F("dnBordasSigma", dnBordasSigma);
+    F("dnRegenForca", dnRegenForca);
+    B("dnRegenProf", dnRegenProf);
+    I("dnRegenModo", dnRegenModo);
+    dnRegenModo = dnRegenModo < 0 || dnRegenModo > 2 ? 1 : dnRegenModo;
+    F("dnRegenNormais", dnRegenParam[0]);
+    F("dnRegenEstabilidade", dnRegenParam[1]);
+    F("dnRegenRadiancia", dnRegenParam[2]);
+    F("dnRegenRecorte", dnRegenParam[3]);
+    F("dnRegenGaussiana", dnRegenParam[4]);
+    F("dnRegenOclusao", dnRegenParam[5]);
+    // as faixas do sample da AMD (versoes antigas deixavam passar delas)
+    dnRegenParam[0] = std::clamp(dnRegenParam[0], 0.f, 1.f);
+    dnRegenParam[1] = std::clamp(dnRegenParam[1], 0.f, 1.f);
+    dnRegenParam[4] = std::clamp(dnRegenParam[4], 0.f, 1.f);
+    dnRegenParam[5] = std::clamp(dnRegenParam[5], 0.01f, 0.05f);
     I("formatoCor", formatoCor);
     formatoCor = formatoCor < 0 || formatoCor > 4 ? 0 : formatoCor;
-    if (m.find("dnAtivo") != m.end())
-        B("dnAtivo", dnAtivo);
-    else
-    {
-        // arquivo de antes da chave: as forcas eram o liga/desliga. Todas em 0 viram os padroes novos, desligado
-        dnAtivo = dnReconstrucao > 0.f || dnAcumulacao > 0.f || dnBordas > 0.f;
-        if (!dnAtivo)
-        {
-            const Config p;
-            dnReconstrucao = p.dnReconstrucao, dnAcumulacao = p.dnAcumulacao, dnRecorte = p.dnRecorte, dnBordas = p.dnBordas;
-            dnBordasPasses = p.dnBordasPasses, dnBordasSigma = p.dnBordasSigma;
-        }
-    }
+    B("dnAtivo", dnAtivo);
     I("ponte", ponte);
     F("brancoNits", brancoNits);
     F("preLuz", preLuz);
@@ -170,18 +165,20 @@ std::string Config::Texto() const
     f << "  \"fonte\": " << fonte << ",\n";
     f << "  \"sincronizaRedeLenta\": " << b(sincronizaRedeLenta) << ",\n";
     f << "  \"limiteFpsJogo\": " << limiteFpsJogo << ",\n";
-    f << "  \"dnJogo\": " << b(dnJogo) << ",\n";
     f << "  \"dnCas\": " << dnCas << ",\n";
     f << "  \"redePequena\": " << b(redePequena) << ",\n";
     f << "  \"forca\": " << forca << ",\n";
     f << "  \"formatoCor\": " << formatoCor << ",\n";
     f << "  \"dnAtivo\": " << b(dnAtivo) << ",\n";
-    f << "  \"dnReconstrucao\": " << dnReconstrucao << ",\n";
-    f << "  \"dnAcumulacao\": " << dnAcumulacao << ",\n";
-    f << "  \"dnRecorte\": " << dnRecorte << ",\n";
-    f << "  \"dnBordas\": " << dnBordas << ",\n";
-    f << "  \"dnBordasPasses\": " << dnBordasPasses << ",\n";
-    f << "  \"dnBordasSigma\": " << dnBordasSigma << ",\n";
+    f << "  \"dnRegenForca\": " << dnRegenForca << ",\n";
+    f << "  \"dnRegenProf\": " << b(dnRegenProf) << ",\n";
+    f << "  \"dnRegenModo\": " << dnRegenModo << ",\n";
+    f << "  \"dnRegenNormais\": " << dnRegenParam[0] << ",\n";
+    f << "  \"dnRegenEstabilidade\": " << dnRegenParam[1] << ",\n";
+    f << "  \"dnRegenRadiancia\": " << dnRegenParam[2] << ",\n";
+    f << "  \"dnRegenRecorte\": " << dnRegenParam[3] << ",\n";
+    f << "  \"dnRegenGaussiana\": " << dnRegenParam[4] << ",\n";
+    f << "  \"dnRegenOclusao\": " << dnRegenParam[5] << ",\n";
     f << "  \"ponte\": " << ponte << ",\n";
     f << "  \"brancoNits\": " << brancoNits << ",\n";
     f << "  \"preLuz\": " << preLuz << ",\n";

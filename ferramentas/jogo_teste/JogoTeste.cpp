@@ -89,6 +89,10 @@ struct Tex
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
 };
 
+// --lastro G (com --cubo): G GB de VRAM em uso a cada quadro, para encher o orcamento como um jogo grande
+// --residencia (com --cubo): a cada 30 quadros, como um jogo que gerencia a VRAM: pergunta o orcamento, Evict e MakeResident num recurso, solta os tiles de outro (os ganchos do modulo)
+// --prof-isca (com --cubo): como a boate do Cyberpunk, antes da cena um buffer do mesmo tamanho, vazio
+// --prof2 (com --cubo): como o Cyberpunk, um segundo buffer de profundidade no tamanho da saida, depois do da cena (o da cena e o menor)
 // --hud (com --como-jogo): depois do FSR, como um jogo -- tonemap (compute) numa textura no formato da tela, um
 // pos-efeito opcional (--pos grao: ruido na tela toda; --pos nitidez: so nas bordas, o resto igual bit a bit) e o HUD
 // desenhado por cima com mistura (painel translucido com linhas, barra e mira); o resultado vai para o backbuffer.
@@ -198,6 +202,9 @@ int wmain(int argc, wchar_t** argv)
     }
     bool hud = false, cubo = false;
     UINT64 verdade = 0; // --verdade Q (com --cubo --hud): grava a verdade dos instantes Q-1 + k/N (k = 0..N) e sai
+    bool prof2Ligado = false, iscaLigada = false;
+    int lastroGb = 0;
+    bool residenciaLigada = false;
     float giro = 120.f; // --giro G (com --cubo): graus por segundo da camera
     bool pontilhado = false; // --pontilhado (com --cubo): os cubos que cruzam pontilhados, como cabelo
     bool fundoLiso = false;  // --fundo-liso (com --cubo): a sala sem o xadrez
@@ -210,6 +217,11 @@ int wmain(int argc, wchar_t** argv)
     for (int i = 3; i < argc; ++i)
     {
         fsr4 |= !wcscmp(argv[i], L"--fsr4");
+        prof2Ligado |= !wcscmp(argv[i], L"--prof2");
+        iscaLigada |= !wcscmp(argv[i], L"--prof-isca");
+        residenciaLigada |= !wcscmp(argv[i], L"--residencia");
+        if (!wcscmp(argv[i], L"--lastro") && i + 1 < argc)
+            lastroGb = _wtoi(argv[i + 1]);
         if (!wcscmp(argv[i], L"--res") && i + 2 < argc)
             resW = UINT(_wtoi(argv[i + 1])), resH = UINT(_wtoi(argv[i + 2]));
         if (!wcscmp(argv[i], L"--grao") && i + 1 < argc)
@@ -371,6 +383,51 @@ int wmain(int argc, wchar_t** argv)
         cria(prof, DXGI_FORMAT_R32_TYPELESS, 4, false, RW, RH, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
     else
         cria(prof, DXGI_FORMAT_R32_FLOAT, 4, false, RW, RH);
+    std::vector<ComPtr<ID3D12Resource>> lastro;
+    ComPtr<ID3D12Resource> lastroDestino;
+    if (cubo && lastroGb > 0)
+    {
+        auto buf = [&](UINT64 tam, ComPtr<ID3D12Resource>& r) {
+            D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+            D3D12_RESOURCE_DESC rd{};
+            rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+            rd.Width = tam;
+            rd.Height = rd.DepthOrArraySize = rd.MipLevels = 1;
+            rd.SampleDesc.Count = 1;
+            rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+            Ck(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&r)), "lastro");
+        };
+        lastro.resize(size_t(lastroGb));
+        for (auto& b : lastro)
+            buf(1ull << 30, b);
+        buf(4096, lastroDestino);
+    }
+    ComPtr<ID3D12Resource> resComum, resTiles;
+    ComPtr<IDXGIAdapter3> resAdaptador;
+    if (cubo && residenciaLigada)
+    {
+        D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+        D3D12_RESOURCE_DESC rd{};
+        rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        rd.Width = 65536;
+        rd.Height = rd.DepthOrArraySize = rd.MipLevels = 1;
+        rd.SampleDesc.Count = 1;
+        rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        Ck(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&resComum)), "residencia: recurso");
+        rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        rd.Width = rd.Height = 1024;
+        rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        rd.Layout = D3D12_TEXTURE_LAYOUT_64KB_UNDEFINED_SWIZZLE;
+        Ck(dev->CreateReservedResource(&rd, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&resTiles)), "residencia: tiles");
+        ComPtr<IDXGIFactory4> fab;
+        Ck(CreateDXGIFactory1(IID_PPV_ARGS(&fab)), "residencia: fabrica");
+        Ck(fab->EnumAdapterByLuid(dev->GetAdapterLuid(), IID_PPV_ARGS(&resAdaptador)), "residencia: adaptador");
+    }
+    Tex prof2, isca;
+    if (cubo && iscaLigada)
+        cria(isca, DXGI_FORMAT_R32_TYPELESS, 4, false, RW, RH, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
+    if (cubo && prof2Ligado)
+        cria(prof2, DXGI_FORMAT_R32_TYPELESS, 4, false, W, H, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
     CenaCubo cena;
     if (cubo)
     {
@@ -841,6 +898,11 @@ int wmain(int argc, wchar_t** argv)
                 const UINT64 qc = UINT64(v) * N + i;
                 Ck(al->Reset(), "reset");
                 Ck(cl->Reset(al.Get(), nullptr), "list");
+                if (isca.r)
+                {
+                    barreira(isca.r.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+                    barreira(isca.r.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_COMMON);
+                }
                 barreira(cor.r.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_RENDER_TARGET);
                 barreira(mov.r.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_RENDER_TARGET);
                 barreira(prof.r.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_DEPTH_WRITE);
@@ -848,6 +910,25 @@ int wmain(int argc, wchar_t** argv)
                 barreira(cor.r.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
                 barreira(mov.r.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
                 barreira(prof.r.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                for (size_t b = 0; b < lastro.size(); ++b)
+                    cl->CopyBufferRegion(lastroDestino.Get(), 0, lastro[b].Get(), (qc * 65536ull + b * 4096ull) % ((1ull << 30) - 4096ull), 4096);
+                if (resAdaptador && qc % 30 == 0)
+                {
+                    DXGI_QUERY_VIDEO_MEMORY_INFO i{};
+                    Ck(resAdaptador->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &i), "residencia: orcamento");
+                    ID3D12Pageable* p[] = {resComum.Get()};
+                    Ck(dev->Evict(1, p), "residencia: Evict");
+                    Ck(dev->MakeResident(1, p), "residencia: MakeResident");
+                    const D3D12_TILE_RANGE_FLAGS f = D3D12_TILE_RANGE_FLAG_NULL;
+                    fila->UpdateTileMappings(resTiles.Get(), 1, nullptr, nullptr, nullptr, 1, &f, nullptr, nullptr, D3D12_TILE_MAPPING_FLAG_NONE);
+                    printf("residencia: orcamento visto %llu MB, usa %llu MB\n", (unsigned long long)(i.Budget >> 20), (unsigned long long)(i.CurrentUsage >> 20));
+                    fflush(stdout);
+                }
+                if (prof2.r)
+                {
+                    barreira(prof2.r.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+                    barreira(prof2.r.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_COMMON);
+                }
             }
             else
             {

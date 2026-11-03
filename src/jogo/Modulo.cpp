@@ -8,6 +8,9 @@
 //     da janela do jogo -- o movimento e os cliques vao para o painel e o jogo recebe zero (a mira nao mexe).
 // Registro em DLSS5Buffer.log ao lado da DLL.
 #include "../buffer/ClienteBuffer.h"
+#include "../buffer/Vram.h"
+#include <dxgi1_4.h>
+#include <intrin.h>
 #include "ffx_api.h"
 #include "ffx_upscale.h"
 #include <detours.h>
@@ -24,6 +27,9 @@
 #include <unordered_map>
 #include <vector>
 
+void NotaProfFsr(ID3D12Resource* r); // Apresenta.cpp
+void LimiteNoDespacho();              // Apresenta.cpp
+bool OverlayDaApiVivo();              // Apresenta.cpp
 namespace {
 
 std::mutex g_mx;
@@ -433,10 +439,240 @@ static_assert(sizeof(ffxDispatchDescUpscale) == 432 && offsetof(ffxDispatchDescU
               offsetof(ffxDispatchDescUpscale, output) == 312 && offsetof(ffxDispatchDescUpscale, renderSize) == 376 &&
               offsetof(ffxDispatchDescUpscale, reset) == 408 && offsetof(ffxDispatchDescUpscale, flags) == 428);
 
+// ---- o orcamento de VRAM que o jogo ve ----
+// As quedas com a geracao de quadros sao falha de pagina num recurso que existe e nao e nosso, sempre na mesma regiao da memoria da GPU, com o jogo a 94-96% do orcamento. Abrir o overlay encolhe esse
+// orcamento (medido no jogo de teste: 13,7 -> 11,8 GB). Enquanto o overlay estiver ligado, o jogo ve o orcamento sem esse desconto e nao entra num caminho de falta de memoria que sem o overlay ele
+// nao veria. Nada aqui limita a rede ou o overlay. A causa ainda nao esta provada: o log conta o que o jogo faz (Evict, tiles) e, se cair, o nome do recurso diz quem foi
+using PfnOrcamento = HRESULT(STDMETHODCALLTYPE*)(IDXGIAdapter3*, UINT, DXGI_MEMORY_SEGMENT_GROUP, DXGI_QUERY_VIDEO_MEMORY_INFO*);
+using PfnResidencia = HRESULT(STDMETHODCALLTYPE*)(ID3D12Device*, UINT, ID3D12Pageable* const*);
+using PfnTiles = void(STDMETHODCALLTYPE*)(ID3D12CommandQueue*, ID3D12Resource*, UINT, const D3D12_TILED_RESOURCE_COORDINATE*, const D3D12_TILE_REGION_SIZE*, ID3D12Heap*, UINT,
+                                          const D3D12_TILE_RANGE_FLAGS*, const UINT*, const UINT*, D3D12_TILE_MAPPING_FLAGS);
+PfnOrcamento oOrcamento = nullptr;
+PfnResidencia oResidente = nullptr, oTira = nullptr;
+PfnTiles oTiles = nullptr;
+size_t g_tamEu = 0;
+struct ContaResidencia
+{
+    std::atomic<uint64_t> perguntas{0}, tira{0}, tiraObj{0}, tiraEm{0}, residente{0}, residenteObj{0}, tiles{0}, tilesSemHeap{0};
+    std::atomic<UINT64> real{0}, visto{0}, uso{0};
+} g_res;
+
+void LogResidencia(const char* quando)
+{
+    const uint64_t em = g_res.tiraEm.load();
+    char ha[40] = "nunca";
+    if (em)
+        snprintf(ha, sizeof ha, "ha %llu ms", (unsigned long long)(GetTickCount64() - em));
+    Log("residencia%s: o jogo perguntou o orcamento %llu vezes (real %llu MB, ele ve %llu, usa %llu); Evict %llu vezes, %llu objetos, o ultimo %s; MakeResident %llu vezes, %llu objetos; "
+        "UpdateTileMappings %llu vezes, %llu soltando",
+        quando, (unsigned long long)g_res.perguntas.exchange(0), (unsigned long long)(g_res.real.load() >> 20), (unsigned long long)(g_res.visto.load() >> 20),
+        (unsigned long long)(g_res.uso.load() >> 20), (unsigned long long)g_res.tira.exchange(0), (unsigned long long)g_res.tiraObj.exchange(0), ha,
+        (unsigned long long)g_res.residente.exchange(0), (unsigned long long)g_res.residenteObj.exchange(0), (unsigned long long)g_res.tiles.exchange(0),
+        (unsigned long long)g_res.tilesSemHeap.exchange(0));
+}
+
+bool OverlayLigado()
+{
+    if (OverlayDaApiVivo())
+        return true;
+    const dlss5ov::Cabecalho* c = g_clienteOk ? g_cli.Cab() : g_cabNome;
+    return c && GetTickCount64() - c->batimentoOverlay < 5000;
+}
+
+HRESULT STDMETHODCALLTYPE Orcamento(IDXGIAdapter3* a, UINT no, DXGI_MEMORY_SEGMENT_GROUP grupo, DXGI_QUERY_VIDEO_MEMORY_INFO* info)
+{
+    const HRESULT hr = oOrcamento(a, no, grupo, info);
+    if (FAILED(hr) || !info || grupo != DXGI_MEMORY_SEGMENT_GROUP_LOCAL)
+        return hr;
+    // o log do modulo ve o numero real
+    const auto* ra = static_cast<const uint8_t*>(_ReturnAddress());
+    const auto* eu = reinterpret_cast<const uint8_t*>(g_eu);
+    if (ra >= eu && ra < eu + g_tamEu)
+        return hr;
+    ++g_res.perguntas;
+    g_res.real = info->Budget;
+    g_res.uso = info->CurrentUsage;
+    if (OverlayLigado())
+    {
+        DXGI_ADAPTER_DESC d{};
+        if (SUCCEEDED(a->GetDesc(&d)))
+            info->Budget = std::max(info->Budget, std::min(info->Budget + dlss5ov::kVramDoOverlay, UINT64(d.DedicatedVideoMemory)));
+    }
+    g_res.visto = info->Budget;
+    return hr;
+}
+
+void EnganchaOrcamento()
+{
+    Microsoft::WRL::ComPtr<IDXGIFactory4> f;
+    Microsoft::WRL::ComPtr<IDXGIAdapter1> a;
+    Microsoft::WRL::ComPtr<IDXGIAdapter3> a3;
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&f))) || FAILED(f->EnumAdapters1(0, &a)) || FAILED(a.As(&a3)))
+    {
+        Log("orcamento de VRAM: gancho nao entrou (sem o adaptador)");
+        return;
+    }
+    const auto* eu = reinterpret_cast<const uint8_t*>(g_eu);
+    g_tamEu = reinterpret_cast<const IMAGE_NT_HEADERS*>(eu + reinterpret_cast<const IMAGE_DOS_HEADER*>(eu)->e_lfanew)->OptionalHeader.SizeOfImage;
+    oOrcamento = reinterpret_cast<PfnOrcamento>((*reinterpret_cast<void***>(a3.Get()))[14]); // IDXGIAdapter3::QueryVideoMemoryInfo
+    DetourTransactionBegin();
+    DetourUpdateThread(GetCurrentThread());
+    DetourAttach(reinterpret_cast<PVOID*>(&oOrcamento), reinterpret_cast<PVOID>(&Orcamento));
+    Log("orcamento de VRAM: gancho %s", DetourTransactionCommit() == NO_ERROR ? "ok" : "falhou");
+}
+
+// ---- quem e o recurso da falha de pagina ----
+// O jogo nao da nome aos recursos dele, e o DRED so diz o nome. O que a AMD cria ja tem nome ("AMD FSR Replacement BackBuffer"...); o que e nosso tambem ("DLSS5Overlay")
+void Nomeia(void* r, const wchar_t* nome)
+{
+    if (!r)
+        return;
+    static std::mutex mx;
+    static std::unordered_map<void*, bool> vistos;
+    std::lock_guard<std::mutex> lk(mx);
+    if (vistos.size() < 4096 && vistos.emplace(r, true).second)
+        static_cast<ID3D12Resource*>(r)->SetName(nome);
+}
+
+HRESULT STDMETHODCALLTYPE Residente(ID3D12Device* d, UINT n, ID3D12Pageable* const* p)
+{
+    ++g_res.residente;
+    g_res.residenteObj += n;
+    for (UINT i = 0; i < n && i < 64; ++i)
+        if (p[i])
+            p[i]->SetName(L"DLSS5: voltou para a VRAM (MakeResident)");
+    return oResidente(d, n, p);
+}
+
+HRESULT STDMETHODCALLTYPE Tira(ID3D12Device* d, UINT n, ID3D12Pageable* const* p)
+{
+    ++g_res.tira;
+    g_res.tiraObj += n;
+    g_res.tiraEm = GetTickCount64();
+    for (UINT i = 0; i < n && i < 64; ++i)
+        if (p[i])
+            p[i]->SetName(L"DLSS5: o jogo tirou da VRAM (Evict)");
+    return oTira(d, n, p);
+}
+
+void STDMETHODCALLTYPE Tiles(ID3D12CommandQueue* q, ID3D12Resource* r, UINT nr, const D3D12_TILED_RESOURCE_COORDINATE* c, const D3D12_TILE_REGION_SIZE* t, ID3D12Heap* h, UINT nf,
+                             const D3D12_TILE_RANGE_FLAGS* f, const UINT* ini, const UINT* qt, D3D12_TILE_MAPPING_FLAGS fl)
+{
+    ++g_res.tiles;
+    if (!h)
+        ++g_res.tilesSemHeap;
+    Nomeia(r, L"DLSS5: recurso com tiles");
+    oTiles(q, r, nr, c, t, h, nf, f, ini, qt, fl);
+}
+
+void GanchoResidencia(ID3D12Device* d)
+{
+    Microsoft::WRL::ComPtr<ID3D12CommandQueue> q;
+    D3D12_COMMAND_QUEUE_DESC qd{};
+    void** vt = *reinterpret_cast<void***>(d);
+    oResidente = reinterpret_cast<PfnResidencia>(vt[34]);
+    oTira = reinterpret_cast<PfnResidencia>(vt[35]);
+    const bool temFila = SUCCEEDED(d->CreateCommandQueue(&qd, IID_PPV_ARGS(&q)));
+    DetourTransactionBegin();
+    DetourUpdateThread(GetCurrentThread());
+    DetourAttach(reinterpret_cast<PVOID*>(&oResidente), reinterpret_cast<PVOID>(&Residente));
+    DetourAttach(reinterpret_cast<PVOID*>(&oTira), reinterpret_cast<PVOID>(&Tira));
+    if (temFila)
+    {
+        oTiles = reinterpret_cast<PfnTiles>((*reinterpret_cast<void***>(q.Get()))[8]); // UpdateTileMappings
+        DetourAttach(reinterpret_cast<PVOID*>(&oTiles), reinterpret_cast<PVOID>(&Tiles));
+    }
+    Log("ganchos de residencia (Evict, MakeResident, UpdateTileMappings): %s", DetourTransactionCommit() == NO_ERROR ? "ok" : "falharam");
+}
+
+// As estruturas da geracao de quadros, as do ffx_framegeneration.h e do ffx_api_dx12.h do SDK (este modulo compila com os cabecalhos so do upscale)
+struct ConfigFg
+{
+    ffxConfigureDescHeader header;
+    void* swapChain;
+    void* presentCallback;
+    void* presentCallbackContexto;
+    void* geracaoCallback;
+    void* geracaoCallbackContexto;
+    bool ligada;
+    bool assincrona;
+    FfxApiResource semHud;
+};
+struct PreparaFg
+{
+    ffxDispatchDescHeader header;
+    uint64_t frameID;
+    uint32_t flags;
+    void* lista;
+    FfxApiDimensions2D render;
+    FfxApiFloatCoords2D jitter, escalaMov;
+    float dt;
+    bool reset;
+    float perto, longe, fov, metros;
+    FfxApiResource prof, mov;
+};
+struct UiFg
+{
+    ffxConfigureDescHeader header;
+    FfxApiResource ui;
+    uint32_t flags;
+};
+static_assert(offsetof(ConfigFg, semHud) == 64 && offsetof(PreparaFg, prof) == 88 && offsetof(PreparaFg, mov) == 136 && offsetof(UiFg, ui) == 16);
+constexpr uint64_t kTipoConfigFg = 0x00020002u, kTipoPreparaFg = 0x00020004u, kTipoUiFg = 0x00030002u;
+
+PfnFfxConfigure oConfigura = nullptr;
+ffxReturnCode_t Configura(ffxContext* ctx, const ffxConfigureDescHeader* desc)
+{
+    for (const auto* h = desc; h; h = h->pNext)
+    {
+        DizTipo("configuracao", h->type);
+        if (h->type == kTipoConfigFg)
+        {
+            const auto* c = reinterpret_cast<const ConfigFg*>(h);
+            Nomeia(c->semHud.resource, L"DLSS5: jogo, sem HUD para a geracao");
+            static int dito = -1;
+            const int agora = (c->ligada ? 1 : 0) | (c->assincrona ? 2 : 0) | (c->semHud.resource ? 4 : 0);
+            if (agora != dito)
+            {
+                dito = agora;
+                Log("geracao de quadros pelo jogo: %s, %s, cor sem HUD %s", c->ligada ? "ligada" : "desligada", c->assincrona ? "assincrona" : "na fila do jogo", c->semHud.resource ? "entregue" : "nao entregue");
+            }
+        }
+        else if (h->type == kTipoUiFg)
+            Nomeia(reinterpret_cast<const UiFg*>(h)->ui.resource, L"DLSS5: jogo, UI para a geracao");
+    }
+    return oConfigura(ctx, desc);
+}
+
+void NomeiaEntradas(const ffxDispatchDescHeader* desc)
+{
+    for (const auto* h = desc; h; h = h->pNext)
+        if (h->type == FFX_API_DISPATCH_DESC_TYPE_UPSCALE)
+        {
+            const auto* u = reinterpret_cast<const ffxDispatchDescUpscale*>(h);
+            Nomeia(u->color.resource, L"DLSS5: jogo, cor para o FSR");
+            Nomeia(u->depth.resource, L"DLSS5: jogo, profundidade para o FSR");
+            Nomeia(u->motionVectors.resource, L"DLSS5: jogo, movimento para o FSR");
+            Nomeia(u->exposure.resource, L"DLSS5: jogo, exposicao para o FSR");
+            Nomeia(u->reactive.resource, L"DLSS5: jogo, reativa para o FSR");
+            Nomeia(u->transparencyAndComposition.resource, L"DLSS5: jogo, transparencia para o FSR");
+            Nomeia(u->output.resource, L"DLSS5: jogo, saida do FSR");
+        }
+        else if (h->type == kTipoPreparaFg)
+        {
+            const auto* p = reinterpret_cast<const PreparaFg*>(h);
+            Nomeia(p->prof.resource, L"DLSS5: jogo, profundidade para a geracao");
+            Nomeia(p->mov.resource, L"DLSS5: jogo, movimento para a geracao");
+        }
+}
+
 ffxReturnCode_t Despacha(ffxContext* ctx, const ffxDispatchDescHeader* desc)
 {
     if (desc)
+    {
         DizTipo("despacho", desc->type);
+        NomeiaEntradas(desc);
+    }
     const ffxReturnCode_t r = oDespacha(ctx, desc);
     if (r != FFX_API_RETURN_OK || !desc || desc->type != FFX_API_DISPATCH_DESC_TYPE_UPSCALE)
         return r;
@@ -445,6 +681,8 @@ ffxReturnCode_t Despacha(ffxContext* ctx, const ffxDispatchDescHeader* desc)
     auto* cor = static_cast<ID3D12Resource*>(u->output.resource);
     auto* mov = static_cast<ID3D12Resource*>(u->motionVectors.resource);
     auto* prof = static_cast<ID3D12Resource*>(u->depth.resource);
+    NotaProfFsr(prof);
+    LimiteNoDespacho();
     if (!lista || !cor || !mov || !prof)
         return r;
     g_listaFsrNativa = dlss5ov::ListaNativa(lista); // o relato do dispositivo removido aponta se a lista e esta
@@ -457,6 +695,7 @@ ffxReturnCode_t Despacha(ffxContext* ctx, const ffxDispatchDescHeader* desc)
             d.Get()->AddRef(); // segurado: nunca solto
             g_devVigia = d.Get();
             GanchoFila(d.Get());
+            GanchoResidencia(d.Get());
         }
     });
     ContaQuadro();
@@ -592,6 +831,7 @@ ffxReturnCode_t Despacha(ffxContext* ctx, const ffxDispatchDescHeader* desc)
                     g_cli.ErroDenoise()[0] ? "; falhou: " : "", g_cli.ErroDenoise());
             if (const std::string v = g_cli.Vram(); !v.empty())
                 Log("memoria%s", v.c_str());
+            LogResidencia("");
             Log("FSR em %.1f s: %llu despachos (%.0f/s), render %ux%u..%ux%u, resets %llu, saida trocou %llu vezes, jitter max "
                 "%.2f | cliente: %llu quadros, %llu exportados, %llu com edicao (idade media %.1f, max %llu quadros) | "
                 "sem atraso: %llu esperas, media %.1f ms, max %.1f ms, %llu estouradas (prazo %llu, batimento %llu, "
@@ -787,6 +1027,7 @@ void RelataRemocao(ID3D12Device* d, HRESULT motivo)
         : motivo == DXGI_ERROR_DEVICE_RESET  ? " (GPU reiniciada)"
         : motivo == DXGI_ERROR_DEVICE_REMOVED ? " (removido)"
                                               : "");
+    LogResidencia(" na queda");
     Microsoft::WRL::ComPtr<ID3D12DeviceRemovedExtendedData> dred;
     if (FAILED(d->QueryInterface(IID_PPV_ARGS(&dred))))
     {
@@ -933,6 +1174,7 @@ DWORD WINAPI Vigia(void*)
 DWORD WINAPI Instala(void*)
 {
     LigaDred(); // antes de o jogo criar o dispositivo
+    EnganchaOrcamento();
     if (HANDLE t = CreateThread(nullptr, 0, Vigia, nullptr, 0, nullptr))
         CloseHandle(t);
     // os shaders do modulo compilam enquanto o jogo carrega (no primeiro quadro do FSR parariam o jogo por 14-25 s)
@@ -952,12 +1194,15 @@ DWORD WINAPI Instala(void*)
             {
                 oCriaContexto = reinterpret_cast<PfnFfxCreateContext>(GetProcAddress(m, "ffxCreateContext"));
                 oDespacha = reinterpret_cast<PfnFfxDispatch>(GetProcAddress(m, "ffxDispatch"));
+                oConfigura = reinterpret_cast<PfnFfxConfigure>(GetProcAddress(m, "ffxConfigure"));
                 if (!oCriaContexto || !oDespacha)
                     continue;
                 DetourTransactionBegin();
                 DetourUpdateThread(GetCurrentThread());
                 DetourAttach(reinterpret_cast<PVOID*>(&oCriaContexto), reinterpret_cast<PVOID>(&CriaContexto));
                 DetourAttach(reinterpret_cast<PVOID*>(&oDespacha), reinterpret_cast<PVOID>(&Despacha));
+                if (oConfigura)
+                    DetourAttach(reinterpret_cast<PVOID*>(&oConfigura), reinterpret_cast<PVOID>(&Configura));
                 const LONG r = DetourTransactionCommit();
                 char nome[MAX_PATH];
                 WideCharToMultiByte(CP_UTF8, 0, n, -1, nome, MAX_PATH, nullptr, nullptr);

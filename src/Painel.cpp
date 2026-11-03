@@ -1433,38 +1433,34 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         }
 
         // ---- denoise: passes do overlay depois da rede, sem tocar nela ----
-        // (na captura de buffer rodam dentro do jogo, no proprio quadro; na de video, no overlay)
-        Secao("DENOISE (FORA DA REDE)");
+        Secao("DENOISE: AMD RAY REGENERATION");
         Marca("Denoise ligado", &cfg.dnAtivo,
-              "Tira o grao da rede, na ideia do NRD da NVIDIA: filtra so a edicao da rede, no tamanho dela; a imagem do jogo nao passa "
-              "pelo filtro. Desligado nao gasta GPU nem VRAM; os ajustes ficam.", false);
+              "AMD FSR Ray Regeneration (FidelityFX SDK 2.4), o denoiser de machine learning da AMD. Exige RX 9000 ou mais nova. Desligado nao gasta GPU nem VRAM; os ajustes ficam.", false);
         ImGui::BeginDisabled(!cfg.dnAtivo);
-        Marca("Processar o jogo junto da rede", &cfg.dnJogo,
-              "Filtra o quadro pronto (jogo + rede) em vez de so a edicao da rede: tira tambem o ruido do proprio jogo, e pode suavizar o detalhe dele. Roda na resolucao da tela: mais GPU e VRAM. Para captura de video e da API; na de buffer o resultado cai no quadro seguinte, e ja mediu pior que desligado.");
-        Deslizador("Reconstrução", &cfg.dnReconstrucao, 0.f, 1.f, "%.3f",
-                   "Troca so o ponto da edicao da rede fora da faixa dos vizinhos do mesmo objeto pela estimativa dela; borda, "
-                   "linha e textura ficam intactas. 0 = desligada.", 1.f);
-        Deslizador("Acumulação", &cfg.dnAcumulacao, 0.f, 1.f, "%.3f",
-                   "Acumulacao temporal: junta as edicoes anteriores da rede, reposicionadas pelo movimento (o do jogo na captura de "
-                   "buffer; o fluxo optico na de video, que aloca mais VRAM). 1 = ate 95% de historico. 0 = desligada.", 1.f);
-        Deslizador("Recorte hist.", &cfg.dnRecorte, 0.5f, 3.f, "%.2f",
-                   "Quanto o historico pode se afastar do quadro atual, em desvios da vizinhanca: menor = menos rastro, maior = "
-                   "menos ruido.", 2.f);
-        Deslizador("Filtro bordas", &cfg.dnBordas, 0.f, 1.f, "%.3f",
-                   "Suaviza a edicao da rede sem atravessar as bordas da imagem do jogo e de profundidade (captura de buffer): "
-                   "o detalhe do jogo fica, o grao da rede sai. E o que tira o grao com a camera parada. 0 = desligado.", 1.f);
-        DeslizadorInt("Passes bordas", &cfg.dnBordasPasses, 1, 3, "%d",
-                      "Cada passe dobra o alcance do filtro: 2, 4 e 8 pixels da rede.", 2.f);
-        Deslizador("Tolerância", &cfg.dnBordasSigma, 0.5f, 4.f, "%.2f",
-                   "Diferenca de brilho na imagem do jogo que o filtro ainda atravessa: maior = suaviza mais, menor = preserva mais.", 2.f);
+        {
+            const char* entradas[] = {"Imagem inteira", "Brilho da rede, jogo como material", "Brilho da rede, sem material"};
+            ImGui::TextUnformatted("Entrada do denoiser");
+            ImGui::SetNextItemWidth(lc);
+            ImGui::Combo("##dnEntrada", &cfg.dnRegenModo, entradas, 3);
+            Dica("Imagem inteira: limpa jogo e rede juntos, e muda cores e realces (mede pior). Brilho da rede: filtra so o grao do ganho da rede; a curva de tom dela, o detalhe do jogo e o matiz ficam. Vale na hora.");
+        }
+        Marca("Usar a profundidade do jogo", &cfg.dnRegenProf,
+              "Buffer: profundidade e FOV do jogo. API: o buffer de profundidade do jogo (DX11 e DX12), com escala relativa; o estado diz se nao foi achada e por que. Video e Vulkan nao tem: fica fixa.");
+        Deslizador("Força", &cfg.dnRegenForca, 0.f, 1.f, "%.3f", "Mistura com a edicao sem filtro. 1 = so a filtrada.", 1.f);
+        Deslizador("Normais", &cfg.dnRegenParam[0], 0.f, 1.f, "%.3f", "Cross bilateral normal strength: quanto a diferenca de normal segura o filtro nas bordas. Normais calculadas da profundidade; sem profundidade, de frente. 0 = desliga.", 1.f);
+        Deslizador("Estabilidade", &cfg.dnRegenParam[1], 0.f, 1.f, "%.3f", "Stability bias: maior = acumulacao mais estavel e menos responsiva.", 1.f);
+        Deslizador("Radiância máx.", &cfg.dnRegenParam[2], 0.f, 65504.f, "%.0f", "Max radiance: teto do brilho que entra no denoiser.", 65504.f);
+        Deslizador("Recorte", &cfg.dnRegenParam[3], 0.f, 100.f, "%.2f", "Radiance clip std K: desvios permitidos antes de cortar o brilho.", 50.f);
+        Deslizador("Gaussiana", &cfg.dnRegenParam[4], 0.f, 1.f, "%.3f", "Gaussian kernel relaxation: relaxa o nucleo do filtro.", 0.f);
+        Deslizador("Oclusão", &cfg.dnRegenParam[5], 0.01f, 0.05f, "%.4f", "Disocclusion threshold: diferenca de profundidade que recomeca o historico.", 0.01f);
         Deslizador("CAS", &cfg.dnCas, 0.f, 1.f, "%.3f",
                    "Nitidez adaptativa da AMD na imagem final, depois do denoise: devolve o detalhe que o filtro levou e recua onde o contraste ja e alto. 0 = desligado.", 0.f);
         {
-            const char* vistas[] = {"Imagem final", "Edição antes do denoise", "Edição depois do denoise", "O que o denoise tirou (x8)", "Quadros acumulados"};
+            const char* vistas[] = {"Imagem final", "Visão geral (AMD)", "Movimento", "Movimento Z", "Profundidade", "Normais", "Confiança do histórico", "UV reprojetado", "Posição reconstruída", "Rede neural: entrada 0", "Rede neural: entrada 1", "Rede neural: entrada 2", "Brilho composto"};
             ImGui::TextUnformatted("Visão de depuração");
             ImGui::SetNextItemWidth(lc);
-            ImGui::Combo("##dnVista", &cfg.dnVista, vistas, 5);
-            Dica("Para ajustar: cinza = nao mexe. Em \"O que o denoise tirou\" deve aparecer grao, nao contorno de objeto: contorno e detalhe sendo perdido. Em \"Quadros acumulados\", escuro = pouco historico.");
+            ImGui::Combo("##dnVista", &cfg.dnVista, vistas, 13);
+            Dica("A visao de depuracao da AMD: mostra o que o denoiser recebeu. Sem profundidade do jogo, profundidade e normais sao fixas. Ligar ou desligar recomeca o historico.");
         }
         ImGui::EndDisabled();
 
@@ -1474,7 +1470,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
             int f = cfg.fonte == 1 || cfg.fonte == 2 ? cfg.fonte : 0;
             if (Segmentos("fonte", fontes, 3, &f, 32 * g_e))
                 cfg.fonte = f;
-            Dica("Video: como o OBS, qualquer jogo. Buffer: DLL no jogo (DX12 + FSR/XeSS), sem HUD. API: le o quadro apresentado (DX11, DX12 e Vulkan, com ou sem upscaler), com HUD. Buffer e API: anti-cheat recusa.");
+            Dica("Video: como o OBS, qualquer jogo. Buffer: DLL no jogo (DX12 + FSR 3.1 ou mais novo), sem HUD. API: le o quadro apresentado (DX11, DX12 e Vulkan, com ou sem upscaler), com HUD. Buffer e API: anti-cheat recusa.");
             if (cfg.fonte == 2)
             {
                 bool camada = e.camadaVulkan;

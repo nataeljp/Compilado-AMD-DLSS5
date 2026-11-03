@@ -52,6 +52,7 @@ class FonteBuffer
         bool reset = false, profInvertida = false, profInfinita = false;
         bool profInvertidaConhecida = true; // false: medir (Fluxo::InvertidaMedida)
         float perto = 0, longe = 0, fovY = 0;
+        float jitterX = 0, jitterY = 0; // pixels de render: a profundidade e o movimento vem deslocados, a cor nao
     };
     // o quadro mais novo que a GPU do jogo ja terminou e o overlay ainda nao pegou
     bool Pega(Quadro& q);

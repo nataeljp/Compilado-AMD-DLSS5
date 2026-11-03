@@ -215,6 +215,7 @@ bool FonteBuffer::Pega(Quadro& q)
     q.prof = &prof[s];
     q.reset = e.reset != 0;
     q.perto = e.perto, q.longe = e.longe, q.fovY = e.fovY;
+    q.jitterX = e.jitterX, q.jitterY = e.jitterY;
     q.profInvertida = cab->profInvertida == 1;
     q.profInvertidaConhecida = cab->profInvertida != 2;
     q.profInfinita = cab->profInfinita != 0;

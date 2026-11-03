@@ -45,15 +45,13 @@ struct Config
     int formatoCor = 0; // formato da cor e da edicao (main.cpp FormatosAgora, Painel kFormatos); 0 = R16G16B16A16_FLOAT
     // denoise do grao da rede, na ideia do NRD/RELAX da NVIDIA; os padroes vem do NRDSettings.h (ver DenoiseHlsl.h)
     bool dnAtivo = false;       // liga e desliga o conjunto sem perder os ajustes
-    bool dnJogo = false;        // processa o jogo junto da rede: o filtro no quadro pronto, na resolucao da tela, em vez de so na edicao
+    float dnRegenForca = 1.f;   // 0 = a edicao crua, 1 = so a filtrada
+    bool dnRegenProf = true;    // a profundidade do jogo entra no denoiser (sem ela, fixa)
+    int dnRegenModo = 1;        // entrada: 0 a imagem pronta, 1 so o brilho que a rede muda
+    // os parametros do SDK (RayRegen.h); de inicio, os padroes da AMD
+    float dnRegenParam[6] = {1.f, 1.f, 65504.f, 50.f, 0.f, 0.01f};
     float dnCas = 0.f;          // CAS na imagem final, depois do denoise (0 = desligado)
-    int dnVista = 0;            // visao de depuracao (so nesta sessao, nao vai para o config): 0 imagem, 1 edicao antes, 2 depois, 3 o que saiu x8, 4 quadros acumulados
-    float dnReconstrucao = 1.f; // reconstrucao: troca so o pixel fora da faixa dos vizinhos pela estimativa dela, 0..1
-    float dnAcumulacao = 1.f;   // acumulacao temporal: o resultado anterior reprojetado pelo movimento, 0..1 (1 = ate 95%)
-    float dnRecorte = 2.f;      // quantos desvios da vizinhanca o historico pode se afastar (fastHistoryClampingSigmaScale)
-    float dnBordas = 1.f;       // filtro que para nas bordas (a-trous guiado por profundidade e luminancia), 0..1
-    int dnBordasPasses = 2;     // 1..3 (cada um dobra o alcance: 2, 4, 8 pixels da rede)
-    float dnBordasSigma = 2.f;  // tolerancia de luminancia do filtro (diffusePhiLuminance)
+    int dnVista = 0;            // visao de depuracao do SDK (so nesta sessao, nao vai para o config): 0 imagem, 1 visao geral, 2 em diante um painel
     int ponte = -1;         // ponte do quadro para a rede: -1 auto (SDR direto, HDR SoftKnee), 0 direto, 1 SoftKnee, 2 ACES,
                             // 3 curva do jogo, 4 luz de cena direta (so o ombro do codificador da NVIDIA)
     float brancoNits = 0.f; // branco de papel em nits (0 = o branco SDR do Windows)

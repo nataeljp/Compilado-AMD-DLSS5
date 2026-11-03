@@ -6,7 +6,7 @@ $saida = Join-Path (Split-Path $raiz) 'DLSS5-Overlay-release'
 $pasta = Join-Path $saida "DLSS5-Overlay-v$Versao"
 if (Test-Path $pasta) { python -c "import shutil,sys; shutil.rmtree(sys.argv[1])" $pasta }
 New-Item -ItemType Directory -Force $pasta | Out-Null
-Copy-Item "$raiz\bin\DLSS5Overlay.exe" $pasta
+Copy-Item "$raiz\bin\DLSS5Overlay.exe", "$raiz\bin\amd_fidelityfx_loader_dx12.dll", "$raiz\bin\amd_fidelityfx_denoiser_dx12.dll" $pasta
 # captura de buffer: o modulo que o overlay coloca no jogo aberto
 New-Item -ItemType Directory -Force "$pasta\captura" | Out-Null
 Copy-Item "$raiz\bin\captura\DLSS5Buffer.dll" "$pasta\captura"

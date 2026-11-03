@@ -326,11 +326,24 @@ void Tex::Cria(ID3D12Device* d, UINT w_, UINT h_, DXGI_FORMAT f, const wchar_t* 
                (rt ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET : D3D12_RESOURCE_FLAG_NONE);
     estado = D3D12_RESOURCE_STATE_COMMON;
     r.Reset();
-    Ck(d->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, estado, nullptr, IID_PPV_ARGS(&r)),
-       "CreateCommittedResource(tex)");
+    const UINT64 bytes = d->GetResourceAllocationInfo(0, 1, &rd).SizeInBytes;
+    // DLSS5_TEX_RAM=1: as grandes na RAM. Medido no 4K: libera 0,3 a 0,5 GB e dobra o tempo por quadro (15 -> 31 ms), por isso nao e o padrao
+    static const bool naRam = GetEnvironmentVariableW(L"DLSS5_TEX_RAM", nullptr, 0) != 0;
+    HRESULT hrRam = E_FAIL;
+    if (bytes >= (UINT64(32) << 20) && naRam)
+    {
+        D3D12_HEAP_PROPERTIES ram{};
+        ram.Type = D3D12_HEAP_TYPE_CUSTOM;
+        ram.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE;
+        ram.MemoryPoolPreference = D3D12_MEMORY_POOL_L0;
+        hrRam = d->CreateCommittedResource(&ram, D3D12_HEAP_FLAG_NONE, &rd, estado, nullptr, IID_PPV_ARGS(&r));
+        Log("memoria", Fmt("%s: %u MB %s", nome ? Utf8(nome).c_str() : "textura", unsigned(bytes >> 20), SUCCEEDED(hrRam) ? "na RAM" : "na VRAM (o driver recusou a RAM)"));
+    }
+    if (FAILED(hrRam))
+        Ck(d->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, estado, nullptr, IID_PPV_ARGS(&r)),
+           "CreateCommittedResource(tex)");
     if (nome)
         r->SetName(nome);
-    const UINT64 bytes = d->GetResourceAllocationInfo(0, 1, &rd).SizeInBytes;
     std::lock_guard<std::mutex> lk(Vivas().mx);
     Vivas().m[this] = {bytes, nome ? nome : L""};
 }

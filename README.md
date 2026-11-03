@@ -39,6 +39,9 @@ os shaders (todos em paralelo) e guarda o resultado em `cache\shaders`; as abert
 - O painel mostra a VRAM do overlay contra o orçamento que o Windows dá a ele, separada em rede/runtime e texturas do
   overlay, e o `overlay.jsonl` registra a cada 5 s (`"tipo":"memoria"`) o uso, o orçamento, a memória de vídeo na RAM e
   cada tamanho de rede novo.
+- O orçamento só é monitorado: nunca desliga nem limita a rede ou o overlay. Com o overlay ligado, o módulo dentro do jogo
+  mostra a ele o orçamento sem o desconto da VRAM do overlay. Aberto: no Cyberpunk, com a geração de quadros do FSR 4 ligada, a GPU
+  pode travar (`0x887a0006`); esta mudança ainda não foi confirmada no jogo, e o `DLSS5Buffer.log` diz qual recurso falhou.
 - Acima do orçamento (pico do jogo, jogo pesado) o painel só avisa: o Windows move o excedente para a RAM e a rede
   continua (antes ela era desligada de vez e desligava em todo pico).
 - Os pesos da rede já são FP8 (1 byte, como a NVIDIA os entrega). Medido na imagem de referência: INT4 só nos pesos
@@ -142,30 +145,9 @@ mostra o que está em uso. A edição tem sinal: nos formatos de 10 e 8 bits ela
 intacto. Trocar refaz as texturas: a GPU para, as velhas saem e só então as novas entram, nos dois processos. A entrada da rede
 (`orig`, `fed`) e a saída seguem em float16.
 
-### Denoise (fora da rede)
+### Denoise (AMD FSR Ray Regeneration)
 
-Tira o grão da rede, sem tocar na rede nem na imagem do jogo. É a ideia do NRD da NVIDIA (RELAX), que manda separar o material
-antes de filtrar e recompor depois ("All materials must be de-modulated before denoising"): aqui a imagem do jogo é o material e
-a edição da rede é o sinal ruidoso. O filtro roda no overlay, na edição, antes de ela ser ampliada e composta: no tamanho da rede,
-onde o grão tem 1 pixel. Onde a rede não mexeu a edição é zero e nada muda, e o detalhe do jogo não passa pelo filtro. Vale para as
-duas capturas. Como a edição tem sinal, fica em `RGBA16F` (`R11G11B10_FLOAT` não guarda negativo); no tamanho da rede são perto de
-40 MB em 720p e 90 MB em 1080p.
-
-- `Reconstrução` troca só o ponto fora da faixa dos vizinhos da mesma superfície.
-- `Acumulação` junta as edições anteriores pelo movimento (o do jogo no buffer, o fluxo óptico no vídeo), com o histórico preso à
-  vizinhança atual e ao ruído medido.
-- `Filtro bordas` é um à-trous que para em borda de profundidade (só no buffer) e na borda da imagem do jogo (a guia, em log2 da
-  luminância: a mesma razão de luz conta igual no escuro e no claro). A força não depende dos quadros acumulados.
-
-Medido: com a câmera parada o grão da rede é o mesmo em todo quadro (correlação 0,9998 entre quadros seguidos). A acumulação tira o
-que varia em movimento e quase não leva detalhe; com a câmera parada ela não tem o que tirar, e quem tira o grão é o `Filtro bordas`.
-Antes ele recuava com o histórico e o grão voltava quando a câmera parava (fino de 0,087 a 0,136 em 38 quadros; 0,157 desligado).
-Numa sequência real (Superposition, giros de até 235 px por quadro, rede 720), o padrão novo contra o filtro antigo no máximo (3
-passes, tolerância 4, sem acumulação): tira 36% mais em área lisa e 7% menos em borda forte do jogo.
-
-O painel liga e desliga o conjunto (`dnAtivo`, desligado de início, sem gastar GPU nem VRAM). Padrões: recorte 2
-(`fastHistoryClampingSigmaScale` do `NRDSettings.h`), tolerância 2 (`diffusePhiLuminance`), forças em 1 e 2 passes; ainda sem
-avaliação visual em jogo. O que vale é a imagem inteira no jogo.
+O denoise é o **AMD FSR Ray Regeneration 1.2.1** (FidelityFX SDK 2.4.0, MIT), o denoiser de machine learning da AMD. Exige RX 9000 ou mais nova, DirectX 12 e Windows 11. Roda no overlay, no tamanho da rede, e a rede não muda. O painel expõe a entrada, a força e os parâmetros do SDK (normais, estabilidade, radiância máxima, recorte, gaussiana, oclusão). Sem os dados que ele espera do jogo, rugosidade e material são fixos e a câmera é identidade; a profundidade e as normais vêm do jogo só na captura de buffer. A profundidade vem do jogo: na captura de buffer a original, com o FOV e o movimento do jogo; na da API (DX11 e DX12) pelo buffer de profundidade dele, sempre o do mesmo quadro da cor, com escala relativa e fluxo óptico no movimento; em Vulkan e na captura de vídeo não há, e ela fica fixa. Buffer em formato que não dá para copiar (D24S8, ou D32S8 no DX11) fica sem profundidade, e o estado no painel diz o formato. As normais são calculadas dela. A câmera fica fixa: estimá-la do movimento foi testado e não ajudou. Na entrada "Brilho da rede", a curva ganho × brilho do quadro sai antes do filtro e volta depois, a média de cada bloco é conservada e as luzes são outro material: o tom da rede fica, e sai o detalhe fino do ganho. O filtro não sabe o que é tapete ou vidro: trata igual o que a rede acrescentou. A visão de depuração é a da AMD e mostra o que o denoiser recebeu. Ele foi treinado para ruído de ray tracing, não para o grão da rede: o resultado depende do ajuste no jogo.
 
 ### Pele (controles da NVIDIA)
 
@@ -246,9 +228,8 @@ Os parâmetros do DLSS 5 seguem os nomes que a NVIDIA expõe no NGX (os mesmos d
 | `recorteHistoricoRede` | 0..4 | com `temporalRede` 1: a resposta anterior só entra dentro de média ± este número de desvios da saída crua deste quadro no 3×3 (YCoCg), o recorte por variância do TAA, feito no runtime antes da mistura (`LmxxfNrSetHistoryClip`). Sem ele, o que a rede pinta em volta de um objeto em movimento ficava no fundo que passa atrás dele e andava com esse fundo, uma cópia por quadro da rede (o rastro em degraus). 0 = sem recorte; padrão 1 |
 | `forca` | 0..2 | força da edição final (1 = a da rede) |
 | `limiteFpsJogo` | 0..240 | teto de FPS do jogo, no present (captura de buffer e da API): o que ele deixa de usar de GPU fica para a rede. 0 = sem teto |
-| `dnReconstrucao`, `dnAcumulacao`, `dnBordas` | 0..1 | denoise fora da rede, no sinal da edição (0 = desligado) |
-| `dnJogo` | 0/1 | processa o jogo junto da rede: o denoise filtra o quadro pronto (jogo + rede), na resolução da tela, em vez de só a edição. Mais GPU e VRAM. Para captura de vídeo e da API; na de buffer o resultado cai no quadro seguinte, e o ruído de um quadro não é o do outro (medido antes: pior que desligado) |
-| `dnCas` | 0..1 | CAS da AMD (MIT) na imagem final, depois do denoise (0 = desligado). No painel, a visão de depuração mostra a edição antes e depois do filtro, o que ele tirou (x8) e os quadros acumulados: contorno em "o que tirou" é detalhe sendo perdido |
+| `dnRegenForca`, `dnRegenModo` | 0..1, 0..2 | força e entrada do Ray Regeneration; os parâmetros do SDK ficam em `dnRegenNormal`, `dnRegenEstabilidade`, `dnRegenRadiancia`, `dnRegenRecorte`, `dnRegenGaussiana`, `dnRegenOclusao` |
+| `dnCas` | 0..1 | CAS da AMD (MIT) na imagem final, depois do denoise (0 = desligado) |
 | `dnRecorte` | 0,5..3 | quanto o histórico pode se afastar do quadro atual, em desvios da vizinhança |
 | `dnBordasPasses`, `dnBordasSigma` | 1..3, 0,5..4 | alcance (2, 4, 8 px) e tolerância de luminância do filtro de bordas |
 | `modo`, `fpsMax`, `ocultaDeGravacoes` | | modo de exibição (0 rede, 1 original, 2 comparação, 3 só a edição, 4 movimento, 5 saída crua da última resposta), teto de FPS, esconder de prints/OBS |
