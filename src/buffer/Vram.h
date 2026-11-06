@@ -7,8 +7,6 @@
 
 namespace dlss5ov {
 
-// O que o overlay ocupa (medido: 1,6 a 1,8 GB): enquanto ele estiver ligado, o orcamento que o jogo ve nao encolhe por causa dele (Modulo.cpp, Orcamento)
-constexpr UINT64 kVramDoOverlay = UINT64(1800) << 20;
 // Quem chama volta para a VRAM se o driver recusar
 inline bool QuerRam() { return GetEnvironmentVariableW(L"DLSS5_TEX_RAM", nullptr, 0) != 0; }
 inline D3D12_HEAP_PROPERTIES HeapDaRam()

@@ -1,16 +1,17 @@
-// AMD FSR Ray Regeneration (FidelityFX SDK 2.4.0, denoiser de machine learning) sobre a edicao da rede, no tamanho dela. Entrada "imagem inteira": a imagem pronta como luz. Entrada "brilho da rede": o ganho
-// que a rede aplica, sem a curva ganho x brilho do quadro (volta pixel a pixel depois), com a media de cada bloco conservada e as luzes como outro material; o jogo vai como albedo, ou branco. Roda no overlay.
-// So com RX 9000 ou mais nova, DirectX 12, Windows 11; sem isso Filtra devolve nullptr e a edicao segue sem filtro.
-// O jogo nao entrega rugosidade, material, normais nem camera: rugosidade e material fixos, camera identidade (estimar a camera do movimento foi testado: nao muda nada com o movimento do
-// jogo e derruba o historico com o fluxo optico), normais calculadas da profundidade. Na captura de buffer a profundidade, o FOV e o movimento originais do jogo; na da API, a profundidade do
-// jogo (D3D11 e D3D12, escala relativa) e fluxo optico; na de video e no Vulkan nao ha profundidade: fixa e normais de frente.
+// AMD FSR Ray Regeneration (FidelityFX SDK 2.4.0, denoiser de machine learning) sobre a edicao da rede, no tamanho dela, pelo contrato da AMD
+// (ffx_denoiser.h e o sample denoiserrendermodule.cpp). Roda no overlay. So com RX 9000 ou mais nova, DirectX 12, Windows 11; sem isso Filtra devolve
+// nullptr e a edicao segue sem filtro.
+// O que vai e so o que existe: a imagem editada como a luz, com albedo 1 (o jogo nao entrega albedo, entao nao ha o que separar); a profundidade, o FOV,
+// o perto e o longe do jogo na captura de buffer, a profundidade do jogo em escala relativa na da API (D3D11 e D3D12); o movimento do jogo na de buffer
+// e o fluxo optico nas outras; normais calculadas da profundidade (o jogo nao entrega as dele); material 0. Na captura de video e no Vulkan nao ha
+// profundidade: fixa e normais de frente. Camera identidade: o movimento dela esta nos vetores
 #pragma once
 #include "Comum.h"
 #include <string>
 
 namespace ov {
 
-// na ordem das chaves do SDK (FfxApiConfigureDenoiserKey, 1 a 6): normal, estabilidade, radiancia maxima, recorte, gaussiana, oclusao
+// na ordem das chaves do SDK (FfxApiConfigureDenoiserKey, 1 a 6): normal, estabilidade, radiancia maxima, recorte, gaussiana, desoclusao
 constexpr int kParamsRayRegen = 6;
 
 // o que a captura entrega ao denoiser neste quadro
@@ -36,7 +37,7 @@ class RayRegen
     // na lista da entrada, antes da rede: a profundidade e o movimento deste quadro
     void Prepara(ID3D12GraphicsCommandList* c, Descritores& desc, Gpu& gpu, Tex& orig, const EntradaRayRegen& e);
     // a edicao filtrada (RGBA16F, estado SRV), ou nullptr se o denoiser nao estiver disponivel ou o Prepara nao rodou neste quadro. luz: Temporal.h LuzNaTela
-    Tex* Filtra(ID3D12GraphicsCommandList* c, Descritores& desc, Gpu& gpu, const std::wstring& pasta, Tex& edicao, Tex& orig, UINT luz, float forca, int modo, const float* params, int vista, UINT vistaW, UINT vistaH, float branco);
+    Tex* Filtra(ID3D12GraphicsCommandList* c, Descritores& desc, Gpu& gpu, const std::wstring& pasta, Tex& edicao, Tex& orig, UINT luz, float forca, const float* params, int vista, UINT vistaW, UINT vistaH);
     // para o painel: de onde vem a profundidade
     const std::string& Estado() const { return estado; }
     // a fracao da tela com alguma coisa na profundidade do jogo, medida neste quadro (captura da API); false = nao mediu
@@ -57,9 +58,7 @@ class RayRegen
     void Fecha();
     void Recursos(ID3D12Device* d, UINT w, UINT h);
     void MedePontos(bool invertidaConhecida);
-    Passe pCurvaZera, pCurvaSoma, pCurvaFecha, pEntra, pGeo, pBrutos, pNormais, pBaixa, pSai;
-    Tex baixa; // RG32F, 1/16: a media do sinal e do filtrado por bloco
-    Tex caixas, curva; // a curva ganho x brilho do quadro: soma por faixa de brilho (32 x 2) e o log2 do ganho (32 x 1)
+    Passe pEntra, pGeo, pBrutos, pNormais, pSai;
     static constexpr UINT kBrutosW = 32, kBrutosH = 18;
     Tex brutos; // RG32F, poucos pontos: a profundidade como o jogo escreveu (Z invertido? so a captura da API precisa) e o Z (a escala da visao de depuracao)
     float zTipico = 0.f, limiteVisao = 0.f, cobertura = 1.f;
@@ -72,7 +71,8 @@ class RayRegen
     bool prepPronto = false, prepReset = true;
     int fonte = 0, semProf = 0;      // 0 fixa, 1 distancia gravada, 2 profundidade do jogo, 3 a ultima (faltou neste quadro)
     bool fonteReal = false;
-    float prepTan = 0.577f;
+    float prepTan = 0.577f, prepPerto = 0.1f, prepLonge = 1e6f; // a camera do Z deste quadro (kGeo), a mesma da projecao do despacho
+    bool prepInfinita = true;
     UINT quadrosFiltro = 0, faltas = 0, resets = 0;
     std::string estado;
     HMODULE dll = nullptr;

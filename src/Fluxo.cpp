@@ -191,7 +191,8 @@ void Fluxo::Busca(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device*
         auto& la = luma[de][n];
         auto& lp = luma[para][n];
         Tex& sai = campos[n];
-        sai.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Tex& tmp = tmps[n];
+        tmp.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         const bool temGrosso = n + 1 < int(niveis);
         Tex& grosso = temGrosso ? campos[n + 1] : campos[n];
         if (temGrosso)
@@ -208,15 +209,12 @@ void Fluxo::Busca(ID3D12GraphicsCommandList* c, Descritores& desc, ID3D12Device*
         pBusca.Roda(c, desc, d,
                     {{la.r.Get(), DXGI_FORMAT_R16_FLOAT}, {lp.r.Get(), DXGI_FORMAT_R16_FLOAT},
                      {srvGrosso, DXGI_FORMAT_R16G16_FLOAT}, {modelo.r.Get(), modelo.fmt}},
-                    {{sai.r.Get(), sai.fmt}}, &k, (la.w + 7) / 8, (la.h + 7) / 8);
-        sai.Para(c, SRV);
-        Tex& tmp = tmps[n];
-        tmp.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        pMediana.Roda(c, desc, d, {{sai.r.Get(), sai.fmt}}, {{tmp.r.Get(), tmp.fmt}}, &k, (la.w + 7) / 8,
+                    {{tmp.r.Get(), tmp.fmt}}, &k, (la.w + 7) / 8, (la.h + 7) / 8);
+        // a busca no rascunho e a mediana direto no campo: o mesmo conteudo final, sem a copia de volta
+        tmp.Para(c, SRV);
+        sai.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        pMediana.Roda(c, desc, d, {{tmp.r.Get(), tmp.fmt}}, {{sai.r.Get(), sai.fmt}}, &k, (la.w + 7) / 8,
                       (la.h + 7) / 8);
-        tmp.Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
-        sai.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
-        c->CopyResource(sai.r.Get(), tmp.r.Get());
         sai.Para(c, SRV);
         if (n == int(nivelGlobal) && nivelGlobal > 0)
         {

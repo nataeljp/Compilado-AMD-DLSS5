@@ -10,6 +10,7 @@
 #include <detours.h>
 #include <dxgi1_4.h>
 #include <wrl/client.h>
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstring>
@@ -138,9 +139,12 @@ HRESULT CriaTex12(const D3D12_RESOURCE_DESC& rd, ComPtr<ID3D12Resource>& t)
     return g_12.dev->MakeResident(1, p);
 }
 
+void AposentaProf12();
+
 bool Prepara12(ID3D12CommandQueue* q, UINT w, UINT h, DXGI_FORMAT f)
 {
-    if (g_12.fila != q)
+    const bool trocouFila = g_12.fila != q;
+    if (trocouFila)
     {
         Solta12();
         g_12.fila = nullptr;
@@ -148,11 +152,15 @@ bool Prepara12(ID3D12CommandQueue* q, UINT w, UINT h, DXGI_FORMAT f)
             a.Reset();
         g_12.cl.Reset();
         g_12.local.Reset();
+        ComPtr<ID3D12Device> devAntes = g_12.dev; // vivo ate a comparacao: o endereco nao pode ser reaproveitado por outro dispositivo
         g_12.dev.Reset();
         g_12.ultimo = 0;
         for (auto& v : g_12.valor)
             v = 0;
         HRESULT hr = q->GetDevice(IID_PPV_ARGS(&g_12.dev));
+        // outro dispositivo: as texturas da profundidade sao do antigo (copiar para elas numa lista do novo e invalido)
+        if (devAntes && (FAILED(hr) || g_12.dev.Get() != devAntes.Get()))
+            AposentaProf12();
         const D3D12_COMMAND_LIST_TYPE tipo = q->GetDesc().Type;
         for (int i = 0; SUCCEEDED(hr) && i < 3; ++i)
             hr = g_12.dev->CreateCommandAllocator(tipo, IID_PPV_ARGS(&g_12.al[i]));
@@ -171,7 +179,9 @@ bool Prepara12(ID3D12CommandQueue* q, UINT w, UINT h, DXGI_FORMAT f)
     {
         char vram[64];
         dlss5ov::TextoVramJogo(g_12.dev.Get(), vram, sizeof vram);
-        LogModulo("captura da API: criando as texturas; %s", vram);
+        // o motivo: as quedas vieram logo depois de recriar, e o log nao dizia por que recriou
+        LogModulo("captura da API: criando as texturas (%s, %ux%u formato %d); %s",
+                  trocouFila ? "a fila do Present mudou" : !g_12.tex[0] ? "nao havia texturas" : "o tamanho ou o formato mudou", w, h, int(f), vram);
     }
     Solta12();
     ++g_geracao;
@@ -462,6 +472,22 @@ void SoltaProf12()
     g_profUltimaCopia = 0;
 }
 
+// sem soltar agora (uma lista do jogo ja gravada pode copiar para elas): CriaProf12 recria no dispositivo atual
+void AposentaProf12()
+{
+    std::lock_guard<std::mutex> lk(g_mxProf);
+    g_cab->profGeracao = 0;
+    g_profPendentes.clear();
+    g_nProfPendentes.store(0);
+    for (HANDLE x : g_handlesProf)
+        CloseHandle(x);
+    g_handlesProf.clear();
+    for (auto& p : g_prof12)
+        if (p)
+            g_profVelhas.push_back({std::move(p), g_presents + 16});
+    g_cab->profW = g_cab->profH = 0;
+}
+
 bool CriaProf12(UINT w, UINT h)
 {
     D3D12_RESOURCE_DESC rd{};
@@ -508,23 +534,25 @@ void CopiaProf12(ID3D12GraphicsCommandList* l, const D3D12_RESOURCE_TRANSITION_B
 {
     if (!(b.StateBefore & D3D12_RESOURCE_STATE_DEPTH_WRITE) || !b.pResource || (b.Subresource != 0 && b.Subresource != D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES))
         return;
-    if (GetTickCount64() - g_cab->batimentoOverlay >= 1000 || !g_12.w || l->GetType() != D3D12_COMMAND_LIST_TYPE_DIRECT)
+    // o Present pode soltar e recriar as texturas no meio desta funcao: uma leitura so do tamanho (zerado no meio dava 0/0)
+    const UINT W = g_12.w, H = g_12.h;
+    if (GetTickCount64() - g_cab->batimentoOverlay >= 1000 || !W || !H || l->GetType() != D3D12_COMMAND_LIST_TYPE_DIRECT)
         return;
     const D3D12_RESOURCE_DESC d = b.pResource->GetDesc();
     if (d.SampleDesc.Count != 1 || !(d.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL))
         return;
     // abaixo de metade da tela so o do FSR: o modo Ultra Desempenho renderiza a um terco
-    if ((d.Width * 2 < g_12.w || d.Height * 2 < g_12.h) && b.pResource != g_profFsr.load())
+    if ((d.Width * 2 < W || d.Height * 2 < H) && b.pResource != g_profFsr.load())
         return;
-    const double razao = double(d.Width) * g_12.h / (double(d.Height) * g_12.w);
+    const double razao = double(d.Width) * H / (double(d.Height) * W);
     if (razao < 0.95 || razao > 1.05)
         return;
+    std::lock_guard<std::mutex> lk(g_mxProf); // RecusaProf le o estado da escolha, escrito sob este mutex
     if (d.Format != DXGI_FORMAT_R32_TYPELESS && d.Format != DXGI_FORMAT_D32_FLOAT && d.Format != DXGI_FORMAT_R32G8X24_TYPELESS && d.Format != DXGI_FORMAT_D32_FLOAT_S8X24_UINT)
     {
         RecusaProf(d.Format);
         return;
     }
-    std::lock_guard<std::mutex> lk(g_mxProf);
     if (!EscolheAlvoProf(b.pResource, uint64_t(d.Width) * d.Height, UINT(d.Width), d.Height))
         return;
     if (!g_prof12[0] || g_cab->profW != UINT(d.Width) || g_cab->profH != d.Height)
@@ -714,7 +742,10 @@ void STDMETHODCALLTYPE GAlvos(ID3D11DeviceContext* c, UINT n, ID3D11RenderTarget
             if (d.SampleDesc.Count == 1 && d.Width * 2 >= g_11.w && d.Height * 2 >= g_11.h && razao > 0.95 && razao < 1.05)
             {
                 if (d.Format != DXGI_FORMAT_R32_TYPELESS && d.Format != DXGI_FORMAT_D32_FLOAT)
+                {
+                    std::lock_guard<std::mutex> lkp(g_mxProf);
                     RecusaProf(d.Format);
+                }
                 else
                 {
                     std::lock_guard<std::mutex> lk(g_mxDsv11);
@@ -841,6 +872,7 @@ std::atomic<ID3D12CommandQueue*> g_filas[kMaxFilas] = {};
 std::atomic<int> g_nFilas{0};
 std::atomic<ID3D12CommandQueue*> g_ultimaFila{nullptr};
 std::mutex g_mxFilas;
+std::vector<ID3D12CommandQueue*> g_filasAlem; // alem das 16: so a referencia, uma por fila (a ultima enviada pode ser uma delas)
 thread_local ID3D12CommandQueue* t_ultimaFila = nullptr;
 using PfnExecuta = void(STDMETHODCALLTYPE*)(ID3D12CommandQueue*, UINT, ID3D12CommandList* const*);
 PfnExecuta oExecuta = nullptr;
@@ -857,11 +889,16 @@ void STDMETHODCALLTYPE GExecuta(ID3D12CommandQueue* q, UINT n, ID3D12CommandList
                 ++i;
             if (i == total)
             {
-                q->AddRef();
                 if (total < kMaxFilas)
                 {
+                    q->AddRef();
                     g_filas[total].store(q);
                     g_nFilas.store(total + 1);
+                }
+                else if (std::find(g_filasAlem.begin(), g_filasAlem.end(), q) == g_filasAlem.end())
+                {
+                    q->AddRef(); // uma por fila: antes era uma por envio
+                    g_filasAlem.push_back(q);
                 }
             }
         }
@@ -872,12 +909,23 @@ void STDMETHODCALLTYPE GExecuta(ID3D12CommandQueue* q, UINT n, ID3D12CommandList
 }
 
 // o swapchain guarda a fila em que foi criado, num deslocamento que muda com a versao do Windows: procura nele as filas conhecidas
+// as filas conhecidas numa copia simples: FilaDentroDoSwap usa __try, que nao convive com objetos que tem destrutor (lock, vector)
+int CopiaFilas(ID3D12CommandQueue** f, int max)
+{
+    std::lock_guard<std::mutex> lk(g_mxFilas);
+    int n = 0;
+    for (int i = 0; i < g_nFilas.load() && n < max; ++i)
+        f[n++] = g_filas[i].load();
+    for (ID3D12CommandQueue* q : g_filasAlem)
+        if (n < max)
+            f[n++] = q;
+    return n;
+}
+
 ID3D12CommandQueue* FilaDentroDoSwap(IDXGISwapChain* sc)
 {
-    ID3D12CommandQueue* conhecidas[kMaxFilas];
-    const int total = g_nFilas.load();
-    for (int i = 0; i < total; ++i)
-        conhecidas[i] = g_filas[i].load();
+    ID3D12CommandQueue* conhecidas[2 * kMaxFilas];
+    const int total = CopiaFilas(conhecidas, 2 * kMaxFilas);
     __try
     {
         void* const* p = reinterpret_cast<void* const*>(sc);
@@ -974,7 +1022,11 @@ void NoPresent(IDXGISwapChain* sc, UINT flags)
         if (agora - g_vivoEm > 5000)
         {
             if (g_cab->geracao)
+            {
+                LogModulo("captura da API: overlay sem batimento ha %llu ms: as texturas voltam para o jogo",
+                          (unsigned long long)(agora - g_cab->batimentoOverlay));
                 g_cab->api == 12 ? Solta12() : Solta11();
+            }
             if (g_prof12[0])
                 SoltaProf12();
             if (g_11.prof[0])
@@ -1232,12 +1284,6 @@ DWORD WINAPI Trabalho(void*)
 } // namespace
 
 // a memoria compartilhada sai antes da DLL terminar de carregar: o overlay abre logo depois da injecao
-// o overlay da captura da API esta ligado
-bool OverlayDaApiVivo()
-{
-    return g_cab && GetTickCount64() - g_cab->batimentoOverlay < 5000;
-}
-
 // do despacho do FSR: com a geracao do jogo, o teto de FPS fica aqui
 void LimiteNoDespacho()
 {

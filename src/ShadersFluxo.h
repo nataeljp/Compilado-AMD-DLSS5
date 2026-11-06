@@ -70,7 +70,7 @@ float Custo(int2 p, float2 v)
     int2 p = int2(pu);
     float2 v0 = 0;
     if (temGrosso)
-        v0 = 2.0 * grosso.SampleLevel(s, (float2(p) + 0.5) / float2(lw, lh), 0);
+        v0 = float2(lw, lh) / float2(gw, gh) * grosso.SampleLevel(s, (float2(p) + 0.5) / float2(lw, lh), 0); // em pixels deste nivel: altura impar nao dobra
     float2 melhor = v0;
     float cm = Custo(p, v0);
     // candidato global: ganha o empate (3%) contra a previsao local e vira o centro da busca

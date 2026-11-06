@@ -8,9 +8,6 @@
 //     da janela do jogo -- o movimento e os cliques vao para o painel e o jogo recebe zero (a mira nao mexe).
 // Registro em DLSS5Buffer.log ao lado da DLL.
 #include "../buffer/ClienteBuffer.h"
-#include "../buffer/Vram.h"
-#include <dxgi1_4.h>
-#include <intrin.h>
 #include "ffx_api.h"
 #include "ffx_upscale.h"
 #include <detours.h>
@@ -29,7 +26,6 @@
 
 void NotaProfFsr(ID3D12Resource* r); // Apresenta.cpp
 void LimiteNoDespacho();              // Apresenta.cpp
-bool OverlayDaApiVivo();              // Apresenta.cpp
 namespace {
 
 std::mutex g_mx;
@@ -276,8 +272,8 @@ bool Float(DXGI_FORMAT f)
 void STDMETHODCALLTYPE Executa(ID3D12CommandQueue* q, UINT n, ID3D12CommandList* const* l)
 {
     oExecuta(q, n, l);
-    // o envio que derrubou o dispositivo (uma lista sem fechar ou recusada ao fechar: o runtime remove na hora, antes de
-    // a GPU fazer qualquer coisa, e o DRED nao mostra): quem enviou, o que e de onde
+    // o primeiro envio que ve o dispositivo removido: quem enviou e o que. Com lista invalida (o runtime remove na hora) e a causa; com a
+    // GPU travada (0x887a0006) so percebeu a queda, e a causa esta no DRED (falha de pagina, listas pela metade)
     static std::atomic<bool> removido{false};
     if (ID3D12Device* d = g_devVigia.load(); d && !removido.load(std::memory_order_relaxed) &&
                                              d->GetDeviceRemovedReason() != S_OK && !removido.exchange(true))
@@ -439,22 +435,15 @@ static_assert(sizeof(ffxDispatchDescUpscale) == 432 && offsetof(ffxDispatchDescU
               offsetof(ffxDispatchDescUpscale, output) == 312 && offsetof(ffxDispatchDescUpscale, renderSize) == 376 &&
               offsetof(ffxDispatchDescUpscale, reset) == 408 && offsetof(ffxDispatchDescUpscale, flags) == 428);
 
-// ---- o orcamento de VRAM que o jogo ve ----
-// As quedas com a geracao de quadros sao falha de pagina num recurso que existe e nao e nosso, sempre na mesma regiao da memoria da GPU, com o jogo a 94-96% do orcamento. Abrir o overlay encolhe esse
-// orcamento (medido no jogo de teste: 13,7 -> 11,8 GB). Enquanto o overlay estiver ligado, o jogo ve o orcamento sem esse desconto e nao entra num caminho de falta de memoria que sem o overlay ele
-// nao veria. Nada aqui limita a rede ou o overlay. A causa ainda nao esta provada: o log conta o que o jogo faz (Evict, tiles) e, se cair, o nome do recurso diz quem foi
-using PfnOrcamento = HRESULT(STDMETHODCALLTYPE*)(IDXGIAdapter3*, UINT, DXGI_MEMORY_SEGMENT_GROUP, DXGI_QUERY_VIDEO_MEMORY_INFO*);
+// ---- o que o jogo faz com a memoria: so conta, para o log ----
 using PfnResidencia = HRESULT(STDMETHODCALLTYPE*)(ID3D12Device*, UINT, ID3D12Pageable* const*);
 using PfnTiles = void(STDMETHODCALLTYPE*)(ID3D12CommandQueue*, ID3D12Resource*, UINT, const D3D12_TILED_RESOURCE_COORDINATE*, const D3D12_TILE_REGION_SIZE*, ID3D12Heap*, UINT,
                                           const D3D12_TILE_RANGE_FLAGS*, const UINT*, const UINT*, D3D12_TILE_MAPPING_FLAGS);
-PfnOrcamento oOrcamento = nullptr;
 PfnResidencia oResidente = nullptr, oTira = nullptr;
 PfnTiles oTiles = nullptr;
-size_t g_tamEu = 0;
 struct ContaResidencia
 {
-    std::atomic<uint64_t> perguntas{0}, tira{0}, tiraObj{0}, tiraEm{0}, residente{0}, residenteObj{0}, tiles{0}, tilesSemHeap{0};
-    std::atomic<UINT64> real{0}, visto{0}, uso{0};
+    std::atomic<uint64_t> tira{0}, tiraObj{0}, tiraEm{0}, residente{0}, residenteObj{0}, tiles{0}, tilesSemHeap{0};
 } g_res;
 
 void LogResidencia(const char* quando)
@@ -463,62 +452,9 @@ void LogResidencia(const char* quando)
     char ha[40] = "nunca";
     if (em)
         snprintf(ha, sizeof ha, "ha %llu ms", (unsigned long long)(GetTickCount64() - em));
-    Log("residencia%s: o jogo perguntou o orcamento %llu vezes (real %llu MB, ele ve %llu, usa %llu); Evict %llu vezes, %llu objetos, o ultimo %s; MakeResident %llu vezes, %llu objetos; "
-        "UpdateTileMappings %llu vezes, %llu soltando",
-        quando, (unsigned long long)g_res.perguntas.exchange(0), (unsigned long long)(g_res.real.load() >> 20), (unsigned long long)(g_res.visto.load() >> 20),
-        (unsigned long long)(g_res.uso.load() >> 20), (unsigned long long)g_res.tira.exchange(0), (unsigned long long)g_res.tiraObj.exchange(0), ha,
-        (unsigned long long)g_res.residente.exchange(0), (unsigned long long)g_res.residenteObj.exchange(0), (unsigned long long)g_res.tiles.exchange(0),
-        (unsigned long long)g_res.tilesSemHeap.exchange(0));
-}
-
-bool OverlayLigado()
-{
-    if (OverlayDaApiVivo())
-        return true;
-    const dlss5ov::Cabecalho* c = g_clienteOk ? g_cli.Cab() : g_cabNome;
-    return c && GetTickCount64() - c->batimentoOverlay < 5000;
-}
-
-HRESULT STDMETHODCALLTYPE Orcamento(IDXGIAdapter3* a, UINT no, DXGI_MEMORY_SEGMENT_GROUP grupo, DXGI_QUERY_VIDEO_MEMORY_INFO* info)
-{
-    const HRESULT hr = oOrcamento(a, no, grupo, info);
-    if (FAILED(hr) || !info || grupo != DXGI_MEMORY_SEGMENT_GROUP_LOCAL)
-        return hr;
-    // o log do modulo ve o numero real
-    const auto* ra = static_cast<const uint8_t*>(_ReturnAddress());
-    const auto* eu = reinterpret_cast<const uint8_t*>(g_eu);
-    if (ra >= eu && ra < eu + g_tamEu)
-        return hr;
-    ++g_res.perguntas;
-    g_res.real = info->Budget;
-    g_res.uso = info->CurrentUsage;
-    if (OverlayLigado())
-    {
-        DXGI_ADAPTER_DESC d{};
-        if (SUCCEEDED(a->GetDesc(&d)))
-            info->Budget = std::max(info->Budget, std::min(info->Budget + dlss5ov::kVramDoOverlay, UINT64(d.DedicatedVideoMemory)));
-    }
-    g_res.visto = info->Budget;
-    return hr;
-}
-
-void EnganchaOrcamento()
-{
-    Microsoft::WRL::ComPtr<IDXGIFactory4> f;
-    Microsoft::WRL::ComPtr<IDXGIAdapter1> a;
-    Microsoft::WRL::ComPtr<IDXGIAdapter3> a3;
-    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&f))) || FAILED(f->EnumAdapters1(0, &a)) || FAILED(a.As(&a3)))
-    {
-        Log("orcamento de VRAM: gancho nao entrou (sem o adaptador)");
-        return;
-    }
-    const auto* eu = reinterpret_cast<const uint8_t*>(g_eu);
-    g_tamEu = reinterpret_cast<const IMAGE_NT_HEADERS*>(eu + reinterpret_cast<const IMAGE_DOS_HEADER*>(eu)->e_lfanew)->OptionalHeader.SizeOfImage;
-    oOrcamento = reinterpret_cast<PfnOrcamento>((*reinterpret_cast<void***>(a3.Get()))[14]); // IDXGIAdapter3::QueryVideoMemoryInfo
-    DetourTransactionBegin();
-    DetourUpdateThread(GetCurrentThread());
-    DetourAttach(reinterpret_cast<PVOID*>(&oOrcamento), reinterpret_cast<PVOID>(&Orcamento));
-    Log("orcamento de VRAM: gancho %s", DetourTransactionCommit() == NO_ERROR ? "ok" : "falhou");
+    Log("residencia%s: Evict %llu vezes, %llu objetos, o ultimo %s; MakeResident %llu vezes, %llu objetos; UpdateTileMappings %llu vezes, %llu soltando",
+        quando, (unsigned long long)g_res.tira.exchange(0), (unsigned long long)g_res.tiraObj.exchange(0), ha, (unsigned long long)g_res.residente.exchange(0),
+        (unsigned long long)g_res.residenteObj.exchange(0), (unsigned long long)g_res.tiles.exchange(0), (unsigned long long)g_res.tilesSemHeap.exchange(0));
 }
 
 // ---- quem e o recurso da falha de pagina ----
@@ -1079,7 +1015,7 @@ void RelataEnvio(ID3D12CommandQueue* q, UINT n, ID3D12CommandList* const* l)
     wchar_t nq[64];
     const D3D12_COMMAND_QUEUE_DESC qd = q->GetDesc();
     char linha[2048];
-    int p = snprintf(linha, sizeof linha, "O ENVIO QUE DERRUBOU O DISPOSITIVO: fila %p \"%ls\" (tipo %d), %u listas:", q,
+    int p = snprintf(linha, sizeof linha, "primeiro envio depois da queda (com a GPU travada so percebeu, nao causou): fila %p \"%ls\" (tipo %d), %u listas:", q,
                      nome(q, nq, sizeof nq - 2), int(qd.Type), n);
     ID3D12CommandList* fsr = g_listaFsrNativa.load();
     for (UINT i = 0; i < n && i < 16 && p < int(sizeof linha) - 160; ++i)
@@ -1174,7 +1110,6 @@ DWORD WINAPI Vigia(void*)
 DWORD WINAPI Instala(void*)
 {
     LigaDred(); // antes de o jogo criar o dispositivo
-    EnganchaOrcamento();
     if (HANDLE t = CreateThread(nullptr, 0, Vigia, nullptr, 0, nullptr))
         CloseHandle(t);
     // os shaders do modulo compilam enquanto o jogo carrega (no primeiro quadro do FSR parariam o jogo por 14-25 s)

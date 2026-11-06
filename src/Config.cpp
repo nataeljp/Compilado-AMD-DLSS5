@@ -75,10 +75,16 @@ void Config::Carrega(const std::wstring& arquivo)
     auto I = [&](const char* k, int& v) { if (auto it = m.find(k); it != m.end()) v = int(it->second); };
     auto B = [&](const char* k, bool& v) { if (auto it = m.find(k); it != m.end()) v = it->second != 0; };
     I("modelo", ngx.modelo);
+    ngx.modelo = std::clamp(ngx.modelo, 0, 2);
     F("intensidade", ngx.intensidade);
     F("tomLocal", ngx.tomLocal);
     F("estruturaLocal", ngx.estruturaLocal);
     F("estruturaPele", ngx.estruturaPele);
+    // as faixas que o motor aplica (Rede(), Temporal): fora delas o painel mostrava um numero e a rede usava outro
+    ngx.intensidade = std::clamp(ngx.intensidade, 0.f, 2.f);
+    ngx.tomLocal = std::clamp(ngx.tomLocal, 0.f, 2.f); // a gradacao do Model B/C usa ate 2 (main.cpp); a rede, ate 1 (Rede())
+    ngx.estruturaLocal = std::clamp(ngx.estruturaLocal, -1.f, 2.f);
+    ngx.estruturaPele = std::clamp(ngx.estruturaPele, -1.f, 2.f);
     B("mascara", ngx.mascara);
     B("gradacao", ngx.gradacao);
     I("composicao", temporal.composicao);
@@ -87,8 +93,18 @@ void Config::Carrega(const std::wstring& arquivo)
     F("exposicao", temporal.exposicao);
     I("luz", temporal.luz);
     I("passes", rede.passes);
+    rede.passes = std::clamp(rede.passes, 1, 3);
     B("redeCompleta", rede.redeCompleta);
     I("alturaRede", alturaRede);
+    {
+        // so as alturas do painel: outra o painel mostrava 1080p e a rede rodava nela
+        static const int alturas[] = {540, 600, 720, 900, 1080, 1440, 2160};
+        int melhor = alturas[0];
+        for (const int a : alturas)
+            if ((a > alturaRede ? a - alturaRede : alturaRede - a) < (melhor > alturaRede ? melhor - alturaRede : alturaRede - melhor))
+                melhor = a;
+        alturaRede = melhor;
+    }
     I("fonte", fonte);
     B("sincronizaRedeLenta", sincronizaRedeLenta);
     I("limiteFpsJogo", limiteFpsJogo);
@@ -99,8 +115,6 @@ void Config::Carrega(const std::wstring& arquivo)
     F("forca", forca);
     F("dnRegenForca", dnRegenForca);
     B("dnRegenProf", dnRegenProf);
-    I("dnRegenModo", dnRegenModo);
-    dnRegenModo = dnRegenModo < 0 || dnRegenModo > 2 ? 1 : dnRegenModo;
     F("dnRegenNormais", dnRegenParam[0]);
     F("dnRegenEstabilidade", dnRegenParam[1]);
     F("dnRegenRadiancia", dnRegenParam[2]);
@@ -116,6 +130,7 @@ void Config::Carrega(const std::wstring& arquivo)
     formatoCor = formatoCor < 0 || formatoCor > 4 ? 0 : formatoCor;
     B("dnAtivo", dnAtivo);
     I("ponte", ponte);
+    ponte = std::clamp(ponte, -1, 4); // -1 = automatica; fora disso a luz direta passava na captura de video
     F("brancoNits", brancoNits);
     F("preLuz", preLuz);
     F("preSombra", preSombra);
@@ -172,7 +187,6 @@ std::string Config::Texto() const
     f << "  \"dnAtivo\": " << b(dnAtivo) << ",\n";
     f << "  \"dnRegenForca\": " << dnRegenForca << ",\n";
     f << "  \"dnRegenProf\": " << b(dnRegenProf) << ",\n";
-    f << "  \"dnRegenModo\": " << dnRegenModo << ",\n";
     f << "  \"dnRegenNormais\": " << dnRegenParam[0] << ",\n";
     f << "  \"dnRegenEstabilidade\": " << dnRegenParam[1] << ",\n";
     f << "  \"dnRegenRadiancia\": " << dnRegenParam[2] << ",\n";

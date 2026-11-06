@@ -47,7 +47,6 @@ struct Config
     bool dnAtivo = false;       // liga e desliga o conjunto sem perder os ajustes
     float dnRegenForca = 1.f;   // 0 = a edicao crua, 1 = so a filtrada
     bool dnRegenProf = true;    // a profundidade do jogo entra no denoiser (sem ela, fixa)
-    int dnRegenModo = 1;        // entrada: 0 a imagem pronta, 1 so o brilho que a rede muda
     // os parametros do SDK (RayRegen.h); de inicio, os padroes da AMD
     float dnRegenParam[6] = {1.f, 1.f, 65504.f, 50.f, 0.f, 0.01f};
     float dnCas = 0.f;          // CAS na imagem final, depois do denoise (0 = desligado)

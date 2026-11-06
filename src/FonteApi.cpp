@@ -207,8 +207,12 @@ void FonteApi::AvaliaProf(float cobertura)
 void FonteApi::Consumido(uint64_t n)
 {
     // o numero de outra geracao liberaria um slot que ainda vai ser lido
-    if (cab && geracaoPega == cab->geracao && n > cab->consumido)
-        cab->consumido = n;
+    if (!cab || geracaoPega != cab->geracao || n <= cab->consumido)
+        return;
+    cab->consumido = n;
+    MemoryBarrier();
+    if (cab->geracao != geracaoPega)
+        cab->consumido = 0; // o jogo trocou de geracao entre a conferencia e a escrita
 }
 
 void LimiteJogo::Fecha()

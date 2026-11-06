@@ -84,7 +84,7 @@ class FonteBuffer
     dlss5ov::Cabecalho* cab = nullptr;
     uint32_t versaoRecusada = 0;
     std::string erroAbre;
-    uint32_t geracao = 0, geracaoRecusada = 0;
+    uint32_t geracao = 0, geracaoRecusada = 0, geracaoPega = 0; // geracaoPega: a geracao do quadro que Pega entregou
     ComPtr<ID3D12Fence> cercaJogo, cercaOverlay;
     UINT64 valorOverlay = 0;
     Tex cor[dlss5ov::kSlotsEntrada], mov[dlss5ov::kSlotsEntrada], prof[dlss5ov::kSlotsEntrada];

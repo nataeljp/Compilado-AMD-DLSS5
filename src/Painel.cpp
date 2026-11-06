@@ -1437,13 +1437,6 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         Marca("Denoise ligado", &cfg.dnAtivo,
               "AMD FSR Ray Regeneration (FidelityFX SDK 2.4), o denoiser de machine learning da AMD. Exige RX 9000 ou mais nova. Desligado nao gasta GPU nem VRAM; os ajustes ficam.", false);
         ImGui::BeginDisabled(!cfg.dnAtivo);
-        {
-            const char* entradas[] = {"Imagem inteira", "Brilho da rede, jogo como material", "Brilho da rede, sem material"};
-            ImGui::TextUnformatted("Entrada do denoiser");
-            ImGui::SetNextItemWidth(lc);
-            ImGui::Combo("##dnEntrada", &cfg.dnRegenModo, entradas, 3);
-            Dica("Imagem inteira: limpa jogo e rede juntos, e muda cores e realces (mede pior). Brilho da rede: filtra so o grao do ganho da rede; a curva de tom dela, o detalhe do jogo e o matiz ficam. Vale na hora.");
-        }
         Marca("Usar a profundidade do jogo", &cfg.dnRegenProf,
               "Buffer: profundidade e FOV do jogo. API: o buffer de profundidade do jogo (DX11 e DX12), com escala relativa; o estado diz se nao foi achada e por que. Video e Vulkan nao tem: fica fixa.");
         Deslizador("Força", &cfg.dnRegenForca, 0.f, 1.f, "%.3f", "Mistura com a edicao sem filtro. 1 = so a filtrada.", 1.f);
@@ -1452,7 +1445,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         Deslizador("Radiância máx.", &cfg.dnRegenParam[2], 0.f, 65504.f, "%.0f", "Max radiance: teto do brilho que entra no denoiser.", 65504.f);
         Deslizador("Recorte", &cfg.dnRegenParam[3], 0.f, 100.f, "%.2f", "Radiance clip std K: desvios permitidos antes de cortar o brilho.", 50.f);
         Deslizador("Gaussiana", &cfg.dnRegenParam[4], 0.f, 1.f, "%.3f", "Gaussian kernel relaxation: relaxa o nucleo do filtro.", 0.f);
-        Deslizador("Oclusão", &cfg.dnRegenParam[5], 0.01f, 0.05f, "%.4f", "Disocclusion threshold: diferenca de profundidade que recomeca o historico.", 0.01f);
+        Deslizador("Desoclusão", &cfg.dnRegenParam[5], 0.01f, 0.05f, "%.4f", "Disocclusion threshold: diferenca de profundidade que recomeca o historico (nao e oclusao ambiente).", 0.01f);
         Deslizador("CAS", &cfg.dnCas, 0.f, 1.f, "%.3f",
                    "Nitidez adaptativa da AMD na imagem final, depois do denoise: devolve o detalhe que o filtro levou e recua onde o contraste ja e alto. 0 = desligado.", 0.f);
         {

@@ -210,6 +210,7 @@ bool FonteBuffer::Pega(Quadro& q)
         return false;
     const dlss5ov::SlotEntrada& e = cab->entrada[s];
     q.n = e.quadro;
+    geracaoPega = geracao;
     q.cor = &cor[s];
     q.mov = &mov[s];
     q.prof = &prof[s];
@@ -226,8 +227,13 @@ bool FonteBuffer::Pega(Quadro& q)
 
 void FonteBuffer::Consumido(uint64_t n)
 {
-    if (cab && n > cab->consumido)
-        cab->consumido = n;
+    // o numero de outra geracao liberaria slots da nova: o jogo achava o quadro lido e reescrevia o slot em leitura
+    if (!cab || !geracaoPega || geracaoPega != cab->geracao || n <= cab->consumido)
+        return;
+    cab->consumido = n;
+    MemoryBarrier();
+    if (cab->geracao != geracaoPega)
+        cab->consumido = 0; // o jogo trocou de geracao entre a conferencia e a escrita
 }
 
 Tex* FonteBuffer::EdicaoLivre()
@@ -239,12 +245,19 @@ Tex* FonteBuffer::EdicaoLivre()
     if (cercaUltimo && cercaOverlay->GetCompletedValue() < cercaUltimo)
         return nullptr;
     const int k = (ultimoPublicado + 1) % int(dlss5ov::kSlotsEdicao);
-    // ... e todo quadro do jogo que leu este slot ja saiu da GPU dele
-    if (cercaJogo->GetCompletedValue() < cab->lido[k])
-        return nullptr;
+    // ... e todo quadro do jogo que leu este slot ja saiu da GPU dele. Invalida antes de conferir: o jogo marca lido[k] antes de conferir o
+    // slot (ClienteBuffer::Quadro), entao um dos dois sempre ve a escrita do outro
+    const uint64_t quadroAntes = cab->edicao[k].quadro, cercaAntes = cab->edicao[k].cerca;
     cab->edicao[k].quadro = 0; // invalido enquanto escreve
     cab->edicao[k].cerca = 0;
     MemoryBarrier();
+    if (cercaJogo->GetCompletedValue() < cab->lido[k])
+    {
+        cab->edicao[k].cerca = cercaAntes; // o jogo ainda le: o slot volta como estava
+        MemoryBarrier();
+        cab->edicao[k].quadro = quadroAntes;
+        return nullptr;
+    }
     slotEscrita = k;
     return &edicao[k];
 }

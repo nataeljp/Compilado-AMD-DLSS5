@@ -131,6 +131,7 @@ struct App
     bool invertidaUsada = true; // Z invertido em uso (do jogo, ou medido quando ele nao diz)
     bool Ligado() const { return cap.Ativa() || buffer || captApi; }
     HWND Alvo() const { return buffer || captApi ? alvoBuffer : cap.Alvo(); }
+    bool fedAntValido = false; // fedAnt tem o quadro anterior (sem copia, nao tem)
     Tex inteiro, orig, fed, saida, fedAnt, saidaAnt; // orig: quadro no tamanho da rede; fed: o proxy dele
     // ---- denoise: CAS na imagem final e visao de depuracao, para ajustar o filtro vendo o que ele faz ----
     Passe pCas, pDnVista;
@@ -152,9 +153,9 @@ struct App
             float nitidez;
         } k{saida.w, saida.h, hdr ? 1u : 0u, std::clamp(cfg.dnCas, 0.f, 1.f)};
         pCas.Roda(c, desc, gpu.dev.Get(), {{saida.r.Get(), saida.fmt}}, {{saidaCas.r.Get(), saidaCas.fmt}}, &k, (saida.w + 7) / 8, (saida.h + 7) / 8);
-        saidaCas.Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
-        saida.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
-        c->CopyResource(saida.r.Get(), saidaCas.r.Get());
+        // o resultado vira a saida: as duas tem o mesmo tamanho, formato e flags (Cria), e quem le a saida pega o recurso a cada quadro
+        std::swap(saida.r, saidaCas.r);
+        std::swap(saida.estado, saidaCas.estado);
     }
     // a visao de depuracao do SDK no lugar da imagem
     void VistaDenoise(ID3D12GraphicsCommandList* c)
@@ -174,9 +175,9 @@ struct App
             float escala;
         } k{saida.w, saida.h, hdr ? 1u : 0u, escalaUsada};
         pDnVista.Roda(c, desc, gpu.dev.Get(), {{d.r.Get(), d.fmt}}, {{saidaCas.r.Get(), saidaCas.fmt}}, &k, (saida.w + 7) / 8, (saida.h + 7) / 8);
-        saidaCas.Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
-        saida.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
-        c->CopyResource(saida.r.Get(), saidaCas.r.Get());
+        // o resultado vira a saida: as duas tem o mesmo tamanho, formato e flags (Cria), e quem le a saida pega o recurso a cada quadro
+        std::swap(saida.r, saidaCas.r);
+        std::swap(saida.estado, saidaCas.estado);
     }
     // ---- a GPU para a rede: o teto de FPS do jogo. A prioridade nao adianta: D3DKMTSetProcessSchedulingPriorityClass (alta e tempo
     // real, aceitas) e hipStreamCreateWithPriority deram os mesmos 10,3 fps de rede com a GPU cheia; o teto em 30 deu 17,4 ----
@@ -1279,7 +1280,7 @@ RWTexture2D<float4> saida : register(u0);
             return ed;
         // no painel: 0 imagem, 1 visao geral, 2 em diante os paineis do manual sem o 7 ("Unused")
         const int vistaSdk = cfg.dnVista >= 9 ? cfg.dnVista + 1 : cfg.dnVista;
-        Tex* filtrada = rayRegen.Filtra(c, desc, gpu, pasta, *ed, orig, LuzNaTela(cfg.temporal.luz), cfg.dnRegenForca, cfg.dnRegenModo, cfg.dnRegenParam, vistaSdk, saida.w ? saida.w : ed->w, saida.h ? saida.h : ed->h, hdr ? escalaUsada : 1.f);
+        Tex* filtrada = rayRegen.Filtra(c, desc, gpu, pasta, *ed, orig, LuzNaTela(cfg.temporal.luz), cfg.dnRegenForca, cfg.dnRegenParam, vistaSdk, saida.w ? saida.w : ed->w, saida.h ? saida.h : ed->h);
         return filtrada ? filtrada : ed;
     }
     // o que falta, dito no painel: sem isto o denoise parece funcionar com a profundidade fixa
@@ -1839,7 +1840,10 @@ RWTexture2D<float4> saida : register(u0);
         {
             fluxo.Garante(gpu.dev.Get(), fed.w, fed.h, !buffer && !repJogo);
             if (fedAnt.w != fed.w || fedAnt.h != fed.h)
+            {
                 fedAnt.Cria(gpu.dev.Get(), fed.w, fed.h, DXGI_FORMAT_R16G16B16A16_FLOAT, L"alimentado anterior", false);
+                fedAntValido = false;
+            }
         }
         bool temMov = false, movDenoise = false;
         if (comMov && buffer)
@@ -1878,7 +1882,7 @@ RWTexture2D<float4> saida : register(u0);
             movDenoise = calculou;
         }
         movDenoise = movDenoise || temMov;
-        if (temMov)
+        if (temMov && fedAntValido)
             fluxo.Estatisticas(c, desc, gpu.dev.Get(), fed, fedAnt);
         // A rede ve este quadro e responde nele mesmo, como a NVIDIA roda o DLSS 5: a rede dentro do quadro, a edicao do
         // proprio quadro, nada trazido de quadros velhos (todo rastro vinha de trazer a edicao de quadros atras, por mais
@@ -2095,14 +2099,21 @@ RWTexture2D<float4> saida : register(u0);
             Barreira(c, bb, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
         }
         if (!dumpPasta.empty() && quadrosTeste > 0 && quadros + 1 >= (UINT64)quadrosTeste)
-            ultimoTemMov = temMov; // o ultimo quadro do dump: fedAnt guarda o anterior
-        else if (fedAnt.r)
         {
+            ultimoTemMov = temMov; // o ultimo quadro do dump: fedAnt guarda o anterior
+            fedAntValido = false;
+        }
+        else if (fedAnt.r && (temMov || cfg.movimento || !dumpPasta.empty()))
+        {
+            // so quem le: as estatisticas do movimento no proximo quadro e o dump (antes copiava com o movimento desligado, sem leitor)
             fed.Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
             fedAnt.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
             c->CopyResource(fedAnt.r.Get(), fed.r.Get());
             fed.Para(c, SRV);
+            fedAntValido = true;
         }
+        else
+            fedAntValido = false;
         Ck(c->Close(), "close1");
         ID3D12CommandList* l1[] = {c};
         gpu.fila->ExecuteCommandLists(1, l1);

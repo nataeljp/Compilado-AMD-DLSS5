@@ -281,10 +281,12 @@ DWORD WINAPI Ajudante(void*)
     }
 }
 
+// ate a ajudante largar o quadro: ela larga depois da cerca ou da perda do dispositivo (WaitForFences devolve nos dois). Desistir em
+// 2 s e destruir era uso depois de liberar: a ajudante ainda esperava nessa cerca e escrevia no quadro
 void EsperaQuadros(Troca& t)
 {
     for (Quadro* q : t.q)
-        for (int i = 0; q->ocupado && i < 2000; ++i)
+        while (q->ocupado)
             Sleep(1);
 }
 
@@ -502,12 +504,16 @@ bool Prepara(Dev& d, Troca& t, const MapaFmt& m)
 
 bool GaranteQuadro(Dev& d, Quadro& q, uint32_t fam)
 {
+    // cada um por si: com a cerca criada e o semaforo recusado, os envios seguintes saiam com semaforo nulo
     if (!q.f)
     {
         VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-        VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
         if (d.CreateFence(d.dev, &fi, nullptr, &q.f) != VK_SUCCESS)
             return false;
+    }
+    if (!q.s)
+    {
+        VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
         if (d.CreateSemaphore(d.dev, &si, nullptr, &q.s) != VK_SUCCESS)
             return false;
     }

@@ -1447,6 +1447,19 @@ uint64_t ClienteBuffer::Quadro(ID3D12GraphicsCommandList* c, const EntradasJogo&
                     jEd = j;
         if (jEd < 0)
             k = -1;
+        if (k >= 0)
+        {
+            // marca a leitura e confere de novo: o overlay invalida o slot antes de conferir lido[k] (FonteBuffer::EdicaoLivre)
+            const uint64_t lidoAntes = cab->lido[k];
+            cab->lido[k] = n;
+            MemoryBarrier();
+            const SlotEdicao& se = cab->edicao[k];
+            if (se.quadro != ancora[jEd] || !se.cerca)
+            {
+                cab->lido[k] = lidoAntes; // nao vai ler: o overlay nao espera por este quadro, cuja cerca pode nem ser sinalizada
+                k = -1, jEd = -1;
+            }
+        }
     }
     uint32_t ativos = 0, zera = 0;
     for (int j = 0; j < 3; ++j)

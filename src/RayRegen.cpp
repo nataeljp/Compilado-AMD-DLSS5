@@ -9,95 +9,26 @@ namespace ov {
 namespace {
 const D3D12_RESOURCE_STATES SRV = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 
-// A rede tem uma curva de tom: clareia o escuro e segura o claro. O filtro espacial mistura esses ganhos entre vizinhos: o escuro perde, a luz ganha (medido na gravacao do Cyberpunk: -14% e
-// +38%). Como o albedo no manual da AMD (5.1.1), o que vem do material sai antes do filtro e volta depois: a curva ganho x brilho deste quadro sai, ele filtra so o resto, e ela volta pixel a pixel.
-#define KCURVA_COMUM R"(
-static const uint CURVA_N = 32;
-static const float CURVA_MIN = -10.0, CURVA_PASSOS = 2.0; // 2^-10 a 2^6, meio stop por caixa
-float Lum(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
+// O contrato da AMD (ffx_denoiser.h, ffxDispatchDescDenoiser; o sample denoiserrendermodule.cpp): o sinal e a luz a filtrar e o albedo difuso vai
+// separado (sqrt), para o app multiplicar de volta depois (manual 5.1.1). O jogo nao entrega albedo: a imagem pronta vai como a luz e o albedo e 1
+// (sqrt(1) = 1), o caso em que nao ha o que separar. Nada estimado ou inventado entra no lugar do que o jogo nao entrega
+#define KCOMUM R"(
 static const float PISO = 1.0 / 512.0;
-float GanhoRede(float3 e, float l, uint luz) { return luz == 0 ? max((l + Lum(e)) / l, PISO) : exp2(Lum(e)); }
 )"
-const char* kCurvaZera = R"(
-RWTexture2D<int> caixas : register(u0);
-[numthreads(32, 2, 1)] void CSZera(uint2 p : SV_DispatchThreadID) { caixas[p] = 0; }
-)";
-const char* kCurvaSoma = KCURVA_COMUM R"(
+
+const char* kEntra = KCOMUM R"(
 cbuffer C : register(b0) { uint w; uint h; uint luz; uint p0; };
 Texture2D<float4> ed : register(t0);
 Texture2D<float4> orig : register(t1);
-RWTexture2D<int> caixas : register(u0);
-[numthreads(8, 8, 1)] void CSSoma(uint2 p : SV_DispatchThreadID)
-{
-    // um de cada quatro pixels: a soma cabe em 32 bits ate 8K
-    const uint2 q = p * 2;
-    if (q.x >= w || q.y >= h) return;
-    const float l = max(Lum(max(orig.Load(int3(q, 0)).rgb, 0.0)), PISO);
-    const float g = log2(GanhoRede(ed.Load(int3(q, 0)).rgb, l, luz));
-    const uint c = uint(clamp((log2(l) - CURVA_MIN) * CURVA_PASSOS, 0.0, float(CURVA_N - 1)));
-    InterlockedAdd(caixas[uint2(c, 0)], int(clamp(g, -8.0, 8.0) * 64.0));
-    InterlockedAdd(caixas[uint2(c, 1)], 1);
-}
-)";
-const char* kCurvaFecha = R"(
-cbuffer C : register(b0) { uint temAnt; uint p0; uint p1; uint p2; };
-Texture2D<int> caixas : register(t0);
-RWTexture2D<float> curva : register(u0);
-// caixa com poucos pixels nao define a curva: vale a vizinha; devagar entre quadros, senao a curva cintila
-[numthreads(1, 1, 1)] void CSFecha()
-{
-    float v[32];
-    int ultimo = -1;
-    for (int i = 0; i < 32; ++i)
-    {
-        const int n = caixas.Load(int3(i, 1, 0));
-        if (n < 32) { v[i] = 1e9; continue; }
-        v[i] = float(caixas.Load(int3(i, 0, 0))) / (64.0 * float(n));
-        if (ultimo >= 0)
-            for (int k = ultimo + 1; k < i; ++k)
-                v[k] = lerp(v[ultimo], v[i], float(k - ultimo) / float(i - ultimo));
-        else
-            for (int k = 0; k < i; ++k)
-                v[k] = v[i];
-        ultimo = i;
-    }
-    for (int i = 0; i < 32; ++i)
-    {
-        const float a = ultimo < 0 ? 0.0 : (i > ultimo ? v[ultimo] : v[i]);
-        curva[uint2(i, 0)] = temAnt ? lerp(curva[uint2(i, 0)], a, 0.2) : a;
-    }
-}
-)";
-
-// a imagem pronta como luz e albedo branco: separar por canal dava valores instaveis nas cores saturadas (um canal quase zero) e mudava as cores
-const char* kEntra = KCURVA_COMUM R"(
-cbuffer C : register(b0) { uint w; uint h; uint luz; uint modo; uint p0; uint p1; uint p2; uint p3; };
-Texture2D<float4> ed : register(t0);
-Texture2D<float4> orig : register(t1);
-Texture2D<float> curva : register(t2);
-float CurvaEm(float l)
-{
-    const float x = clamp((log2(l) - CURVA_MIN) * CURVA_PASSOS - 0.5, 0.0, float(CURVA_N - 1));
-    const uint a = uint(x);
-    return exp2(lerp(curva.Load(int3(a, 0, 0)), curva.Load(int3(min(a + 1, CURVA_N - 1), 0, 0)), x - float(a)));
-}
 RWTexture2D<float4> sinal : register(u0);
 RWTexture2D<float4> albedo : register(u1);
 [numthreads(8, 8, 1)] void CSEntra(uint2 p : SV_DispatchThreadID)
 {
     if (p.x >= w || p.y >= h) return;
     const float3 e = ed.Load(int3(p, 0)).rgb, o = max(orig.Load(int3(p, 0)).rgb, 0.0);
-    if (modo == 0)
-    {
-        sinal[p] = float4(max(luz == 0 ? o + e : max(o, PISO) * exp2(e), 0.0), 1.0);
-        albedo[p] = 1.0;
-        return;
-    }
-    // so o brilho que a rede muda: o matiz da edicao fica, e o jogo vai como material
-    const float l = max(Lum(o), PISO);
-    const float g = GanhoRede(e, l, luz) / CurvaEm(l);
-    sinal[p] = float4(g, g, g, 1.0);
-    albedo[p] = modo == 2 ? float4(1.0, 1.0, 1.0, 1.0) : float4(sqrt(saturate(o / (1.0 + o))), 1.0);
+    // a edicao aplicada ao jogo, em luz linear: a imagem que a tela mostraria
+    sinal[p] = float4(max(luz == 0 ? o + e : max(o, PISO) * exp2(e), 0.0), 1.0);
+    albedo[p] = 1.0;
 }
 )";
 
@@ -186,11 +117,11 @@ SamplerState amostra : register(s0);
 }
 )";
 
-// as normais da profundidade; sem ela, de frente
+// as normais da profundidade (o jogo nao entrega as dele); sem ela, de frente. Material 0 em todo pixel: o jogo nao diz que pixel e de que material
+// (manual 5.4: comece com 0); separar a luz pelo brilho era invencao nossa. Rugosidade: o jogo nao entrega; o sinal e so o difuso direto
 const char* kNormais = R"(
-cbuffer C : register(b0) { uint w; uint h; float tanY; uint reais; float limLuz; uint p0; uint p1; uint p2; };
+cbuffer C : register(b0) { uint w; uint h; float tanY; uint reais; };
 Texture2D<float> prof : register(t0);
-Texture2D<float4> orig : register(t1);
 RWTexture2D<float4> normais : register(u0);
 float Z(int2 q) { return -prof.Load(int3(clamp(q, int2(0, 0), int2(w, h) - 1), 0)); }
 float3 Ponto(int2 q)
@@ -221,65 +152,23 @@ float2 NormalToOctahedronUv(float3 N)
         if (dot(m, m) > 1e-20) n = normalize(m);
         if (n.z < 0.0) n = -n;
     }
-    // material type (manual 5.4): o SDK nao mistura pixels de materiais diferentes. Luz e cena separadas: o ganho do escuro em volta vazava para a luz
-    const float l = dot(max(orig.Load(int3(p, 0)).rgb, 0.0), float3(0.2126, 0.7152, 0.0722));
-    normais[p] = float4(NormalToOctahedronUv(n), 0.5, l >= limLuz ? 1.0 / 3.0 : 0.0);
+    normais[p] = float4(NormalToOctahedronUv(n), 0.5, 0.0);
 }
 )";
 
-// a luz em escala grande nao e ruido: a media de cada bloco depois do filtro volta a ser a de antes
-const char* kBaixa = R"(
-cbuffer C : register(b0) { uint w; uint h; uint p0; uint p1; };
-Texture2D<float4> sinal : register(t0);
-Texture2D<float4> filtrado : register(t1);
-RWTexture2D<float2> baixa : register(u0);
-[numthreads(8, 8, 1)] void CSBaixa(uint2 g : SV_DispatchThreadID)
-{
-    float2 s = 0.0;
-    float n = 0.0;
-    for (uint y = 0; y < 16; ++y)
-        for (uint x = 0; x < 16; ++x)
-        {
-            const uint2 q = g * 16 + uint2(x, y);
-            if (q.x >= w || q.y >= h) continue;
-            s += float2(sinal.Load(int3(q, 0)).g, filtrado.Load(int3(q, 0)).g);
-            n += 1.0;
-        }
-    baixa[g] = n > 0.0 ? s / n : float2(1.0, 1.0);
-}
-)";
-
-const char* kSai = KCURVA_COMUM R"(
-cbuffer C : register(b0) { uint w; uint h; uint luz; float forca; uint modo; uint bw; uint bh; uint p2; };
+// de volta para o formato da edicao: a luz filtrada vezes o albedo (1), menos o jogo. Forca mistura com a edicao sem filtro
+const char* kSai = KCOMUM R"(
+cbuffer C : register(b0) { uint w; uint h; uint luz; float forca; };
 Texture2D<float4> filtrado : register(t0);
 Texture2D<float4> orig : register(t1);
 Texture2D<float4> ed : register(t2);
-Texture2D<float> curva : register(t3);
-Texture2D<float2> baixa : register(t4);
 RWTexture2D<float4> res : register(u0);
-SamplerState amostra : register(s0);
-float CurvaEm(float l)
-{
-    const float x = clamp((log2(l) - CURVA_MIN) * CURVA_PASSOS - 0.5, 0.0, float(CURVA_N - 1));
-    const uint a = uint(x);
-    return exp2(lerp(curva.Load(int3(a, 0, 0)), curva.Load(int3(min(a + 1, CURVA_N - 1), 0, 0)), x - float(a)));
-}
 [numthreads(8, 8, 1)] void CSSai(uint2 p : SV_DispatchThreadID)
 {
     if (p.x >= w || p.y >= h) return;
     const float4 e = ed.Load(int3(p, 0));
     const float3 r = max(filtrado.Load(int3(p, 0)).rgb, 0.0), o = max(orig.Load(int3(p, 0)).rgb, 0.0);
-    float3 n;
-    if (modo == 0)
-        n = luz == 0 ? r - o : log2(max(r, PISO) / max(o, PISO));
-    else
-    {
-        const float l = max(Lum(o), PISO);
-        const float2 b = baixa.SampleLevel(amostra, (float2(p) + 0.5) / (16.0 * float2(bw, bh)), 0);
-        const float g = max(r.g * clamp(b.x / max(b.y, PISO), 0.5, 2.0), PISO) * CurvaEm(l);
-        const float ant = GanhoRede(e.rgb, l, luz);
-        n = luz == 0 ? (o + e.rgb) * (g / ant) - o : e.rgb + log2(g / ant);
-    }
+    const float3 n = luz == 0 ? r - o : log2(max(r, PISO) / max(o, PISO));
     res[p] = float4(lerp(e.rgb, n, forca), e.a);
 }
 )";
@@ -300,15 +189,11 @@ void RayRegen::Fecha()
 
 void RayRegen::Cria(ID3D12Device* d)
 {
-    pCurvaZera.Cria(d, kCurvaZera, "CSZera", 0, 1, 0, "ray regeneration: curva, zera");
-    pCurvaSoma.Cria(d, kCurvaSoma, "CSSoma", 2, 1, 4, "ray regeneration: curva, soma");
-    pCurvaFecha.Cria(d, kCurvaFecha, "CSFecha", 1, 1, 4, "ray regeneration: curva");
-    pEntra.Cria(d, kEntra, "CSEntra", 3, 2, 8, "ray regeneration: entrada");
+    pEntra.Cria(d, kEntra, "CSEntra", 2, 2, 4, "ray regeneration: entrada");
     pGeo.Cria(d, kGeo, "CSGeo", 3, 2, 16, "ray regeneration: geometria");
     pBrutos.Cria(d, kBrutos, "CSBrutos", 2, 1, 4, "ray regeneration: pontos da profundidade");
-    pNormais.Cria(d, kNormais, "CSNormais", 2, 1, 8, "ray regeneration: normais");
-    pBaixa.Cria(d, kBaixa, "CSBaixa", 2, 1, 4, "ray regeneration: luz grande");
-    pSai.Cria(d, kSai, "CSSai", 5, 1, 8, "ray regeneration: saida");
+    pNormais.Cria(d, kNormais, "CSNormais", 1, 1, 4, "ray regeneration: normais");
+    pSai.Cria(d, kSai, "CSSai", 3, 1, 4, "ray regeneration: saida");
 }
 
 bool RayRegen::Abre(Gpu& gpu, const std::wstring& pasta, UINT w, UINT h, bool comDepuracao)
@@ -364,7 +249,7 @@ bool RayRegen::Abre(Gpu& gpu, const std::wstring& pasta, UINT w, UINT h, bool co
             reinterpret_cast<PfnFfxQuery>(fnConsulta)(&c, &q.header);
         aplicado[i] = padrao[i];
     }
-    Log("denoise", Fmt("Ray Regeneration ligado: %ux%u; padroes: normal %.3f, estabilidade %.3f, radiancia maxima %.1f, recorte %.3f, gaussiana %.3f, oclusao %.3f", w, h,
+    Log("denoise", Fmt("Ray Regeneration ligado: %ux%u; padroes: normal %.3f, estabilidade %.3f, radiancia maxima %.1f, recorte %.3f, gaussiana %.3f, desoclusao %.3f", w, h,
                        padrao[0], padrao[1], padrao[2], padrao[3], padrao[4], padrao[5]));
     return true;
 }
@@ -379,12 +264,6 @@ void RayRegen::Recursos(ID3D12Device* dev, UINT w, UINT h)
     normais.Cria(dev, w, h, DXGI_FORMAT_R10G10B10A2_UNORM, L"ray regeneration: normais");
     profAnterior.Cria(dev, w, h, DXGI_FORMAT_R32_FLOAT, L"ray regeneration: profundidade anterior");
     movZ.Cria(dev, w, h, DXGI_FORMAT_R16G16B16A16_FLOAT, L"ray regeneration: movimento");
-    baixa.Cria(dev, (w + 15) / 16, (h + 15) / 16, DXGI_FORMAT_R32G32_FLOAT, L"ray regeneration: luz grande");
-    if (!curva.r)
-    {
-        caixas.Cria(dev, 32, 2, DXGI_FORMAT_R32_SINT, L"ray regeneration: curva, caixas");
-        curva.Cria(dev, 32, 1, DXGI_FORMAT_R32_FLOAT, L"ray regeneration: curva");
-    }
     if (!brutos.r)
     {
         brutos.Cria(dev, kBrutosW, kBrutosH, DXGI_FORMAT_R32G32_FLOAT, L"ray regeneration: pontos da profundidade");
@@ -424,6 +303,10 @@ void RayRegen::Prepara(ID3D12GraphicsCommandList* c, Descritores& desc, Gpu& gpu
     prepReset = e.salto || !temAnterior || real != fonteReal;
     fonteReal = real;
     prepTan = e.tanY > 0.f ? e.tanY : 0.577f;
+    // a camera que kGeo usa para o Z: a projecao do despacho (Filtra) tem de ser a mesma
+    prepPerto = e.perto > 0.f ? e.perto : 0.1f;
+    prepInfinita = !(e.perto > 0.f && !e.infinita) || e.longe <= prepPerto;
+    prepLonge = prepInfinita ? 1e6f : e.longe;
     // o jogo diz (buffer), ou mede do quadro anterior
     MedePontos(e.invertidaConhecida);
     if (e.invertidaConhecida)
@@ -434,6 +317,12 @@ void RayRegen::Prepara(ID3D12GraphicsCommandList* c, Descritores& desc, Gpu& gpu
     e.mov->Para(c, SRV);
     if (dist)
         dist->Para(c, SRV);
+    // a profundidade anterior e a textura que este quadro nao escreve: as duas trocam de papel, sem copia
+    if (temAnterior)
+    {
+        std::swap(prof.r, profAnterior.r);
+        std::swap(prof.estado, profAnterior.estado);
+    }
     prof.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     movZ.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     profAnterior.Para(c, SRV);
@@ -510,7 +399,7 @@ void RayRegen::MedePontos(bool invertidaConhecida)
     }
 }
 
-Tex* RayRegen::Filtra(ID3D12GraphicsCommandList* c, Descritores& desc, Gpu& gpu, const std::wstring& pasta, Tex& edicao, Tex& orig, UINT luz, float forca, int modo, const float* params, int vista, UINT vistaW, UINT vistaH, float branco)
+Tex* RayRegen::Filtra(ID3D12GraphicsCommandList* c, Descritores& desc, Gpu& gpu, const std::wstring& pasta, Tex& edicao, Tex& orig, UINT luz, float forca, const float* params, int vista, UINT vistaW, UINT vistaH)
 {
     comVista = vista > 0;
     if (falhou)
@@ -577,26 +466,11 @@ Tex* RayRegen::Filtra(ID3D12GraphicsCommandList* c, Descritores& desc, Gpu& gpu,
     orig.Para(c, SRV);
     sinal.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     albedo.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    if (modo != 0)
-    {
-        caixas.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        pCurvaZera.Roda(c, desc, gpu.dev.Get(), {}, {Par{caixas.r.Get(), caixas.fmt}}, nullptr, 1, 1);
-        caixas.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS); // barreira UAV: zeradas antes da soma
-        struct { UINT w, h, luz, p0; } ks0{w, h, luz, 0};
-        pCurvaSoma.Roda(c, desc, gpu.dev.Get(), {Par{edicao.r.Get(), edicao.fmt}, Par{orig.r.Get(), orig.fmt}}, {Par{caixas.r.Get(), caixas.fmt}}, &ks0, (w / 2 + 8) / 8, (h / 2 + 8) / 8);
-        caixas.Para(c, SRV);
-        curva.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        struct { UINT temAnt, p0, p1, p2; } kf{prepReset ? 0u : 1u, 0, 0, 0};
-        pCurvaFecha.Roda(c, desc, gpu.dev.Get(), {Par{caixas.r.Get(), caixas.fmt}}, {Par{curva.r.Get(), curva.fmt}}, &kf, 1, 1);
-    }
-    curva.Para(c, SRV);
-    struct { UINT w, h, luz, modo, p0, p1, p2, p3; } ke{w, h, luz, UINT(modo), 0, 0, 0, 0};
-    pEntra.Roda(c, desc, gpu.dev.Get(), {Par{edicao.r.Get(), edicao.fmt}, Par{orig.r.Get(), orig.fmt}, Par{curva.r.Get(), curva.fmt}},
-                {Par{sinal.r.Get(), sinal.fmt}, Par{albedo.r.Get(), albedo.fmt}}, &ke, gx, gy);
-    // luz = acima de 40% do branco de papel (na "imagem inteira" nao ha ganho para vazar)
-    struct { UINT w, h; float tanY; UINT reais; float limLuz; UINT p0, p1, p2; } kn{w, h, prepTan, params[0] > 0.f && fonte != 0 ? 1u : 0u, modo != 0 ? 0.4f * branco : 1e30f, 0, 0, 0};
+    struct { UINT w, h, luz, p0; } ke{w, h, luz, 0};
+    pEntra.Roda(c, desc, gpu.dev.Get(), {Par{edicao.r.Get(), edicao.fmt}, Par{orig.r.Get(), orig.fmt}}, {Par{sinal.r.Get(), sinal.fmt}, Par{albedo.r.Get(), albedo.fmt}}, &ke, gx, gy);
+    struct { UINT w, h; float tanY; UINT reais; } kn{w, h, prepTan, params[0] > 0.f && fonte != 0 ? 1u : 0u};
     normais.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    pNormais.Roda(c, desc, gpu.dev.Get(), {Par{prof.r.Get(), prof.fmt}, Par{orig.r.Get(), orig.fmt}}, {Par{normais.r.Get(), normais.fmt}}, &kn, gx, gy);
+    pNormais.Roda(c, desc, gpu.dev.Get(), {Par{prof.r.Get(), prof.fmt}}, {Par{normais.r.Get(), normais.fmt}}, &kn, gx, gy);
     sinal.Para(c, SRV);
     albedo.Para(c, SRV);
     normais.Para(c, SRV);
@@ -610,14 +484,17 @@ Tex* RayRegen::Filtra(ID3D12GraphicsCommandList* c, Descritores& desc, Gpu& gpu,
     d.normals = ffxApiGetResourceDX12(normais.r.Get(), FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ);
     d.diffuseAlbedo = ffxApiGetResourceDX12(albedo.r.Get(), FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ);
     d.motionVectorScale = {1.f / float(w), 1.f / float(h), 1.f}; // o movimento vem em pixels, atual -> anterior
-    // camera identidade; a projecao com o FOV que as normais acima usam
+    // camera identidade: o Z e as normais estao no espaco da camera, e o movimento dela vem nos vetores (sem posicao nem rotacao do jogo). A projecao
+    // e a da camera que deu o Z (kGeo), sem jitter: a cor que entra e a saida do FSR, sem jitter, e o Z e o movimento foram lidos no ponto dela
     float identidade[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
-    const float f = 1.f / prepTan, perto = 0.1f, longe = 1e6f;
+    const float f = 1.f / prepTan, perto = prepPerto, longe = prepLonge;
     float proj[16] = {f * float(h) / float(w), 0, 0, 0, 0, f, 0, 0, 0, 0, longe / (perto - longe), -1, 0, 0, perto * longe / (perto - longe), 0};
     static_assert(sizeof(d.view) == sizeof(identidade), "matriz 4x4 de float");
     std::memcpy(&d.view, identidade, sizeof identidade);
     std::memcpy(&d.projection, proj, sizeof proj);
-    d.linearDepthBounds = {0.f, 1e7f};
+    // fora da faixa o SDK so repassa (ffx_denoiser.h: passthrough), como o sample faz com o que passa do plano de longe: o ceu e o que nao foi
+    // desenhado ficam no plano de longe (kGeo, Linear) e passam sem filtro
+    d.linearDepthBounds = {0.f, std::min(longe, 1e6f) * 0.999f}; // Linear() nao passa de 1e6
     d.renderSize = {w, h};
     d.frameIndex = indice++;
     d.flags = prepReset ? FFX_DENOISER_DISPATCH_RESET : 0u;
@@ -651,22 +528,10 @@ Tex* RayRegen::Filtra(ID3D12GraphicsCommandList* c, Descritores& desc, Gpu& gpu,
     if (vista > 0)
         depura.Para(c, SRV);
     saida.Para(c, SRV);
-    // a profundidade deste quadro e a anterior do proximo
-    prof.Para(c, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    profAnterior.Para(c, D3D12_RESOURCE_STATE_COPY_DEST);
-    c->CopyResource(profAnterior.r.Get(), prof.r.Get());
-    temAnterior = true;
+    temAnterior = true; // a profundidade deste quadro e a anterior do proximo (Prepara troca as duas)
     resultado.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    baixa.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    if (modo != 0)
-    {
-        struct { UINT w, h, p0, p1; } kb{w, h, 0, 0};
-        pBaixa.Roda(c, desc, gpu.dev.Get(), {Par{sinal.r.Get(), sinal.fmt}, Par{saida.r.Get(), saida.fmt}}, {Par{baixa.r.Get(), baixa.fmt}}, &kb, (baixa.w + 7) / 8, (baixa.h + 7) / 8);
-    }
-    baixa.Para(c, SRV);
-    struct { UINT w, h, luz; float forca; UINT modo, bw, bh, p2; } ks{w, h, luz, std::clamp(forca, 0.f, 1.f), UINT(modo), baixa.w, baixa.h, 0};
-    pSai.Roda(c, desc, gpu.dev.Get(), {Par{saida.r.Get(), saida.fmt}, Par{orig.r.Get(), orig.fmt}, Par{edicao.r.Get(), edicao.fmt}, Par{curva.r.Get(), curva.fmt}, Par{baixa.r.Get(), baixa.fmt}},
-              {Par{resultado.r.Get(), resultado.fmt}}, &ks, gx, gy);
+    struct { UINT w, h, luz; float forca; } ks{w, h, luz, std::clamp(forca, 0.f, 1.f)};
+    pSai.Roda(c, desc, gpu.dev.Get(), {Par{saida.r.Get(), saida.fmt}, Par{orig.r.Get(), orig.fmt}, Par{edicao.r.Get(), edicao.fmt}}, {Par{resultado.r.Get(), resultado.fmt}}, &ks, gx, gy);
     resultado.Para(c, SRV);
     return &resultado;
 }
