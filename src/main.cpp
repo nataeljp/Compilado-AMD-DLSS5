@@ -910,23 +910,18 @@ RWTexture2D<float4> saida : register(u0);
             zeraHistorico = true;
         }
         ov.Mostra(false);
-        // desligado devolve a VRAM ao jogo (2026-11-06, Gears: 50 fps ligado, 25 depois de ligar/desligar algumas vezes com o
-        // overlay desligado, 77 so ao fechar o processo): a sessao da rede (o HIP segura 2-3 GB ate o Destroy), os quadros no
-        // tamanho da rede e o contexto do Ray Regeneration ficavam alocados. Ligar recria tudo: IniciaSessao sobe a rede (redeOk
-        // falso), Garante refaz os quadros e o Ray Regeneration reabre no primeiro filtro.
+        // desligado: a sessao da rede e o Ray Regeneration ficam (solta-los custava ~2,8 s ate a primeira resposta ao religar:
+        // modulos, pesos e a primeira execucao de novo); so os quadros no tamanho da rede saem. A VRAM fica no registro a cada
+        // desligar (2026-11-06, Gears: o uso cresceu com liga/desliga e so voltou ao fechar o processo; causa ainda nao provada)
         gpu.Espera();
         UINT64 antes = 0, depois = 0, orc = 0, ram = 0;
         gpu.Memoria(antes, orc, ram);
-        rede.Encerra();
-        redeOk = false;
-        redeSolta = true;
-        rayRegen.Fecha();
         for (Tex* t : {&inteiro, &inteiroA, &orig, &fed, &fedAnt, &origCrua})
             t->Solta();
         origCruaValida = false;
         fedAntValido = false;
         gpu.Memoria(depois, orc, ram);
-        Log("memoria", Fmt("desligado: rede, quadros e Ray Regeneration soltos, VRAM do processo %llu -> %llu MB",
+        Log("memoria", Fmt("desligado: quadros soltos, rede e Ray Regeneration mantidos, VRAM do processo %llu -> %llu MB",
                            (unsigned long long)(antes >> 20), (unsigned long long)(depois >> 20)));
     }
     // jogo com o modulo dentro (injetado antes) e o FSR rodando: com o Modo de Rede em

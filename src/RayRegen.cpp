@@ -379,17 +379,31 @@ void RayRegen::MedePontos(bool invertidaConhecida)
     }
     D3D12_RANGE nada{0, 0};
     brutosLeitura->Unmap(0, &nada);
+    // o que passa sem filtro (ffx_denoiser.h: linearDepthBounds): o ceu e o que nao foi desenhado tem de ficar alem do limite
+    const float lim = std::min(prepLonge, 1e6f) * 0.999f;
+    int alem = 0;
+    for (UINT i = 0; i < kBrutosW * kBrutosH; ++i)
+        alem += zs[i] >= lim;
     std::nth_element(zs, zs + kBrutosW * kBrutosH / 2, zs + kBrutosW * kBrutosH);
     zTipico = zs[kBrutosW * kBrutosH / 2];
     // cobertura: tudo menos o valor mais comum (o de limpeza do buffer: ceu, ou nada desenhado)
     std::sort(ds, ds + kBrutosW * kBrutosH);
     int run = 1, maior = 1;
+    float moda = ds[0];
     for (UINT i = 1; i < kBrutosW * kBrutosH; ++i)
     {
         run = ds[i] - ds[i - 1] <= 1e-6f ? run + 1 : 1;
-        maior = std::max(maior, run);
+        if (run > maior)
+            maior = run, moda = ds[i];
     }
     cobertura = 1.f - float(maior) / float(kBrutosW * kBrutosH);
+    static unsigned vezes = 0;
+    if (vezes++ % 300 == 0)
+    {
+        const float n = float(kBrutosW * kBrutosH);
+        Log("denoise", Fmt("profundidade do jogo: %s, valor de limpeza %.7g em %.0f%% dos pontos, alem do limite (passa sem filtro) %.0f%%, Z tipico %.4g, limite %.4g",
+                           invertida ? "Z invertido" : "Z direto", moda, 100.f * float(maior) / n, 100.f * float(alem) / n, zTipico, lim));
+    }
     coberturaNova = true;
     if (invertidaConhecida)
         return;
