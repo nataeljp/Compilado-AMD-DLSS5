@@ -53,9 +53,10 @@ class RayRegen
     Tex sinal, albedo, prof, normais, saida, resultado, profAnterior, movZ;
     Tex depura; // a visao de depuracao do SDK (RGB a cor, A = pixel escrito), no tamanho da tela
 
+    void Fecha(); // solta o contexto (overlay desligado); o proximo filtro reabre
+
   private:
     bool Abre(Gpu& gpu, const std::wstring& pasta, UINT w, UINT h, bool comDepuracao);
-    void Fecha();
     void Recursos(ID3D12Device* d, UINT w, UINT h);
     void MedePontos(bool invertidaConhecida);
     Passe pEntra, pGeo, pBrutos, pNormais, pSai;

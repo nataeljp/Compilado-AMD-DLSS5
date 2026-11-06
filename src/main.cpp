@@ -10,6 +10,7 @@
 // Teste:    DLSS5Overlay.exe --alvo "titulo" --quadros N --grava saida.rgba
 #include <DirectXPackedVector.h>
 #include "Comum.h"
+#include <psapi.h>
 #include "Abertura.h"
 #include "Captura.h"
 #include "Config.h"
@@ -245,6 +246,7 @@ struct App
         gpu.Espera();
         rede.Encerra();
         redeOk = rede.Inicia(gpu, PastaRede(), sessao.redePequena);
+        redeSolta = false;
         redePequenaAtiva = sessao.redePequena;
         nivelAtual = -1;
         zeraHistorico = true;
@@ -908,6 +910,24 @@ RWTexture2D<float4> saida : register(u0);
             zeraHistorico = true;
         }
         ov.Mostra(false);
+        // desligado devolve a VRAM ao jogo (2026-11-06, Gears: 50 fps ligado, 25 depois de ligar/desligar algumas vezes com o
+        // overlay desligado, 77 so ao fechar o processo): a sessao da rede (o HIP segura 2-3 GB ate o Destroy), os quadros no
+        // tamanho da rede e o contexto do Ray Regeneration ficavam alocados. Ligar recria tudo: IniciaSessao sobe a rede (redeOk
+        // falso), Garante refaz os quadros e o Ray Regeneration reabre no primeiro filtro.
+        gpu.Espera();
+        UINT64 antes = 0, depois = 0, orc = 0, ram = 0;
+        gpu.Memoria(antes, orc, ram);
+        rede.Encerra();
+        redeOk = false;
+        redeSolta = true;
+        rayRegen.Fecha();
+        for (Tex* t : {&inteiro, &inteiroA, &orig, &fed, &fedAnt, &origCrua})
+            t->Solta();
+        origCruaValida = false;
+        fedAntValido = false;
+        gpu.Memoria(depois, orc, ram);
+        Log("memoria", Fmt("desligado: rede, quadros e Ray Regeneration soltos, VRAM do processo %llu -> %llu MB",
+                           (unsigned long long)(antes >> 20), (unsigned long long)(depois >> 20)));
     }
     // jogo com o modulo dentro (injetado antes) e o FSR rodando: com o Modo de Rede em
     // buffer o overlay conecta sozinho, sem Ctrl+Shift+D (o que o usuario desligou fica desligado)
@@ -1590,6 +1610,7 @@ RWTexture2D<float4> saida : register(u0);
         return v;
     }
     int nivelAtual = -1, nivelAlvo = 0, quadrosNoNivel = 0;
+    bool redeSolta = false; // a rede foi solta pelo desligar (o painel nao avisa falha; Liga sobe de novo)
     void AjustaProfundidade(bool temMov)
     {
         // a rede pequena ja vem com os blocos dela (network-layout.txt); os niveis de profundidade sao da grande
@@ -2342,7 +2363,7 @@ RWTexture2D<float4> saida : register(u0);
             return;
         EstadoPainel e;
         e.placa = gpu.nome;
-        e.redeOk = redeOk && rede.Pronta();
+        e.redeOk = redeSolta || (redeOk && rede.Pronta()); // solta pelo desligar nao e falha: volta ao ligar
         e.fonte = cfg.fonte;
         e.estadoBuffer = estadoBuffer;
         if (Ligado())
@@ -2684,6 +2705,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
     App app;
     std::wstring alvoTitulo, imagemArq;
     bool teclasTeste = false, ignoraFoco = false;
+    int cicloSeg = 0, cicloVezes = 0; // --cicla <s> <n>: desliga/liga o alvo n vezes, a cada s segundos, e registra a memoria
+    HWND alvoCiclo = nullptr;
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     for (int i = 1; i + 1 < argc; ++i)
@@ -2694,6 +2717,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             teclasTeste = true; // testes com outro overlay aberto: atalhos Ctrl+Shift+F5..F10
         else if (!wcscmp(argv[i], L"--ignora-foco"))
             ignoraFoco = true; // testes com o PC em uso: roda sem a janela do jogo em primeiro plano
+        else if (!wcscmp(argv[i], L"--cicla") && i + 2 < argc)
+        {
+            cicloSeg = _wtoi(argv[++i]);
+            cicloVezes = _wtoi(argv[++i]);
+        }
         else if (!wcscmp(argv[i], L"--grava-em"))
             app.gravaEm = _wtoi(argv[++i]);
         else if (!wcscmp(argv[i], L"--quadros"))
@@ -2897,6 +2925,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         if (!b.achou)
             Log("teste", "janela nao encontrada: " + Utf8(alvoTitulo));
         app.Liga(b.achou);
+        alvoCiclo = b.achou;
     }
     Log("app", "pronto: Ctrl+Shift+D liga no jogo em primeiro plano");
     using clk = std::chrono::steady_clock;
@@ -2977,8 +3006,33 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 }
             }
         }
-        if (!app.Ligado())
+        // --cicla: o liga/desliga do Ctrl+Shift+D no alvo, com a memoria do processo a cada troca (VRAM local, video na RAM, RAM
+        // privada, texturas do overlay)
+        if (cicloSeg > 0 && alvoCiclo)
         {
+            static auto ultimoCiclo = clk::now();
+            static int feitos = 0;
+            if (clk::now() - ultimoCiclo >= std::chrono::seconds(cicloSeg))
+            {
+                ultimoCiclo = clk::now();
+                if (feitos >= cicloVezes * 2 || !IsWindow(alvoCiclo))
+                    break;
+                if (app.Ligado())
+                    app.Desliga();
+                else
+                    app.Liga(alvoCiclo);
+                ++feitos;
+                UINT64 uso = 0, orc = 0, naRam = 0;
+                app.gpu.Memoria(uso, orc, naRam);
+                PROCESS_MEMORY_COUNTERS_EX pm{};
+                pm.cb = sizeof pm;
+                GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pm), sizeof pm);
+                Log("ciclo", Fmt("%d %s: VRAM %llu MB, video na RAM %llu MB, RAM privada %llu MB, texturas %llu MB", feitos,
+                                 app.Ligado() ? "ligado" : "desligado", (unsigned long long)(uso >> 20), (unsigned long long)(naRam >> 20),
+                                 (unsigned long long)(pm.PrivateUsage >> 20), (unsigned long long)(Tex::BytesVivos() >> 20)));
+            }
+        }
+        if (!app.Ligado())        {
             app.ov.Mostra(false);
             if (app.quadrosTeste > 0 && !alvoTitulo.empty())
                 break; // teste sem alvo

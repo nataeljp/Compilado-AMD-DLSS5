@@ -26,9 +26,12 @@ RWTexture2D<float4> albedo : register(u1);
 {
     if (p.x >= w || p.y >= h) return;
     const float3 e = ed.Load(int3(p, 0)).rgb, o = max(orig.Load(int3(p, 0)).rgb, 0.0);
-    // a edicao aplicada ao jogo, em luz linear: a imagem que a tela mostraria
-    sinal[p] = float4(max(luz == 0 ? o + e : max(o, PISO) * exp2(e), 0.0), 1.0);
-    albedo[p] = 1.0;
+    // o contrato da AMD (manual 5.1.1): o sinal entra SEM o albedo e o app multiplica de volta. A base sobre a qual a edicao e aplicada e o quadro
+    // do jogo: ele e o albedo (sqrt, a codificacao padrao) e o sinal e a razao de luz da edicao. Com albedo 1 o filtro tomava a textura por ruido e
+    // a borrava (quadro da NVIDIA, 8 quadros parados: 46,35 -> 21,11 dB, FLIP 0,033 -> 0,253)
+    const float3 a = clamp(o, PISO, 1.0);
+    sinal[p] = float4(max(luz == 0 ? o + e : max(o, PISO) * exp2(e), 0.0) / a, 1.0);
+    albedo[p] = float4(sqrt(a), 1.0);
 }
 )";
 
@@ -156,7 +159,7 @@ float2 NormalToOctahedronUv(float3 N)
 }
 )";
 
-// de volta para o formato da edicao: a luz filtrada vezes o albedo (1), menos o jogo. Forca mistura com a edicao sem filtro
+// de volta para o formato da edicao: a luz filtrada vezes o albedo (o quadro do jogo), menos o jogo. Forca mistura com a edicao sem filtro
 const char* kSai = KCOMUM R"(
 cbuffer C : register(b0) { uint w; uint h; uint luz; float forca; };
 Texture2D<float4> filtrado : register(t0);
@@ -167,7 +170,7 @@ RWTexture2D<float4> res : register(u0);
 {
     if (p.x >= w || p.y >= h) return;
     const float4 e = ed.Load(int3(p, 0));
-    const float3 r = max(filtrado.Load(int3(p, 0)).rgb, 0.0), o = max(orig.Load(int3(p, 0)).rgb, 0.0);
+    const float3 o = max(orig.Load(int3(p, 0)).rgb, 0.0), r = max(filtrado.Load(int3(p, 0)).rgb, 0.0) * clamp(o, PISO, 1.0); // remodula pelo albedo
     const float3 n = luz == 0 ? r - o : log2(max(r, PISO) / max(o, PISO));
     res[p] = float4(lerp(e.rgb, n, forca), e.a);
 }
