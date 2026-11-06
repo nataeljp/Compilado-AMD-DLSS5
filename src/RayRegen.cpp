@@ -17,7 +17,7 @@ static const float PISO = 1.0 / 512.0;
 )"
 
 const char* kEntra = KCOMUM R"(
-cbuffer C : register(b0) { uint w; uint h; uint luz; uint p0; };
+cbuffer C : register(b0) { uint w; uint h; uint luz; float amp; };
 Texture2D<float4> ed : register(t0);
 Texture2D<float4> orig : register(t1);
 RWTexture2D<float4> sinal : register(u0);
@@ -26,10 +26,10 @@ RWTexture2D<float4> albedo : register(u1);
 {
     if (p.x >= w || p.y >= h) return;
     const float3 e = ed.Load(int3(p, 0)).rgb, o = max(orig.Load(int3(p, 0)).rgb, 0.0);
-    // o contrato da AMD (manual 5.1.1): o sinal entra SEM o albedo e o app multiplica de volta. A base sobre a qual a edicao e aplicada e o quadro
-    // do jogo: ele e o albedo (sqrt, a codificacao padrao) e o sinal e a razao de luz da edicao. Com albedo 1 o filtro tomava a textura por ruido e
-    // a borrava (quadro da NVIDIA, 8 quadros parados: 46,35 -> 21,11 dB, FLIP 0,033 -> 0,253)
-    const float3 a = clamp(o, PISO, 1.0);
+    // o contrato da AMD (manual 5.1.1): o sinal entra SEM o albedo e o app multiplica de volta. O jogo nao entrega albedo: o albedo e o quadro do jogo
+    // elevado a 1 - amp (sqrt, a codificacao padrao). amp = 1 (albedo 1) tomava a textura inteira por ruido e a borrava (quadro da NVIDIA, 8 quadros
+    // parados: FLIP 0,033 -> 0,253); amp = 0 (albedo = quadro) deixava o ruido do jogo no albedo, intacto (sem efeito no Crimson Desert). O painel escolhe; padrao 1
+    const float3 a = pow(clamp(o, PISO, 1.0), 1.0 - amp);
     sinal[p] = float4(max(luz == 0 ? o + e : max(o, PISO) * exp2(e), 0.0) / a, 1.0);
     albedo[p] = float4(sqrt(a), 1.0);
 }
@@ -161,7 +161,7 @@ float2 NormalToOctahedronUv(float3 N)
 
 // de volta para o formato da edicao: a luz filtrada vezes o albedo (o quadro do jogo), menos o jogo. Forca mistura com a edicao sem filtro
 const char* kSai = KCOMUM R"(
-cbuffer C : register(b0) { uint w; uint h; uint luz; float forca; };
+cbuffer C : register(b0) { uint w; uint h; uint luz; float forca; float amp; uint p0; uint p1; uint p2; };
 Texture2D<float4> filtrado : register(t0);
 Texture2D<float4> orig : register(t1);
 Texture2D<float4> ed : register(t2);
@@ -170,7 +170,7 @@ RWTexture2D<float4> res : register(u0);
 {
     if (p.x >= w || p.y >= h) return;
     const float4 e = ed.Load(int3(p, 0));
-    const float3 o = max(orig.Load(int3(p, 0)).rgb, 0.0), r = max(filtrado.Load(int3(p, 0)).rgb, 0.0) * clamp(o, PISO, 1.0); // remodula pelo albedo
+    const float3 o = max(orig.Load(int3(p, 0)).rgb, 0.0), r = max(filtrado.Load(int3(p, 0)).rgb, 0.0) * pow(clamp(o, PISO, 1.0), 1.0 - amp); // remodula pelo albedo
     const float3 n = luz == 0 ? r - o : log2(max(r, PISO) / max(o, PISO));
     res[p] = float4(lerp(e.rgb, n, forca), e.a);
 }
@@ -196,7 +196,7 @@ void RayRegen::Cria(ID3D12Device* d)
     pGeo.Cria(d, kGeo, "CSGeo", 3, 2, 16, "ray regeneration: geometria");
     pBrutos.Cria(d, kBrutos, "CSBrutos", 2, 1, 4, "ray regeneration: pontos da profundidade");
     pNormais.Cria(d, kNormais, "CSNormais", 1, 1, 4, "ray regeneration: normais");
-    pSai.Cria(d, kSai, "CSSai", 3, 1, 4, "ray regeneration: saida");
+    pSai.Cria(d, kSai, "CSSai", 3, 1, 8, "ray regeneration: saida");
 }
 
 bool RayRegen::Abre(Gpu& gpu, const std::wstring& pasta, UINT w, UINT h, bool comDepuracao)
@@ -402,7 +402,7 @@ void RayRegen::MedePontos(bool invertidaConhecida)
     }
 }
 
-Tex* RayRegen::Filtra(ID3D12GraphicsCommandList* c, Descritores& desc, Gpu& gpu, const std::wstring& pasta, Tex& edicao, Tex& orig, UINT luz, float forca, const float* params, int vista, UINT vistaW, UINT vistaH)
+Tex* RayRegen::Filtra(ID3D12GraphicsCommandList* c, Descritores& desc, Gpu& gpu, const std::wstring& pasta, Tex& edicao, Tex& orig, UINT luz, float forca, float amplitude, const float* params, int vista, UINT vistaW, UINT vistaH)
 {
     comVista = vista > 0;
     if (falhou)
@@ -429,12 +429,21 @@ Tex* RayRegen::Filtra(ID3D12GraphicsCommandList* c, Descritores& desc, Gpu& gpu,
         prepReset = true; // historico novo
         limiteVisao = 0.f;
     }
+    // ajuste do painel mudou: o historico acumulado com o ajuste velho segurava o visual antigo (estabilidade 1) e a mudanca so aparecia ao religar.
+    // O historico recomeca no dispatch deste quadro (FFX_DENOISER_DISPATCH_RESET): a mudanca aparece na hora
+    const float amp = std::clamp(amplitude, 0.f, 1.f);
+    if (amp != ampAplicada)
+    {
+        prepReset = prepReset || ampAplicada >= 0.f;
+        ampAplicada = amp;
+    }
     for (int i = 0; i < kParamsRayRegen; ++i)
     {
         // negativo = o padrao da AMD
         const float v = params[i] < 0.f ? padrao[i] : params[i];
         if (v == aplicado[i] || !fnConfigura)
             continue;
+        prepReset = true;
         ffxConfigureDescDenoiserKeyValue k{};
         k.header.type = FFX_API_CONFIGURE_DESC_TYPE_DENOISER_KEYVALUE;
         k.key = uint64_t(i + 1);
@@ -469,7 +478,7 @@ Tex* RayRegen::Filtra(ID3D12GraphicsCommandList* c, Descritores& desc, Gpu& gpu,
     orig.Para(c, SRV);
     sinal.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     albedo.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    struct { UINT w, h, luz, p0; } ke{w, h, luz, 0};
+    struct { UINT w, h, luz; float amp; } ke{w, h, luz, amp};
     pEntra.Roda(c, desc, gpu.dev.Get(), {Par{edicao.r.Get(), edicao.fmt}, Par{orig.r.Get(), orig.fmt}}, {Par{sinal.r.Get(), sinal.fmt}, Par{albedo.r.Get(), albedo.fmt}}, &ke, gx, gy);
     struct { UINT w, h; float tanY; UINT reais; } kn{w, h, prepTan, params[0] > 0.f && fonte != 0 ? 1u : 0u};
     normais.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -533,7 +542,7 @@ Tex* RayRegen::Filtra(ID3D12GraphicsCommandList* c, Descritores& desc, Gpu& gpu,
     saida.Para(c, SRV);
     temAnterior = true; // a profundidade deste quadro e a anterior do proximo (Prepara troca as duas)
     resultado.Para(c, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    struct { UINT w, h, luz; float forca; } ks{w, h, luz, std::clamp(forca, 0.f, 1.f)};
+    struct { UINT w, h, luz; float forca, amp; UINT p0, p1, p2; } ks{w, h, luz, std::clamp(forca, 0.f, 1.f), amp, 0, 0, 0};
     pSai.Roda(c, desc, gpu.dev.Get(), {Par{saida.r.Get(), saida.fmt}, Par{orig.r.Get(), orig.fmt}, Par{edicao.r.Get(), edicao.fmt}}, {Par{resultado.r.Get(), resultado.fmt}}, &ks, gx, gy);
     resultado.Para(c, SRV);
     return &resultado;

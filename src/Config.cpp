@@ -114,6 +114,8 @@ void Config::Carrega(const std::wstring& arquivo)
     B("redePequena", redePequena);
     F("forca", forca);
     F("dnRegenForca", dnRegenForca);
+    F("dnRegenAmplitude", dnRegenAmplitude);
+    dnRegenAmplitude = std::clamp(dnRegenAmplitude, 0.f, 1.f); // acima de 1 o albedo inverte (quadro^negativo): nao e mais forca, e outra conta
     B("dnRegenProf", dnRegenProf);
     F("dnRegenNormais", dnRegenParam[0]);
     F("dnRegenEstabilidade", dnRegenParam[1]);
@@ -186,6 +188,7 @@ std::string Config::Texto() const
     f << "  \"formatoCor\": " << formatoCor << ",\n";
     f << "  \"dnAtivo\": " << b(dnAtivo) << ",\n";
     f << "  \"dnRegenForca\": " << dnRegenForca << ",\n";
+    f << "  \"dnRegenAmplitude\": " << dnRegenAmplitude << ",\n";
     f << "  \"dnRegenProf\": " << b(dnRegenProf) << ",\n";
     f << "  \"dnRegenNormais\": " << dnRegenParam[0] << ",\n";
     f << "  \"dnRegenEstabilidade\": " << dnRegenParam[1] << ",\n";

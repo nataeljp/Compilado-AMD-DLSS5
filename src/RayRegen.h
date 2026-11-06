@@ -37,7 +37,7 @@ class RayRegen
     // na lista da entrada, antes da rede: a profundidade e o movimento deste quadro
     void Prepara(ID3D12GraphicsCommandList* c, Descritores& desc, Gpu& gpu, Tex& orig, const EntradaRayRegen& e);
     // a edicao filtrada (RGBA16F, estado SRV), ou nullptr se o denoiser nao estiver disponivel ou o Prepara nao rodou neste quadro. luz: Temporal.h LuzNaTela
-    Tex* Filtra(ID3D12GraphicsCommandList* c, Descritores& desc, Gpu& gpu, const std::wstring& pasta, Tex& edicao, Tex& orig, UINT luz, float forca, const float* params, int vista, UINT vistaW, UINT vistaH);
+    Tex* Filtra(ID3D12GraphicsCommandList* c, Descritores& desc, Gpu& gpu, const std::wstring& pasta, Tex& edicao, Tex& orig, UINT luz, float forca, float amplitude, const float* params, int vista, UINT vistaW, UINT vistaH);
     // para o painel: de onde vem a profundidade
     const std::string& Estado() const { return estado; }
     // a fracao da tela com alguma coisa na profundidade do jogo, medida neste quadro (captura da API); false = nao mediu
@@ -86,6 +86,7 @@ class RayRegen
     float padrao[kParamsRayRegen] = {}, aplicado[kParamsRayRegen] = {};
     UINT ctxW = 0, ctxH = 0, indice = 0;
     bool falhou = false, ctxDepura = false, temAnterior = false;
+    float ampAplicada = -1.f; // a amplitude do ultimo dispatch (mudou: o historico recomeca)
 };
 
 } // namespace ov

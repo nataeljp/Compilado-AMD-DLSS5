@@ -1440,6 +1440,7 @@ AcoesPainel Painel::Quadro(Config& cfg, const EstadoPainel& e)
         Marca("Usar a profundidade do jogo", &cfg.dnRegenProf,
               "Buffer: profundidade e FOV do jogo. API: o buffer de profundidade do jogo (DX11 e DX12), com escala relativa; o estado diz se nao foi achada e por que. Video e Vulkan nao tem: fica fixa.");
         Deslizador("Força", &cfg.dnRegenForca, 0.f, 1.f, "%.3f", "Mistura com a edicao sem filtro. 1 = so a filtrada.", 1.f);
+        Deslizador("Amplitude", &cfg.dnRegenAmplitude, 0.f, 1.f, "%.3f", "Quanto do quadro do jogo entra no filtro (o resto volta como albedo, intacto): 1 = o quadro inteiro (limpa todo o ruido do jogo, a textura junto: equilibre com o CAS); 0 = so a edicao da rede, o ruido do jogo passa.", 1.f);
         Deslizador("Normais", &cfg.dnRegenParam[0], 0.f, 1.f, "%.3f", "Cross bilateral normal strength: quanto a diferenca de normal segura o filtro nas bordas. Normais calculadas da profundidade; sem profundidade, de frente. 0 = desliga.", 1.f);
         Deslizador("Estabilidade", &cfg.dnRegenParam[1], 0.f, 1.f, "%.3f", "Stability bias: maior = acumulacao mais estavel e menos responsiva.", 1.f);
         Deslizador("Radiância máx.", &cfg.dnRegenParam[2], 0.f, 65504.f, "%.0f", "Max radiance: teto do brilho que entra no denoiser.", 65504.f);

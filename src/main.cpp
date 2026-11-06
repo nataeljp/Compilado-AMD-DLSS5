@@ -1300,7 +1300,7 @@ RWTexture2D<float4> saida : register(u0);
             return ed;
         // no painel: 0 imagem, 1 visao geral, 2 em diante os paineis do manual sem o 7 ("Unused")
         const int vistaSdk = cfg.dnVista >= 9 ? cfg.dnVista + 1 : cfg.dnVista;
-        Tex* filtrada = rayRegen.Filtra(c, desc, gpu, pasta, *ed, orig, LuzNaTela(cfg.temporal.luz), cfg.dnRegenForca, cfg.dnRegenParam, vistaSdk, saida.w ? saida.w : ed->w, saida.h ? saida.h : ed->h);
+        Tex* filtrada = rayRegen.Filtra(c, desc, gpu, pasta, *ed, orig, LuzNaTela(cfg.temporal.luz), cfg.dnRegenForca, cfg.dnRegenAmplitude, cfg.dnRegenParam, vistaSdk, saida.w ? saida.w : ed->w, saida.h ? saida.h : ed->h);
         return filtrada ? filtrada : ed;
     }
     // o que falta, dito no painel: sem isto o denoise parece funcionar com a profundidade fixa

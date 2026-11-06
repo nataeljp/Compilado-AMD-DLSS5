@@ -1,4 +1,4 @@
-﻿// config.json ao lado do exe: objeto plano de numeros/booleanos (lido na inicializacao e regravado ao sair)
+// config.json ao lado do exe: objeto plano de numeros/booleanos (lido na inicializacao e regravado ao sair)
 #pragma once
 #include "Rede.h"
 #include "Temporal.h"
@@ -46,6 +46,7 @@ struct Config
     // denoise do grao da rede, na ideia do NRD/RELAX da NVIDIA; os padroes vem do NRDSettings.h (ver DenoiseHlsl.h)
     bool dnAtivo = false;       // liga e desliga o conjunto sem perder os ajustes
     float dnRegenForca = 1.f;   // 0 = a edicao crua, 1 = so a filtrada
+    float dnRegenAmplitude = 1.f; // fracao do quadro do jogo no sinal filtrado (albedo = quadro^(1 - a)): 1 = o quadro inteiro, 0 = so a edicao
     bool dnRegenProf = true;    // a profundidade do jogo entra no denoiser (sem ela, fixa)
     // os parametros do SDK (RayRegen.h); de inicio, os padroes da AMD
     float dnRegenParam[6] = {1.f, 1.f, 65504.f, 50.f, 0.f, 0.01f};
